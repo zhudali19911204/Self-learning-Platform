@@ -55,6 +55,50 @@ test('legacy JSON migrates without modifying its bytes; lessons load individuall
   finally { reopened.close(); }
 });
 
+test('v1 SQLite upgrades with a verified snapshot and keeps existing course content', async t => {
+  const directory = await temporary(t);
+  const initial = await createSqliteStore(directory);
+  initial.saveLesson('p1', { ...demoLessons.p1, intro: '迁移前的课程' });
+  initial.close();
+  const db = new DatabaseSync(path.join(directory, 'learning.sqlite'));
+  db.exec('DROP TABLE lesson_blocks; DROP TABLE lesson_outlines; PRAGMA user_version = 1');
+  db.close();
+  const upgraded = await createSqliteStore(directory);
+  try {
+    assert.equal(upgraded.getLesson('p1').lesson.intro, '迁移前的课程');
+    const files = await import('node:fs/promises').then(fs => fs.readdir(path.join(directory, 'backups')));
+    assert.equal(files.filter(file => file.startsWith('before-schema-v2-') && file.endsWith('.sqlite')).length, 1);
+    const snapshot = new DatabaseSync(path.join(directory, 'backups', files[0]), { readOnly: true });
+    try { assert.equal(snapshot.prepare('PRAGMA user_version').get().user_version, 1); }
+    finally { snapshot.close(); }
+  } finally { upgraded.close(); }
+});
+
+test('outlines and blocks save independently and survive export/import', async t => {
+  const store = await createSqliteStore(await temporary(t));
+  try {
+    const outline = store.saveOutline('p1', { intro: '先理解再练习', blocks: [
+      { type: 'reading', title: '概念', objective: '理解核心概念' },
+      { type: 'quiz', title: '自测', objective: '验证理解' }
+    ] });
+    assert.equal(outline.blocks.length, 2);
+    assert.equal(store.getLesson('p1').blockCourse.blocks[0].content, null);
+    store.saveBlock('p1', outline.blocks[0].id, { text: '逐步解释' });
+    store.saveProgress('p1', { completed: true, attempts: 1, lastScore: 100, bestScore: 100, lastAnswers: [0] });
+    store.saveBlock('p1', outline.blocks[1].id, { questions: [{ prompt: '概念是什么？', options: ['A', 'B', 'C', 'D'], answer: 0, explanation: 'A 是正确的。' }] });
+    assert.equal(store.overview().progress.p1.completed, false, 'a newly generated quiz requires a new pass');
+    const extra = store.appendBlock('p1', { type: 'example', title: '实际示例', objective: '举一反三' });
+    store.saveBlock('p1', extra.id, { text: '一个具体示例' });
+    assert.throws(() => store.saveBlock('p1', extra.id, { text: '覆盖' }), /已生成/);
+    assert.equal(store.getLesson('p1').blockCourse.blocks[2].content.text, '一个具体示例');
+    const exportData = store.exportState();
+    assert.equal(exportData.blockCourses.p1.blocks.length, 3);
+    store.replaceState(exportData);
+    assert.deepEqual(store.exportState().blockCourses.p1, exportData.blockCourses.p1);
+    assert.equal(store.getLesson('p2').blockCourse, null);
+  } finally { store.close(); }
+});
+
 test('targeted progress, reflection, note and chat updates persist without whole-state replacement', async t => {
   const store = await createSqliteStore(await temporary(t));
   try {

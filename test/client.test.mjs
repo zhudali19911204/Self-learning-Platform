@@ -4,9 +4,10 @@ import vm from 'node:vm';
 import { readFile } from 'node:fs/promises';
 import { webcrypto } from 'node:crypto';
 import { demoPlan, demoLessons } from '../public/demo.js';
+import { lessonFromBlocks, validOutline, validBlockContent, validBlockSpec } from '../public/blocks.js';
 
 // This harness checks application state transitions, not browser rendering.
-const source = (await readFile(new URL('../public/app.js', import.meta.url), 'utf8')).replace("import { demoPlan, demoLessons } from './demo.js';", '');
+const source = (await readFile(new URL('../public/app.js', import.meta.url), 'utf8')).replace("import { demoPlan, demoLessons } from './demo.js';", '').replace("import { lessonFromBlocks, validOutline, validBlockContent, validBlockSpec } from './blocks.js';", '');
 function harness(saved, fetchImpl) {
   const nodes = new Map(), listeners = new Map(), storage = new Map(saved ? [['learnflow.v1', saved]] : []);
   const node = selector => {
@@ -14,7 +15,7 @@ function harness(saved, fetchImpl) {
     return nodes.get(selector);
   };
   const context = vm.createContext({
-    demoPlan, demoLessons, structuredClone, crypto: webcrypto, AbortSignal,
+    demoPlan, demoLessons, lessonFromBlocks, validOutline, validBlockContent, validBlockSpec, structuredClone, crypto: webcrypto, AbortSignal,
     document: { querySelector: node, addEventListener(name, listener) { listeners.set(name, listener); } },
     localStorage: { getItem: key => storage.get(key) ?? null, setItem: (key, value) => storage.set(key, value) },
     window: { scrollTo() {} }, setTimeout: () => 1, clearTimeout() {},
@@ -57,6 +58,24 @@ test('learning loop: incorrect answers, retry, completion, Wiki creation, edit a
   assert.equal(app.run('state.progress.p1.completed'), true, 'review mistakes do not delete prior mastery');
   assert.equal(app.run('state.progress.p1.bestScore'), 100);
   assert.equal(app.run('state.progress.p1.lastScore'), 0);
+});
+test('AI course expands from outline to independently generated blocks', async () => {
+  const outline = { intro: '循序学习', blocks: [{ type: 'reading', title: '概念', objective: '理解' }, { type: 'quiz', title: '练习', objective: '检验' }] };
+  const calls = [];
+  const app = harness(null, async (url, options) => {
+    if (url === '/api/status') return { ok: true, json: async () => ({ mode: 'ai' }) };
+    calls.push(url);
+    return { ok: true, json: async () => url.endsWith('lesson-outline') ? outline : { text: '这一块的正文' } };
+  });
+  app.run("state.plans[0].source = 'ai'; state.plans[0].lessons[0].id = 'custom-1'; state.lessons = {}; activeLesson = 'custom-1'; page = 'study'; render()");
+  await app.run("action('generate-lesson', {dataset:{id:'custom-1'}})");
+  assert.equal(app.run('state.blockCourses["custom-1"].blocks.length'), 2);
+  assert.match(app.node('#app').innerHTML, /生成这一块/);
+  const blockId = app.run('state.blockCourses["custom-1"].blocks[0].id');
+  await app.run(`action('generate-block', {dataset:{id:'custom-1', block:'${blockId}'}})`);
+  assert.equal(app.run('state.blockCourses["custom-1"].blocks[0].content.text'), '这一块的正文');
+  assert.deepEqual(calls, ['/api/lesson-outline', '/api/lesson-block']);
+  assert.match(app.node('#app').innerHTML, /这一块的正文/);
 });
 test('all pages render with empty and populated state; untrusted content is escaped', async () => {
   const app = harness();

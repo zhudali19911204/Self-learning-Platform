@@ -3,9 +3,10 @@ import { readFile } from 'node:fs/promises';
 import { pathToFileURL } from 'node:url';
 import { randomUUID } from 'node:crypto';
 import { createLLM } from './llm.mjs';
+import { validOutline, validBlockSpec, validBlockContent } from './public/blocks.js';
 
 const publicDir = new URL('./public/', import.meta.url);
-const assets = { '/': ['index.html', 'text/html'], '/app.js': ['app.js', 'text/javascript'], '/demo.js': ['demo.js', 'text/javascript'], '/styles.css': ['styles.css', 'text/css'], '/favicon.svg': ['favicon.svg', 'image/svg+xml'] };
+const assets = { '/': ['index.html', 'text/html'], '/app.js': ['app.js', 'text/javascript'], '/demo.js': ['demo.js', 'text/javascript'], '/blocks.js': ['blocks.js', 'text/javascript'], '/styles.css': ['styles.css', 'text/css'], '/favicon.svg': ['favicon.svg', 'image/svg+xml'] };
 const str = (v, max = 20000) => typeof v === 'string' && v.trim().length > 0 && v.length <= max;
 const strings = (v, max = 20) => Array.isArray(v) && v.length > 0 && v.length <= max && v.every(x => str(x, 5000));
 export function validPlan(v) {
@@ -14,6 +15,7 @@ export function validPlan(v) {
 export function validLesson(v) {
   return !!v && str(v.intro) && Array.isArray(v.sections) && v.sections.length >= 2 && v.sections.length <= 8 && v.sections.every(s => str(s.heading, 160) && str(s.body)) && str(v.example) && str(v.challenge) && strings(v.takeaways, 8) && Array.isArray(v.questions) && v.questions.length >= 2 && v.questions.length <= 5 && v.questions.every(q => str(q.prompt, 2000) && Array.isArray(q.options) && q.options.length === 4 && q.options.every(x => str(x, 2000)) && Number.isInteger(q.answer) && q.answer >= 0 && q.answer <= 3 && str(q.explanation, 5000));
 }
+const validStudyLesson = value => validLesson(value) || (value?.kind === 'blocks' && typeof value.intro === 'string' && value.intro.length <= 20000 && Array.isArray(value.sections) && value.sections.length <= 1000 && value.sections.every(section => str(section.heading, 160) && str(section.body, 12000)) && typeof value.example === 'string' && value.example.length <= 120000 && typeof value.challenge === 'string' && value.challenge.length <= 120000 && Array.isArray(value.takeaways) && value.takeaways.length <= 1000 && value.takeaways.every(item => str(item, 12000)) && Array.isArray(value.questions) && value.questions.length <= 100 && value.questions.every(q => validBlockContent('quiz', { questions: [q] })));
 function fail(message, status = 400) { const e = new Error(message); e.status = status; throw e; }
 async function body(req) {
   let size = 0; const chunks = [];
@@ -48,14 +50,24 @@ export function createApp(config = {}) {
           if (!str(data.goal, 1000) || !['零基础', '有一点基础', '希望进阶'].includes(data.level) || !Number.isInteger(data.daily) || data.daily < 10 || data.daily > 120 || !Number.isInteger(data.days) || data.days < 7 || data.days > 90) fail('请填写目标、基础、每日时长与学习周期。');
           result = await generate(`根据目标、已有基础、每日分钟数与天数设计 3–12 节循序渐进的课程。课程总时长不要超过 daily * days。每课具有具体目标。格式：${planShape}`, data, v => validPlan(v) && v.lessons.reduce((sum, l) => sum + l.minutes, 0) <= data.daily * data.days);
           result = { ...result, id: randomUUID(), goal: data.goal, level: data.level, daily: data.daily, days: data.days, source: 'ai', lessons: result.lessons.map(l => ({ ...l, id: randomUUID() })) };
+        } else if (path === '/api/lesson-outline') {
+          if (!str(data.goal, 1000) || !str(data.title, 160) || !str(data.objective, 1000) || !str(data.level, 80)) fail('课程参数不完整。');
+          result = await generate('请为这一节自学课程设计可逐步生成的内容大纲。根据课程目标选择有意义的模块：reading 讲解、example 示例、practice 实践、quiz 测验、summary 总结。至少包含一段讲解和一个测验；可以有多个同类型模块，按学习顺序排列。只规划模块，不写完整正文。返回 JSON：{"intro":"简短课程导语","blocks":[{"type":"reading","title":"模块标题","objective":"本模块的具体目标"}]}。模块共 2 到 20 个。', data, validOutline);
+        } else if (path === '/api/lesson-block') {
+          if (!str(data.goal, 1000) || !str(data.title, 160) || !str(data.objective, 1000) || !str(data.level, 80) || !validBlockSpec(data.block) || typeof data.intro !== 'string' || data.intro.length > 20000) fail('内容块参数不完整。');
+          const requested = { ...data, block: { type: data.block.type, title: data.block.title, objective: data.block.objective } };
+          const instructions = data.block.type === 'quiz'
+            ? '生成 2 到 4 道紧扣当前模块的四选一练习题，answer 是正确选项的 0-3 整数下标，并解释答案。返回 JSON：{"questions":[{"prompt":"题目","options":["A","B","C","D"],"answer":0,"explanation":"解析"}]}。'
+            : `只生成当前 ${data.block.type} 模块的具体内容，不重复整节课。内容要符合模块目标，可以换行但请使用纯文本。返回 JSON：{"text":"详细内容"}。`;
+          result = await generate(instructions, requested, value => validBlockContent(data.block.type, value));
         } else if (path === '/api/lesson') {
           if (!str(data.goal, 1000) || !str(data.title, 160) || !str(data.objective, 1000) || !str(data.level, 80)) fail('课程参数不完整。');
           result = await generate(`生成充分且可自学的课程，包含 2–8 段讲解、一个完整示例、动手任务、2–5 道四选一单选题和总结。答案为 0–3 的整数下标，解释正确答案。使用纯文本（代码允许换行），不要 Markdown。格式：${lessonShape}`, data, validLesson);
         } else if (path === '/api/wiki') {
-          if (!str(data.title, 160) || !validLesson(data.lesson) || typeof data.reflection !== 'string' || data.reflection.length > 5000) fail('课程或学习笔记不完整。');
+          if (!str(data.title, 160) || !validStudyLesson(data.lesson) || typeof data.reflection !== 'string' || data.reflection.length > 5000) fail('课程或学习笔记不完整。');
           result = await generate('将已学课程整理为个人 Wiki，保留核心概念、实际例子、易错点、适用边界与用户心得。用户心得中的错误要指出，不要把它当成正确知识。格式：{"summary":"一句话摘要","content":"完整纯文本知识笔记"}。', data, v => v && str(v.summary, 500) && str(v.content));
         } else if (path === '/api/lesson-ask') {
-          if (!str(data.title, 160) || !str(data.objective, 1000) || !validLesson(data.lesson) || !str(data.question, 1000) || !Array.isArray(data.history) || data.history.length > 12 || !data.history.every(item => item && ['user', 'assistant'].includes(item.role) && str(item.content, item.role === 'user' ? 1000 : 12000))) fail('请提供当前课程、问题和最多 12 条有效对话记录。');
+          if (!str(data.title, 160) || !str(data.objective, 1000) || !validStudyLesson(data.lesson) || !str(data.question, 1000) || !Array.isArray(data.history) || data.history.length > 12 || !data.history.every(item => item && ['user', 'assistant'].includes(item.role) && str(item.content, item.role === 'user' ? 1000 : 12000))) fail('请提供当前课程、问题和最多 12 条有效对话记录。');
           result = await generate('你正在辅导用户学习当前课程。根据 lesson 的讲解、示例、练习和上下文 history 回答当前 question；可以用通用知识补充，但要区分课程已有内容与补充说明。先直接回答，再用简短例子或思路帮助理解。若用户问练习题，优先提示解题思路，避免直接代答。不要编造已经执行的操作。格式：{"answer":"清晰、具体的中文答复"}。', data, v => v && str(v.answer, 12000));
         } else if (path === '/api/ask') {
           if (!str(data.question, 1000) || !Array.isArray(data.notes) || data.notes.length > 30 || !data.notes.length || !data.notes.every(n => str(n.id, 160) && str(n.title, 160) && str(n.content))) fail('请提供问题和最多 30 篇有效知识笔记。');

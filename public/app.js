@@ -1,4 +1,5 @@
 import { demoPlan, demoLessons } from './demo.js';
+import { lessonFromBlocks, validOutline, validBlockContent, validBlockSpec } from './blocks.js';
 
 const $ = s => document.querySelector(s);
 const escape = v => String(v ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -26,7 +27,7 @@ const icon = (name, cls = '') => `<svg class="icon ${cls}" viewBox="0 0 24 24" f
 const desktop = window.learnflowDesktop;
 let desktopSettings = null, dataDirectory = '', pendingSave = Promise.resolve();
 const key = 'learnflow.v1';
-const fresh = () => ({ version: 1, plans: [structuredClone(demoPlan)], active: demoPlan.id, lessons: {}, progress: {}, notes: [], reflections: {}, chats: {} });
+const fresh = () => ({ version: 1, plans: [structuredClone(demoPlan)], active: demoPlan.id, lessons: {}, blockCourses: {}, progress: {}, notes: [], reflections: {}, chats: {} });
 let storageWarning = '';
 let state = fresh();
 try {
@@ -45,7 +46,7 @@ const progress = id => state.progress[id] || {};
 const completed = () => plan().lessons.filter(l => progress(l.id).completed).length;
 const percent = () => Math.round(completed() / plan().lessons.length * 100);
 const nextLesson = () => plan().lessons.find(l => !progress(l.id).completed) || plan().lessons[0];
-const contentFor = id => state.lessons[id] || demoLessons[id];
+const contentFor = id => state.blockCourses?.[id] ? lessonFromBlocks(state.blockCourses[id]) : state.lessons[id] || demoLessons[id];
 const lessonById = id => state.plans.flatMap(p => p.lessons).find(l => l.id === id);
 const chatFor = id => state.chats?.[id] || [];
 function save() {
@@ -105,11 +106,20 @@ function routes() {
 function study() {
   const p = plan(); const meta = p.lessons.find(l => l.id === activeLesson) || nextLesson(); activeLesson = meta.id;
   const lesson = contentFor(meta.id), record = progress(meta.id);
+  if (state.blockCourses?.[meta.id]) return studyBlocks(meta, p, record);
   return `<div class="study-top"><button class="text-button" data-page="routes">${icon('back')}返回学习路线</button>${pill(p.source === 'demo' ? '示例课程' : 'AI 生成 · 请核验重要知识', 'purple')}</div>
   <div class="study-layout"><aside class="syllabus"><div class="syllabus-heading">课程目录 <span>${completed()}/${p.lessons.length}</span></div>${p.lessons.map((l, i) => `<button class="syllabus-item ${l.id === meta.id ? 'selected' : ''}" data-action="open-lesson" data-id="${l.id}"><span>${progress(l.id).completed ? icon('check') : String(i + 1).padStart(2, '0')}</span><strong>${escape(l.title)}</strong></button>`).join('')}<div class="syllabus-bottom">${icon('leaf')} 慢慢来，也是在前进。</div></aside>
   <section class="lesson-content"><div class="eyebrow">LESSON ${String(p.lessons.indexOf(meta) + 1).padStart(2, '0')}</div><h1>${escape(meta.title)}</h1><p class="lesson-objective">${escape(meta.objective)}</p><div class="metadata">${icon('clock')}${meta.minutes} 分钟 <span>·</span>${escape(meta.tags.join(' / '))}</div>
   <div class="tabs" role="tablist" aria-label="课程内容">${[['read', 'book', '学习内容'], ['quiz', 'bolt', `随堂练习${record.completed ? ' ✓' : ''}`], ['chat', 'spark', 'AI 答疑'], ['notes', 'brain', '学习笔记']].map(([tab, symbol, label]) => `<button role="tab" aria-selected="${lessonTab === tab}" class="${lessonTab === tab ? 'active' : ''}" data-action="lesson-tab" data-tab="${tab}">${icon(symbol)}${label}</button>`).join('')}</div>
   ${!lesson ? `<div class="empty-state">${icon('spark')}<h3>为你展开这一课</h3><p>根据你的目标与基础，生成讲解、示例和随堂练习。</p>${button('生成课程内容', 'generate-lesson', 'primary', `data-id="${meta.id}"`, 'spark')}</div>` : lessonTab === 'read' ? `<div class="lesson-intro">${escape(lesson.intro)}</div>${lesson.sections.map(s => `<section class="reading-section"><h2>${escape(s.heading)}</h2><p>${escape(s.body)}</p></section>`).join('')}<div class="code-block"><div>具体示例 <span>阅读与推演</span></div><pre><code>${escape(lesson.example)}</code></pre></div><div class="challenge"><h3>${icon('bolt')}动手试一试</h3><p>${escape(lesson.challenge)}</p><small>请在你自己的工具或编程环境中完成。这里不执行代码。</small></div><div class="lesson-actions"><span>理解之后，用练习检验一下。</span>${button('开始随堂练习', 'quiz', 'primary')}</div>` : lessonTab === 'quiz' ? quiz(meta, lesson) : lessonTab === 'chat' ? studyChat(meta) : `<section class="reflection"><h2>用自己的话，重新理解一次。</h2><p>哪些内容让你豁然开朗？你会把它用在哪里？</p><label class="sr-only" for="reflection">我的学习心得</label><textarea id="reflection" data-reflection="${meta.id}" maxlength="5000" placeholder="我的理解、实践结果，或仍然困惑的问题……">${escape(state.reflections[meta.id] || '')}</textarea><span class="field-hint">自动保存在${desktop ? '本机' : '当前浏览器'} · 最多 5000 字</span><div class="takeaways"><h3>本课关键收获</h3>${lesson.takeaways.map(t => `<p>${icon('check')}${escape(t)}</p>`).join('')}</div>${record.completed ? button(state.notes.some(n => n.lessonId === meta.id) ? '查看本课知识卡片' : '沉淀到我的 Wiki', 'create-note', 'primary', `data-id="${meta.id}"`, 'brain') : `<div class="notice">通过随堂练习后，即可将本课和心得整理为 Wiki 知识卡片。</div>${button('去完成练习', 'quiz', 'secondary')}`}</section>`}</section></div>`;
+}
+function studyBlocks(meta, p, record) {
+  const course = state.blockCourses[meta.id], lesson = lessonFromBlocks(course);
+  const labels = { reading: '讲解', example: '示例', practice: '实践', quiz: '练习', summary: '总结' };
+  const read = `<div class="lesson-intro">${escape(course.intro)}</div><div class="block-sequence">${course.blocks.map((block, index) => `<section class="reading-section content-block"><div class="block-heading"><span class="pill purple">${String(index + 1).padStart(2, '0')} · ${labels[block.type]}</span><h2>${escape(block.title)}</h2></div><p class="block-objective">${escape(block.objective)}</p>${block.content ? block.type === 'quiz' ? `<p>已生成 ${block.content.questions.length} 道练习题。${button('去练习', 'quiz', 'secondary')}</p>` : `<p class="block-text">${escape(block.content.text)}</p>` : `<div class="block-pending"><span>此模块尚未生成，可以按需展开。</span>${button('生成这一块', 'generate-block', 'secondary', `data-id="${meta.id}" data-block="${block.id}"`, 'spark')}</div>`}</section>`).join('')}</div><form id="append-block-form" data-id="${meta.id}" class="append-block-form"><h3>继续扩展本课</h3><div class="form-row"><div><label for="block-type">内容类型</label><select id="block-type" name="type">${Object.entries(labels).map(([type, label]) => `<option value="${type}">${label}</option>`).join('')}</select></div><div><label for="block-title">模块标题</label><input id="block-title" name="title" required maxlength="160" placeholder="例如：更多实际案例"></div></div><label for="block-objective">本块的学习目标</label><input id="block-objective" name="objective" required maxlength="1000" placeholder="你想在这里学会什么？"><button class="btn secondary" type="submit">添加内容块 ${icon('plus')}</button></form>`;
+  const notes = `<section class="reflection"><h2>用自己的话，重新理解一次。</h2><label class="sr-only" for="reflection">我的学习心得</label><textarea id="reflection" data-reflection="${meta.id}" maxlength="5000" placeholder="我的理解、实践结果，或仍然困惑的问题……">${escape(state.reflections[meta.id] || '')}</textarea><span class="field-hint">自动保存在${desktop ? '本机' : '当前浏览器'}</span><div class="takeaways"><h3>本课总结</h3>${lesson.takeaways.map(t => `<p>${icon('check')}${escape(t)}</p>`).join('')}</div>${record.completed ? button(state.notes.some(n => n.lessonId === meta.id) ? '查看本课知识卡片' : '沉淀到我的 Wiki', 'create-note', 'primary', `data-id="${meta.id}"`, 'brain') : `<div class="notice">生成练习内容并全部答对后，可整理为 Wiki 知识卡片。</div>${button('去完成练习', 'quiz', 'secondary')}`}</section>`;
+  const quizBody = lesson.questions.length ? quiz(meta, lesson) : `<div class="empty-state"><h3>练习尚未生成</h3><p>请先在“学习内容”里生成练习模块。</p>${button('查看内容块', 'read-tab', 'secondary')}</div>`;
+  return `<div class="study-top"><button class="text-button" data-page="routes">${icon('back')}返回学习路线</button>${pill('分步课程 · 可扩展', 'purple')}</div><div class="study-layout"><aside class="syllabus"><div class="syllabus-heading">课程目录 <span>${completed()}/${p.lessons.length}</span></div>${p.lessons.map((l, i) => `<button class="syllabus-item ${l.id === meta.id ? 'selected' : ''}" data-action="open-lesson" data-id="${l.id}"><span>${progress(l.id).completed ? icon('check') : String(i + 1).padStart(2, '0')}</span><strong>${escape(l.title)}</strong></button>`).join('')}</aside><section class="lesson-content"><div class="eyebrow">LESSON ${String(p.lessons.indexOf(meta) + 1).padStart(2, '0')}</div><h1>${escape(meta.title)}</h1><p class="lesson-objective">${escape(meta.objective)}</p><div class="tabs" role="tablist" aria-label="课程内容">${[['read', 'book', '学习内容'], ['quiz', 'bolt', `随堂练习${record.completed ? ' ✓' : ''}`], ['chat', 'spark', 'AI 答疑'], ['notes', 'brain', '学习笔记']].map(([tab, symbol, label]) => `<button role="tab" aria-selected="${lessonTab === tab}" class="${lessonTab === tab ? 'active' : ''}" data-action="lesson-tab" data-tab="${tab}">${icon(symbol)}${label}</button>`).join('')}</div>${lessonTab === 'read' ? read : lessonTab === 'quiz' ? quizBody : lessonTab === 'chat' ? studyChat(meta) : notes}</section></div>`;
 }
 function studyChat(meta) {
   const messages = chatFor(meta.id);
@@ -120,7 +130,7 @@ function studyChat(meta) {
 }
 function quiz(meta, lesson) {
   const record = progress(meta.id);
-  return `<div class="quiz-intro"><h2>让理解，在练习中发生。</h2><p>共 ${lesson.questions.length} 道单选题，全部答对即可掌握本课。可以反复练习。</p></div><form id="quiz-form" data-id="${meta.id}">${lesson.questions.map((q, i) => `<fieldset class="question"><legend><span>${String(i + 1).padStart(2, '0')}</span>${escape(q.prompt)}</legend>${q.options.map((o, j) => `<label class="quiz-option"><input type="radio" name="q${i}" value="${j}" required><span class="option-letter">${String.fromCharCode(65 + j)}</span><span>${escape(o)}</span></label>`).join('')}</fieldset>`).join('')}<button class="btn primary" type="submit">提交并查看解析 ${icon('check')}</button></form>${record.lastAnswers ? `<section class="quiz-result ${record.lastScore === 100 ? 'passed' : ''}" aria-live="polite"><h3>${record.lastScore === 100 ? '做得好，本课已掌握！' : '发现盲点，就是进步的开始。'}<span>${record.lastScore} 分</span></h3><p>上次提交 · 已练习 ${record.attempts} 次 · 最高 ${record.bestScore} 分</p>${lesson.questions.map((q, i) => `<div class="answer-review"><strong>${record.lastAnswers[i] === q.answer ? '✓ 回答正确' : '↻ 再想一想'} · 第 ${i + 1} 题</strong><p>你的答案：${escape(q.options[record.lastAnswers[i]])}<br>正确答案：${escape(q.options[q.answer])}</p><p>${escape(q.explanation)}</p></div>`).join('')}${record.completed ? button('整理本课知识', 'notes-tab', 'primary', '', 'brain') : `<p>结合解析回到上方重新作答，或切换到学习内容复习。</p>`}</section>` : ''}`;
+  return `<div class="quiz-intro"><h2>让理解，在练习中发生。</h2><p>共 ${lesson.questions.length} 道单选题，全部答对即可掌握本课。可以反复练习。</p></div><form id="quiz-form" data-id="${meta.id}">${lesson.questions.map((q, i) => `<fieldset class="question"><legend><span>${String(i + 1).padStart(2, '0')}</span>${escape(q.prompt)}</legend>${q.options.map((o, j) => `<label class="quiz-option"><input type="radio" name="q${i}" value="${j}" required><span class="option-letter">${String.fromCharCode(65 + j)}</span><span>${escape(o)}</span></label>`).join('')}</fieldset>`).join('')}<button class="btn primary" type="submit">提交并查看解析 ${icon('check')}</button></form>${record.lastAnswers?.length === lesson.questions.length ? `<section class="quiz-result ${record.lastScore === 100 ? 'passed' : ''}" aria-live="polite"><h3>${record.lastScore === 100 ? '做得好，本课已掌握！' : '发现盲点，就是进步的开始。'}<span>${record.lastScore} 分</span></h3><p>上次提交 · 已练习 ${record.attempts} 次 · 最高 ${record.bestScore} 分</p>${lesson.questions.map((q, i) => `<div class="answer-review"><strong>${record.lastAnswers[i] === q.answer ? '✓ 回答正确' : '↻ 再想一想'} · 第 ${i + 1} 题</strong><p>你的答案：${escape(q.options[record.lastAnswers[i]])}<br>正确答案：${escape(q.options[q.answer])}</p><p>${escape(q.explanation)}</p></div>`).join('')}${record.completed ? button('整理本课知识', 'notes-tab', 'primary', '', 'brain') : `<p>结合解析回到上方重新作答，或切换到学习内容复习。</p>`}</section>` : ''}`;
 }
 function practice() {
   const p = plan(), reviewed = p.lessons.filter(l => progress(l.id).attempts), weak = reviewed.filter(l => progress(l.id).lastScore < 100);
@@ -198,6 +208,7 @@ async function openLesson(id, tab = 'read') {
     await pendingSave;
     const detail = await desktop.getLesson(id);
     state.lessons = detail.lesson ? { [id]: detail.lesson } : {};
+    state.blockCourses = detail.blockCourse ? { [id]: detail.blockCourse } : {};
     state.reflections = { [id]: detail.reflection };
     state.chats = { [id]: detail.chats };
   }
@@ -257,8 +268,25 @@ async function action(name, element) {
   if (name === 'open-lesson') return openLesson(id);
   if (name === 'open-quiz') return openLesson(id, 'quiz');
   if (name === 'lesson-tab') { lessonTab = element.dataset.tab; return render(); }
-  if (name === 'quiz' || name === 'notes-tab') { lessonTab = name === 'quiz' ? 'quiz' : 'notes'; render(); return; }
-  if (name === 'generate-lesson') { const meta = lessonById(id), p = state.plans.find(p => p.lessons.some(l => l.id === id)); state.lessons[id] = await api('lesson', { goal: p.goal, level: p.level, title: meta.title, objective: meta.objective }); persist('saveLesson', id, state.lessons[id]); render(); return; }
+  if (name === 'quiz' || name === 'notes-tab' || name === 'read-tab') { lessonTab = name === 'quiz' ? 'quiz' : name === 'read-tab' ? 'read' : 'notes'; render(); return; }
+  if (name === 'generate-lesson') {
+    const meta = lessonById(id), p = state.plans.find(p => p.lessons.some(l => l.id === id));
+    const outline = await api('lesson-outline', { goal: p.goal, level: p.level, title: meta.title, objective: meta.objective });
+    if (!validOutline(outline)) throw new Error('模型返回的大纲格式不正确，请重试。');
+    const course = desktop ? await desktop.saveOutline(id, outline) : { intro: outline.intro, blocks: outline.blocks.map(block => ({ id: crypto.randomUUID(), ...block, content: null })) };
+    state.blockCourses ||= {}; state.blockCourses[id] = course; if (!desktop) save(); render(); return;
+  }
+  if (name === 'generate-block') {
+    const block = state.blockCourses?.[id]?.blocks.find(item => item.id === element.dataset.block);
+    if (!block || block.content) throw new Error('内容块不存在或已生成。');
+    const meta = lessonById(id), p = state.plans.find(plan => plan.lessons.some(item => item.id === id));
+    const content = await api('lesson-block', { goal: p.goal, level: p.level, title: meta.title, objective: meta.objective, intro: state.blockCourses[id].intro, block: { type: block.type, title: block.title, objective: block.objective } });
+    if (!validBlockContent(block.type, content)) throw new Error('模型返回的内容格式不正确，请重试。');
+    if (desktop) await desktop.saveBlock(id, block.id, content);
+    block.content = content;
+    if (block.type === 'quiz' && state.progress[id]) state.progress[id] = { ...state.progress[id], completed: false, lastScore: 0, lastAnswers: [] };
+    if (!desktop) save(); render(); return;
+  }
   if (name === 'create-note') return createNote(id);
   if (name === 'open-note') { activeNote = id; return navigate('wiki'); }
   if (name === 'close-note') { activeNote = null; return render(); }
@@ -271,7 +299,7 @@ document.addEventListener('click', async event => {
   const element = event.target.closest('[data-page], [data-action]'); if (!element || element.disabled) return;
   event.preventDefault();
   if (element.dataset.page) { activeNote = null; return element.dataset.page === 'study' ? openLesson(activeLesson || nextLesson().id, lessonTab) : navigate(element.dataset.page); }
-  const loading = ['generate-lesson', 'create-note', 'test-connection'].includes(element.dataset.action);
+  const loading = ['generate-lesson', 'generate-block', 'create-note', 'test-connection'].includes(element.dataset.action);
   const html = element.innerHTML;
   try { if (loading) { element.disabled = true; element.innerHTML = '<span class="spinner"></span>正在整理，请稍候…'; } await action(element.dataset.action, element); }
   catch (e) { toast(e.message); }
@@ -328,6 +356,11 @@ document.addEventListener('submit', async event => {
       $('#plan-error').textContent = ''; submit.innerHTML = '<span class="spinner"></span>正在规划学习路线…';
       const p = await api('plan', { goal: values.get('goal').trim(), level: values.get('level'), daily: Number(values.get('daily')), days: Number(values.get('days')) });
       state.plans.push(p); state.active = p.id; persist('savePlan', p); $('#planner').close(); navigate('routes'); toast('学习路线已生成，从第一步开始吧。');
+    } else if (form.id === 'append-block-form') {
+      const id = form.dataset.id, spec = { type: values.get('type'), title: values.get('title')?.trim(), objective: values.get('objective')?.trim() };
+      if (!validBlockSpec(spec) || !state.blockCourses?.[id]) throw new Error('请填写有效的内容类型、标题和学习目标。');
+      const block = desktop ? await desktop.appendBlock(id, spec) : { id: crypto.randomUUID(), ...spec, content: null };
+      state.blockCourses[id].blocks.push(block); if (!desktop) save(); render(); toast('内容块已加入课程，可单独生成。');
     } else if (form.id === 'quiz-form') {
       const id = form.dataset.id, lesson = contentFor(id), answers = lesson.questions.map((q, i) => Number(values.get('q' + i)));
       const correct = lesson.questions.filter((q, i) => q.answer === answers[i]).length;

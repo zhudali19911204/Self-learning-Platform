@@ -29,11 +29,21 @@ test('serves all client assets and demo status; does not expose server files', a
   assert.equal(status.model, null);
   assert.equal(status.provider, 'ollama');
   assert.equal(status.configurationError, null);
-  for (const path of ['/', '/app.js', '/demo.js', '/styles.css', '/favicon.svg']) {
+  for (const path of ['/', '/app.js', '/demo.js', '/blocks.js', '/styles.css', '/favicon.svg']) {
     const r = await app.get(path); assert.equal(r.status, 200); assert.ok((await r.text()).length > 0);
     assert.ok(r.headers.get('content-security-policy').includes("script-src 'self'"));
   }
   for (const path of ['/server.mjs', '/.env', '/package.json', '/unknown']) assert.equal((await app.get(path)).status, 404);
+});
+test('stepwise lesson APIs validate outline and individual block output', async t => {
+  const outline = { intro: '从概念开始', blocks: [{ type: 'reading', title: '概念', objective: '理解概念' }, { type: 'quiz', title: '自测', objective: '检验理解' }] };
+  const app = await serve(t, { model: 'test', fetchImpl: mock(outline) });
+  const context = { goal: '学习 Python', level: '零基础', title: '变量', objective: '认识变量' };
+  assert.deepEqual(await (await app.post('/api/lesson-outline', context)).json(), outline);
+  assert.equal((await app.post('/api/lesson-block', { ...context, intro: outline.intro, block: outline.blocks[0] })).status, 502);
+  const blockApp = await serve(t, { model: 'test', fetchImpl: mock({ text: '分步讲解正文' }) });
+  assert.deepEqual(await (await blockApp.post('/api/lesson-block', { ...context, intro: outline.intro, block: outline.blocks[0] })).json(), { text: '分步讲解正文' });
+  assert.equal((await blockApp.post('/api/lesson-block', { ...context, intro: outline.intro, block: { type: 'unknown', title: '错', objective: '错' } })).status, 400);
 });
 test('demo mode refuses arbitrary AI generation instead of returning fabricated results', async t => {
   const app = await serve(t);

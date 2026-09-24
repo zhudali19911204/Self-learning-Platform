@@ -67,6 +67,9 @@ async function start() {
   handle('learnflow:save-plan', value => learning.savePlan(value));
   handle('learnflow:set-active-plan', id => learning.setActivePlan(id));
   handle('learnflow:save-lesson', (id, value) => learning.saveLesson(id, value));
+  handle('learnflow:save-outline', (id, value) => learning.saveOutline(id, value));
+  handle('learnflow:append-block', (id, value) => learning.appendBlock(id, value));
+  handle('learnflow:save-block', (id, blockId, value) => learning.saveBlock(id, blockId, value));
   handle('learnflow:save-progress', (id, value) => learning.saveProgress(id, value));
   handle('learnflow:save-reflection', (id, value) => learning.saveReflection(id, value));
   handle('learnflow:append-chat', (id, question, answer) => learning.appendChat(id, question, answer));
@@ -82,7 +85,7 @@ async function start() {
     }
   });
   handle('learnflow:request', async (endpoint, data) => {
-    if (!['status', 'plan', 'lesson', 'lesson-ask', 'wiki', 'ask', 'test-connection'].includes(endpoint)) throw new Error('接口不存在。');
+    if (!['status', 'plan', 'lesson', 'lesson-outline', 'lesson-block', 'lesson-ask', 'wiki', 'ask', 'test-connection'].includes(endpoint)) throw new Error('接口不存在。');
     const response = await fetch(`${base}/api/${endpoint}`, {
       method: endpoint === 'status' ? 'GET' : 'POST',
       headers: { 'Content-Type': 'application/json', 'X-Learnflow-Token': token },
@@ -137,6 +140,9 @@ async function start() {
   rendererSession.webRequest.onBeforeRequest((details, callback) => { callback({ cancel: !details.url.startsWith(base + '/') }); });
   window.once('ready-to-show', () => { if (!smoke) window.show(); });
   await window.loadURL(base + '/');
+  // Some Windows GPU/session combinations never emit ready-to-show.
+  if (!smoke && !window.isVisible()) window.show();
+  if (!smoke) window.focus();
   if (development) { window.setTitle('知行 Learnflow · 开发测试版'); console.log('DESKTOP_DEV_READY'); }
   if (smoke) {
     await require('./smoke.cjs').run(window, { ...store, loadState: async () => learning.exportState() }, dataDirectory);
