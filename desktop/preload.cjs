@@ -6,10 +6,18 @@ async function invoke(channel, ...args) {
 }
 contextBridge.exposeInMainWorld('learnflowDesktop', Object.freeze({
   load: () => invoke('learnflow:load'),
-  saveState: value => invoke('learnflow:save-state', value),
+  getLesson: id => invoke('learnflow:get-lesson', id),
+  savePlan: value => invoke('learnflow:save-plan', value),
+  setActivePlan: id => invoke('learnflow:set-active-plan', id),
+  saveLesson: (id, value) => invoke('learnflow:save-lesson', id, value),
+  saveProgress: (id, value) => invoke('learnflow:save-progress', id, value),
+  saveReflection: (id, value) => invoke('learnflow:save-reflection', id, value),
+  appendChat: (id, question, answer) => invoke('learnflow:append-chat', id, question, answer),
+  saveNote: value => invoke('learnflow:save-note', value),
   saveSettings: value => invoke('learnflow:save-settings', value),
   request: (endpoint, data) => invoke('learnflow:request', endpoint, data),
   exportFile: (name, content) => invoke('learnflow:export', name, content),
+  exportBackup: () => invoke('learnflow:export-backup'),
   openDataFolder: () => invoke('learnflow:open-data'),
   importBackup: () => invoke('learnflow:import')
 }));

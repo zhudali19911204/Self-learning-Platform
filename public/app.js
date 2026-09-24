@@ -26,7 +26,7 @@ const icon = (name, cls = '') => `<svg class="icon ${cls}" viewBox="0 0 24 24" f
 const desktop = window.learnflowDesktop;
 let desktopSettings = null, dataDirectory = '', pendingSave = Promise.resolve();
 const key = 'learnflow.v1';
-const fresh = () => ({ version: 1, plans: [structuredClone(demoPlan)], active: demoPlan.id, lessons: {}, progress: {}, notes: [], reflections: {} });
+const fresh = () => ({ version: 1, plans: [structuredClone(demoPlan)], active: demoPlan.id, lessons: {}, progress: {}, notes: [], reflections: {}, chats: {} });
 let storageWarning = '';
 let state = fresh();
 try {
@@ -47,15 +47,19 @@ const percent = () => Math.round(completed() / plan().lessons.length * 100);
 const nextLesson = () => plan().lessons.find(l => !progress(l.id).completed) || plan().lessons[0];
 const contentFor = id => state.lessons[id] || demoLessons[id];
 const lessonById = id => state.plans.flatMap(p => p.lessons).find(l => l.id === id);
+const chatFor = id => state.chats?.[id] || [];
 function save() {
   if (storageWarning) return;
-  if (desktop) {
-    const operation = desktop.saveState(JSON.parse(JSON.stringify(state)));
-    pendingSave = operation.catch(error => { storageWarning = error.message; toast('本地保存失败：' + error.message); });
-    return pendingSave;
-  }
+  if (desktop) throw new Error('桌面数据必须按条目保存。');
   try { localStorage.setItem(key, JSON.stringify(state)); }
   catch { storageWarning = '浏览器存储不可用或已满。当前更改只保留在本次会话，请导出备份。'; toast(storageWarning); }
+}
+function persist(method, ...args) {
+  if (!desktop) return save();
+  if (storageWarning) return pendingSave;
+  const operation = pendingSave.then(() => desktop[method](...args));
+  pendingSave = operation.catch(error => { storageWarning = error.message; toast('本地保存失败：' + error.message); });
+  return pendingSave;
 }
 let toastTimer;
 function toast(message) { $('#toast').textContent = message; $('#toast').classList.add('visible'); clearTimeout(toastTimer); toastTimer = setTimeout(() => $('#toast').classList.remove('visible'), 4500); }
@@ -101,8 +105,18 @@ function routes() {
 function study() {
   const p = plan(); const meta = p.lessons.find(l => l.id === activeLesson) || nextLesson(); activeLesson = meta.id;
   const lesson = contentFor(meta.id), record = progress(meta.id);
-  return `<div class="study-top"><button class="text-button" data-page="routes">${icon('back')}返回学习路线</button>${pill(p.source === 'demo' ? '示例课程' : 'AI 生成 · 请核验重要知识', 'purple')}</div><div class="study-layout"><aside class="syllabus"><div class="syllabus-heading">课程目录 <span>${completed()}/${p.lessons.length}</span></div>${p.lessons.map((l, i) => `<button class="syllabus-item ${l.id === meta.id ? 'selected' : ''}" data-action="open-lesson" data-id="${l.id}"><span>${progress(l.id).completed ? icon('check') : String(i + 1).padStart(2, '0')}</span><strong>${escape(l.title)}</strong></button>`).join('')}<div class="syllabus-bottom">${icon('leaf')} 慢慢来，也是在前进。</div></aside><section class="lesson-content"><div class="eyebrow">LESSON ${String(p.lessons.indexOf(meta) + 1).padStart(2, '0')}</div><h1>${escape(meta.title)}</h1><p class="lesson-objective">${escape(meta.objective)}</p><div class="metadata">${icon('clock')}${meta.minutes} 分钟 <span>·</span>${escape(meta.tags.join(' / '))}</div><div class="tabs" role="tablist" aria-label="课程内容"><button role="tab" aria-selected="${lessonTab === 'read'}" class="${lessonTab === 'read' ? 'active' : ''}" data-action="lesson-tab" data-tab="read">${icon('book')}学习内容</button><button role="tab" aria-selected="${lessonTab === 'quiz'}" class="${lessonTab === 'quiz' ? 'active' : ''}" data-action="lesson-tab" data-tab="quiz">${icon('bolt')}随堂练习${record.completed ? ' ✓' : ''}</button><button role="tab" aria-selected="${lessonTab === 'notes'}" class="${lessonTab === 'notes' ? 'active' : ''}" data-action="lesson-tab" data-tab="notes">${icon('brain')}学习笔记</button></div>
-  ${!lesson ? `<div class="empty-state">${icon('spark')}<h3>为你展开这一课</h3><p>根据你的目标与基础，生成讲解、示例和随堂练习。</p>${button('生成课程内容', 'generate-lesson', 'primary', `data-id="${meta.id}"`, 'spark')}</div>` : lessonTab === 'read' ? `<div class="lesson-intro">${escape(lesson.intro)}</div>${lesson.sections.map(s => `<section class="reading-section"><h2>${escape(s.heading)}</h2><p>${escape(s.body)}</p></section>`).join('')}<div class="code-block"><div>具体示例 <span>阅读与推演</span></div><pre><code>${escape(lesson.example)}</code></pre></div><div class="challenge"><h3>${icon('bolt')}动手试一试</h3><p>${escape(lesson.challenge)}</p><small>请在你自己的工具或编程环境中完成。这里不执行代码。</small></div><div class="lesson-actions"><span>理解之后，用练习检验一下。</span>${button('开始随堂练习', 'quiz', 'primary')}</div>` : lessonTab === 'quiz' ? quiz(meta, lesson) : `<section class="reflection"><h2>用自己的话，重新理解一次。</h2><p>哪些内容让你豁然开朗？你会把它用在哪里？</p><label class="sr-only" for="reflection">我的学习心得</label><textarea id="reflection" data-reflection="${meta.id}" maxlength="5000" placeholder="我的理解、实践结果，或仍然困惑的问题……">${escape(state.reflections[meta.id] || '')}</textarea><span class="field-hint">自动保存在${desktop ? '本机' : '当前浏览器'} · 最多 5000 字</span><div class="takeaways"><h3>本课关键收获</h3>${lesson.takeaways.map(t => `<p>${icon('check')}${escape(t)}</p>`).join('')}</div>${record.completed ? button(state.notes.some(n => n.lessonId === meta.id) ? '查看本课知识卡片' : '沉淀到我的 Wiki', 'create-note', 'primary', `data-id="${meta.id}"`, 'brain') : `<div class="notice">通过随堂练习后，即可将本课和心得整理为 Wiki 知识卡片。</div>${button('去完成练习', 'quiz', 'secondary')}`}</section>`}</section></div>`;
+  return `<div class="study-top"><button class="text-button" data-page="routes">${icon('back')}返回学习路线</button>${pill(p.source === 'demo' ? '示例课程' : 'AI 生成 · 请核验重要知识', 'purple')}</div>
+  <div class="study-layout"><aside class="syllabus"><div class="syllabus-heading">课程目录 <span>${completed()}/${p.lessons.length}</span></div>${p.lessons.map((l, i) => `<button class="syllabus-item ${l.id === meta.id ? 'selected' : ''}" data-action="open-lesson" data-id="${l.id}"><span>${progress(l.id).completed ? icon('check') : String(i + 1).padStart(2, '0')}</span><strong>${escape(l.title)}</strong></button>`).join('')}<div class="syllabus-bottom">${icon('leaf')} 慢慢来，也是在前进。</div></aside>
+  <section class="lesson-content"><div class="eyebrow">LESSON ${String(p.lessons.indexOf(meta) + 1).padStart(2, '0')}</div><h1>${escape(meta.title)}</h1><p class="lesson-objective">${escape(meta.objective)}</p><div class="metadata">${icon('clock')}${meta.minutes} 分钟 <span>·</span>${escape(meta.tags.join(' / '))}</div>
+  <div class="tabs" role="tablist" aria-label="课程内容">${[['read', 'book', '学习内容'], ['quiz', 'bolt', `随堂练习${record.completed ? ' ✓' : ''}`], ['chat', 'spark', 'AI 答疑'], ['notes', 'brain', '学习笔记']].map(([tab, symbol, label]) => `<button role="tab" aria-selected="${lessonTab === tab}" class="${lessonTab === tab ? 'active' : ''}" data-action="lesson-tab" data-tab="${tab}">${icon(symbol)}${label}</button>`).join('')}</div>
+  ${!lesson ? `<div class="empty-state">${icon('spark')}<h3>为你展开这一课</h3><p>根据你的目标与基础，生成讲解、示例和随堂练习。</p>${button('生成课程内容', 'generate-lesson', 'primary', `data-id="${meta.id}"`, 'spark')}</div>` : lessonTab === 'read' ? `<div class="lesson-intro">${escape(lesson.intro)}</div>${lesson.sections.map(s => `<section class="reading-section"><h2>${escape(s.heading)}</h2><p>${escape(s.body)}</p></section>`).join('')}<div class="code-block"><div>具体示例 <span>阅读与推演</span></div><pre><code>${escape(lesson.example)}</code></pre></div><div class="challenge"><h3>${icon('bolt')}动手试一试</h3><p>${escape(lesson.challenge)}</p><small>请在你自己的工具或编程环境中完成。这里不执行代码。</small></div><div class="lesson-actions"><span>理解之后，用练习检验一下。</span>${button('开始随堂练习', 'quiz', 'primary')}</div>` : lessonTab === 'quiz' ? quiz(meta, lesson) : lessonTab === 'chat' ? studyChat(meta) : `<section class="reflection"><h2>用自己的话，重新理解一次。</h2><p>哪些内容让你豁然开朗？你会把它用在哪里？</p><label class="sr-only" for="reflection">我的学习心得</label><textarea id="reflection" data-reflection="${meta.id}" maxlength="5000" placeholder="我的理解、实践结果，或仍然困惑的问题……">${escape(state.reflections[meta.id] || '')}</textarea><span class="field-hint">自动保存在${desktop ? '本机' : '当前浏览器'} · 最多 5000 字</span><div class="takeaways"><h3>本课关键收获</h3>${lesson.takeaways.map(t => `<p>${icon('check')}${escape(t)}</p>`).join('')}</div>${record.completed ? button(state.notes.some(n => n.lessonId === meta.id) ? '查看本课知识卡片' : '沉淀到我的 Wiki', 'create-note', 'primary', `data-id="${meta.id}"`, 'brain') : `<div class="notice">通过随堂练习后，即可将本课和心得整理为 Wiki 知识卡片。</div>${button('去完成练习', 'quiz', 'secondary')}`}</section>`}</section></div>`;
+}
+function studyChat(meta) {
+  const messages = chatFor(meta.id);
+  return `<section class="study-chat"><div class="study-chat-heading"><span class="float-icon lavender">${icon('spark')}</span><div><h2>学习中遇到疑问？</h2><p>AI 会参考《${escape(meta.title)}》的讲解与最近对话，帮你理解概念和练习思路。</p></div></div>
+    <div class="chat-history" aria-label="本课答疑记录">${messages.length ? messages.map(message => `<div class="chat-message ${message.role === 'user' ? 'from-user' : 'from-ai'}"><strong>${message.role === 'user' ? '你' : 'AI 学习助手'}</strong><p>${escape(message.content)}</p></div>`).join('') : '<p class="chat-empty">例如：“这一步为什么这样做？”或“能再举一个例子吗？”</p>'}</div>
+    ${status.mode === 'ai' ? `<form id="lesson-ask-form" data-id="${meta.id}"><label class="sr-only" for="lesson-question">向 AI 提问</label><textarea id="lesson-question" name="question" required maxlength="1000" placeholder="输入你对本课的疑问…"></textarea><div class="chat-compose"><small>对话保存在${desktop ? '本机' : '当前浏览器'}，回答可能有误，请结合课程核对。</small><button class="btn primary" type="submit">发送问题 ${icon('arrow')}</button></div></form>` : `<div class="notice">先在设置中连接 AI 模型，即可就本课内容提问。</div>`}
+    <p id="lesson-ask-error" class="inline-error" role="alert"></p></section>`;
 }
 function quiz(meta, lesson) {
   const record = progress(meta.id);
@@ -179,7 +193,16 @@ function planner() {
   $('#planner').innerHTML = `<div class="modal-heading"><span class="float-icon lavender">${icon('spark')}</span><button class="icon-button" data-action="close-planner" aria-label="关闭">${icon('close')}</button></div><div class="eyebrow">START WITH CURIOSITY</div><h2 id="planner-title">你想学会什么？</h2><p>给自己一个目标，剩下的路，我们一起规划。</p><form id="plan-form"><label for="goal">我的学习目标</label><textarea id="goal" name="goal" maxlength="1000" required placeholder="例如：我想学 Python，在两周内做出一个自动整理文件的小工具。"></textarea><div class="form-row"><div><label for="level">目前的基础</label><select id="level" name="level"><option>零基础</option><option>有一点基础</option><option>希望进阶</option></select></div><div><label for="daily">每天投入</label><select id="daily" name="daily"><option value="15">15 分钟</option><option value="25" selected>25 分钟</option><option value="45">45 分钟</option><option value="60">60 分钟</option></select></div><div><label for="days">计划周期</label><select id="days" name="days"><option value="7">1 周</option><option value="14" selected>2 周</option><option value="30">1 个月</option><option value="90">3 个月</option></select></div></div>${status.mode !== 'ai' ? '<div class="notice">当前未配置 AI。你可以先体验完整的 Python 示例课程；自定义路线需配置云端或本地模型。</div>' : '<div class="notice">AI 会根据目标与可投入时间规划课程，生成可能需要一两分钟。</div>'}<p id="plan-error" class="inline-error" role="alert"></p><button class="btn primary full" type="submit" ${status.mode !== 'ai' ? 'disabled' : ''}>生成我的学习路线 ${icon('spark')}</button>${status.mode !== 'ai' ? button('体验 Python 示例课程', 'demo', 'secondary full', '', 'arrow') : ''}</form>`;
   $('#planner').showModal();
 }
-async function openLesson(id, tab = 'read') { activeLesson = id; lessonTab = tab; navigate('study'); }
+async function openLesson(id, tab = 'read') {
+  if (desktop) {
+    await pendingSave;
+    const detail = await desktop.getLesson(id);
+    state.lessons = detail.lesson ? { [id]: detail.lesson } : {};
+    state.reflections = { [id]: detail.reflection };
+    state.chats = { [id]: detail.chats };
+  }
+  activeLesson = id; lessonTab = tab; navigate('study');
+}
 async function createNote(id) {
   const existing = state.notes.find(n => n.lessonId === id);
   if (existing) { activeNote = existing.id; navigate('wiki'); return; }
@@ -191,7 +214,7 @@ async function createNote(id) {
   else result = { summary: lesson.takeaways[0], content: `核心概念\n\n${lesson.takeaways.map(t => '• ' + t).join('\n')}\n\n详细解释\n\n${lesson.sections.map(s => s.heading + '\n' + s.body).join('\n\n')}\n\n具体示例\n\n${lesson.example}\n\n实践任务\n\n${lesson.challenge}\n\n易错点与解析\n\n${lesson.questions.map(q => q.prompt + '\n' + q.explanation).join('\n\n')}\n\n我的心得（个人记录，未经核验）\n\n${reflection || '还没有记录心得，可在这里补充。'}` };
   if (state.notes.some(n => n.lessonId === id)) return;
   const n = { id: crypto.randomUUID(), lessonId: id, courseTitle: p.title, title: meta.title, tags: [...meta.tags], source: p.source, updated: Date.now(), ...result };
-  state.notes.push(n); save(); activeNote = n.id; navigate('wiki'); toast('已生成知识卡片，可以继续补充你的理解。');
+  state.notes.push(n); persist('saveNote', n); activeNote = n.id; navigate('wiki'); toast('已生成知识卡片，可以继续补充你的理解。');
 }
 async function download(name, content, type) {
   if (desktop) { await pendingSave; const saved = await desktop.exportFile(name, content); if (saved) toast('文件已导出。'); return; }
@@ -229,25 +252,25 @@ async function action(name, element) {
   if (name === 'close-planner') return $('#planner').close();
   if (['routes', 'practice'].includes(name)) return navigate(name);
   if (name === 'start') return openLesson(nextLesson().id);
-  if (name === 'demo') { $('#planner').close(); state.active = demoPlan.id; save(); return navigate('routes'); }
-  if (name === 'switch-plan') { state.active = id; activeLesson = null; save(); return render(); }
+  if (name === 'demo') { $('#planner').close(); state.active = demoPlan.id; persist('setActivePlan', demoPlan.id); return navigate('routes'); }
+  if (name === 'switch-plan') { state.active = id; activeLesson = null; persist('setActivePlan', id); return render(); }
   if (name === 'open-lesson') return openLesson(id);
   if (name === 'open-quiz') return openLesson(id, 'quiz');
   if (name === 'lesson-tab') { lessonTab = element.dataset.tab; return render(); }
   if (name === 'quiz' || name === 'notes-tab') { lessonTab = name === 'quiz' ? 'quiz' : 'notes'; render(); return; }
-  if (name === 'generate-lesson') { const meta = lessonById(id), p = state.plans.find(p => p.lessons.some(l => l.id === id)); state.lessons[id] = await api('lesson', { goal: p.goal, level: p.level, title: meta.title, objective: meta.objective }); save(); render(); return; }
+  if (name === 'generate-lesson') { const meta = lessonById(id), p = state.plans.find(p => p.lessons.some(l => l.id === id)); state.lessons[id] = await api('lesson', { goal: p.goal, level: p.level, title: meta.title, objective: meta.objective }); persist('saveLesson', id, state.lessons[id]); render(); return; }
   if (name === 'create-note') return createNote(id);
   if (name === 'open-note') { activeNote = id; return navigate('wiki'); }
   if (name === 'close-note') { activeNote = null; return render(); }
-  if (name === 'source-lesson') { const p = state.plans.find(p => p.lessons.some(l => l.id === id)); if (p) { state.active = p.id; save(); return openLesson(id); } }
-  if (name === 'export-data') return download('learnflow-backup.json', JSON.stringify(state, null, 2), 'application/json');
+  if (name === 'source-lesson') { const p = state.plans.find(p => p.lessons.some(l => l.id === id)); if (p) { state.active = p.id; persist('setActivePlan', p.id); return openLesson(id); } }
+  if (name === 'export-data') { if (desktop) { await pendingSave; if (await desktop.exportBackup()) toast('完整学习备份已导出。'); return; } return download('learnflow-backup.json', JSON.stringify(state, null, 2), 'application/json'); }
   if (name === 'export-wiki') return download('我的知识库.md', state.notes.map(markdown).join('\n---\n\n'), 'text/markdown;charset=utf-8');
   if (name === 'export-note') { const n = state.notes.find(n => n.id === id); return download(n.title.replace(/[<>:"/\\|?*]/g, '-') + '.md', markdown(n), 'text/markdown;charset=utf-8'); }
 }
 document.addEventListener('click', async event => {
   const element = event.target.closest('[data-page], [data-action]'); if (!element || element.disabled) return;
   event.preventDefault();
-  if (element.dataset.page) { activeNote = null; return navigate(element.dataset.page); }
+  if (element.dataset.page) { activeNote = null; return element.dataset.page === 'study' ? openLesson(activeLesson || nextLesson().id, lessonTab) : navigate(element.dataset.page); }
   const loading = ['generate-lesson', 'create-note', 'test-connection'].includes(element.dataset.action);
   const html = element.innerHTML;
   try { if (loading) { element.disabled = true; element.innerHTML = '<span class="spinner"></span>正在整理，请稍候…'; } await action(element.dataset.action, element); }
@@ -263,7 +286,7 @@ document.addEventListener('input', event => {
     if ($('#connection-result')) $('#connection-result').textContent = connectionResult;
     const test = $('[data-action="test-connection"]'); if (test) test.disabled = true;
   }
-  if (event.target.dataset.reflection) { state.reflections[event.target.dataset.reflection] = event.target.value; save(); }
+  if (event.target.dataset.reflection) { state.reflections[event.target.dataset.reflection] = event.target.value; persist('saveReflection', event.target.dataset.reflection, event.target.value); }
   if (event.target.id === 'wiki-search') { query = event.target.value; $('#note-results').innerHTML = noteList(state.notes.filter(n => `${n.title} ${n.content} ${n.tags.join(' ')}`.toLowerCase().includes(query.toLowerCase()))); }
 });
 document.addEventListener('change', event => {
@@ -304,18 +327,28 @@ document.addEventListener('submit', async event => {
     } else if (form.id === 'plan-form') {
       $('#plan-error').textContent = ''; submit.innerHTML = '<span class="spinner"></span>正在规划学习路线…';
       const p = await api('plan', { goal: values.get('goal').trim(), level: values.get('level'), daily: Number(values.get('daily')), days: Number(values.get('days')) });
-      state.plans.push(p); state.active = p.id; save(); $('#planner').close(); navigate('routes'); toast('学习路线已生成，从第一步开始吧。');
+      state.plans.push(p); state.active = p.id; persist('savePlan', p); $('#planner').close(); navigate('routes'); toast('学习路线已生成，从第一步开始吧。');
     } else if (form.id === 'quiz-form') {
       const id = form.dataset.id, lesson = contentFor(id), answers = lesson.questions.map((q, i) => Number(values.get('q' + i)));
       const correct = lesson.questions.filter((q, i) => q.answer === answers[i]).length;
       const score = Math.round(correct / lesson.questions.length * 100), previous = progress(id);
       state.progress[id] = { ...previous, attempts: (previous.attempts || 0) + 1, lastScore: score, bestScore: Math.max(previous.bestScore || 0, score), lastAnswers: answers, completed: previous.completed || correct === lesson.questions.length, updated: Date.now() };
-      save(); render(); $('.quiz-result')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      persist('saveProgress', id, state.progress[id]); render(); $('.quiz-result')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    } else if (form.id === 'lesson-ask-form') {
+      const id = form.dataset.id, meta = lessonById(id), lesson = contentFor(id), question = values.get('question')?.trim();
+      if (status.mode !== 'ai' || !meta || !lesson || !question || question.length > 1000) throw new Error('请先连接 AI 模型，并输入本课问题。');
+      submit.innerHTML = '<span class="spinner"></span>AI 正在回答…';
+      const history = chatFor(id);
+      const reply = await api('lesson-ask', { title: meta.title, objective: meta.objective, lesson, question, history: history.slice(-12) });
+      state.chats ||= {};
+      state.chats[id] = [...history, { role: 'user', content: question }, { role: 'assistant', content: reply.answer }].slice(-20);
+      persist('appendChat', id, question, reply.answer);
+      if (page === 'study' && activeLesson === id && lessonTab === 'chat') { render(); $('.chat-history')?.scrollIntoView({ behavior: 'smooth', block: 'end' }); }
     } else if (form.id === 'note-form') {
       const n = state.notes.find(n => n.id === form.dataset.id), title = values.get('title').trim(), summary = values.get('summary').trim(), content = values.get('content').trim();
       const tags = [...new Set(values.get('tags').split(/[,，]/).map(t => t.trim()).filter(Boolean))].slice(0, 6);
       if (!title || !summary || !content || !tags.length) throw new Error('请填写标题、摘要、正文和至少一个标签。');
-      Object.assign(n, { title, summary, content, tags, updated: Date.now() }); save(); toast('知识卡片已保存。');
+      Object.assign(n, { title, summary, content, tags, updated: Date.now() }); persist('saveNote', n); toast('知识卡片已保存。');
     } else if (form.id === 'ask-form') {
       submit.innerHTML = '<span class="spinner"></span>正在阅读你的知识…'; const question = values.get('question').trim();
       if (!question) throw new Error('请输入问题。');
@@ -327,7 +360,7 @@ document.addEventListener('submit', async event => {
       }
       if ($('#wiki-answer')) $('#wiki-answer').innerHTML = answerHTML();
     }
-  } catch (e) { if (form.id === 'desktop-settings-form' && $('#settings-error')) $('#settings-error').textContent = e.message; else if (form.id === 'plan-form' && $('#plan-error')) $('#plan-error').textContent = e.message; else toast(e.message); }
+  } catch (e) { if (form.id === 'desktop-settings-form' && $('#settings-error')) $('#settings-error').textContent = e.message; else if (form.id === 'plan-form' && $('#plan-error')) $('#plan-error').textContent = e.message; else if (form.id === 'lesson-ask-form' && $('#lesson-ask-error')) $('#lesson-ask-error').textContent = e.message; else toast(e.message); }
   finally { if (submit.isConnected) { submit.disabled = form.id === 'plan-form' && status.mode !== 'ai'; submit.innerHTML = label; } }
 });
 if (desktop) {

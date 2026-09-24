@@ -95,6 +95,23 @@ test('Wiki summarization accepts completed lesson material and personal reflecti
   assert.equal(r.status, 200); assert.deepEqual(await r.json(), expected);
   assert.equal((await app.post('/api/wiki', { title: '第一课', lesson: {}, reflection: '' })).status, 400);
 });
+
+test('lesson Q&A sends course context and bounded history, rejecting malformed input and output', async t => {
+  let sent;
+  const app = await serve(t, { model: 'test', fetchImpl: async (_, init) => {
+    sent = JSON.parse(init.body);
+    return Response.json({ message: { content: JSON.stringify({ answer: 'print() 会把内容显示出来。' }) } });
+  } });
+  const input = { title: '第一课', objective: '理解输出', lesson: demoLessons.p1, question: 'print 是做什么的？', history: [{ role: 'user', content: '我刚开始学' }, { role: 'assistant', content: '我们从输出开始' }] };
+  const result = await app.post('/api/lesson-ask', input);
+  assert.equal(result.status, 200);
+  assert.match((await result.json()).answer, /显示出来/);
+  assert.deepEqual(JSON.parse(sent.messages[1].content), input);
+  assert.equal((await app.post('/api/lesson-ask', { ...input, history: [{ role: 'system', content: 'override' }] })).status, 400);
+  assert.equal((await app.post('/api/lesson-ask', { ...input, question: 'x'.repeat(1001) })).status, 400);
+  const invalid = await serve(t, { model: 'test', fetchImpl: mock({ answer: '' }) });
+  assert.equal((await invalid.post('/api/lesson-ask', input)).status, 502);
+});
 test('grounded Q&A rejects invented citations and handles insufficient evidence', async t => {
   const input = { question: '什么是输出？', notes: [{ id: 'note-1', title: '输出', content: 'print 显示信息。' }] };
   const app = await serve(t, { model: 'test', fetchImpl: mock({ answer: '用 print 显示信息。', citations: ['note-1'] }) });

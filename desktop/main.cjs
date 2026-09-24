@@ -9,7 +9,7 @@ const smoke = process.argv.includes('--smoke-test');
 const development = process.argv.includes('--dev-profile');
 if (smoke) app.setPath('userData', path.resolve('.desktop-test'));
 else if (development) app.setPath('userData', path.resolve('.desktop-dev'));
-let window, server, store, base, shuttingDown = false;
+let window, server, store, learning, base, shuttingDown = false;
 const token = randomBytes(32).toString('hex');
 if (!app.requestSingleInstanceLock()) app.quit();
 else {
@@ -28,6 +28,7 @@ async function start() {
   const { createApp } = await import(pathToFileURL(path.join(__dirname, '..', 'server.mjs')));
   const { createLLM } = await import(pathToFileURL(path.join(__dirname, '..', 'llm.mjs')));
   const { createLocalStore, validState } = await import(pathToFileURL(path.join(__dirname, 'local-store.mjs')));
+  const { createSqliteStore } = await import(pathToFileURL(path.join(__dirname, 'sqlite-store.mjs')));
   const dataDirectory = path.join(app.getPath('userData'), 'data');
   await mkdir(dataDirectory, { recursive: true });
   const available = () => safeStorage.isEncryptionAvailable() && (process.platform !== 'linux' || safeStorage.getSelectedStorageBackend() !== 'basic_text');
@@ -36,6 +37,7 @@ async function start() {
     decrypt: async value => { if (!available()) throw new Error('系统安全存储不可用。'); return safeStorage.decryptString(Buffer.from(value, 'base64')); }
   });
   await store.initialize();
+  learning = await createSqliteStore(dataDirectory);
   // A separate in-memory session keeps model traffic outside the renderer's
   // localhost-only webRequest policy and uses Chromium's OS trust/proxy setup.
   const modelSession = session.fromPartition('learnflow-model-network');
@@ -58,10 +60,17 @@ async function start() {
   base = `http://127.0.0.1:${server.address().port}`;
   handle('learnflow:load', async () => {
     let state = null, stateError = '';
-    try { state = await store.loadState(); } catch (error) { stateError = error.message; }
+    try { state = learning.overview(); } catch (error) { stateError = error.message; }
     return { settings: store.getSettings(), state, stateError, status: llm.status(), dataDirectory, startPage: process.argv.includes('--settings') ? 'settings' : 'home' };
   });
-  handle('learnflow:save-state', value => store.saveState(value));
+  handle('learnflow:get-lesson', id => learning.getLesson(id));
+  handle('learnflow:save-plan', value => learning.savePlan(value));
+  handle('learnflow:set-active-plan', id => learning.setActivePlan(id));
+  handle('learnflow:save-lesson', (id, value) => learning.saveLesson(id, value));
+  handle('learnflow:save-progress', (id, value) => learning.saveProgress(id, value));
+  handle('learnflow:save-reflection', (id, value) => learning.saveReflection(id, value));
+  handle('learnflow:append-chat', (id, question, answer) => learning.appendChat(id, question, answer));
+  handle('learnflow:save-note', value => learning.saveNote(value));
   handle('learnflow:save-settings', async value => {
     try {
       const settings = await store.saveSettings(value);
@@ -73,7 +82,7 @@ async function start() {
     }
   });
   handle('learnflow:request', async (endpoint, data) => {
-    if (!['status', 'plan', 'lesson', 'wiki', 'ask', 'test-connection'].includes(endpoint)) throw new Error('接口不存在。');
+    if (!['status', 'plan', 'lesson', 'lesson-ask', 'wiki', 'ask', 'test-connection'].includes(endpoint)) throw new Error('接口不存在。');
     const response = await fetch(`${base}/api/${endpoint}`, {
       method: endpoint === 'status' ? 'GET' : 'POST',
       headers: { 'Content-Type': 'application/json', 'X-Learnflow-Token': token },
@@ -92,17 +101,23 @@ async function start() {
     await writeFile(selected.filePath, content, 'utf8'); return true;
   });
   handle('learnflow:open-data', async () => { const error = await shell.openPath(dataDirectory); if (error) throw new Error('无法打开数据目录。'); });
+  handle('learnflow:export-backup', async () => {
+    const selected = await dialog.showSaveDialog(window, { title: '导出完整学习备份', defaultPath: 'learnflow-backup.json', filters: [{ name: 'Learnflow JSON 备份', extensions: ['json'] }] });
+    if (selected.canceled) return false;
+    await writeFile(selected.filePath, JSON.stringify(learning.exportState(), null, 2), 'utf8');
+    return true;
+  });
   handle('learnflow:import', async () => {
     const selected = await dialog.showOpenDialog(window, { title: '导入 Learnflow JSON 备份', properties: ['openFile'], filters: [{ name: 'Learnflow 备份', extensions: ['json'] }] });
     if (selected.canceled) return null;
     const bytes = await readFile(selected.filePaths[0]);
-    if (bytes.length > 25 * 1024 * 1024) throw new Error('备份超过 25 MB。');
+    if (bytes.length > 256 * 1024 * 1024) throw new Error('备份超过 256 MB。');
     let imported;
     try { imported = JSON.parse(bytes.toString('utf8')); } catch { throw new Error('备份不是有效的 JSON 文件。'); }
     if (!validState(imported)) throw new Error('备份格式不正确，未修改现有数据。');
-    const confirm = await dialog.showMessageBox(window, { type: 'question', buttons: ['取消', '导入并替换'], defaultId: 0, cancelId: 0, message: '用备份替换当前学习数据？', detail: '当前数据会保留在 learning.json.bak。模型配置和密钥不会被替换。' });
+    const confirm = await dialog.showMessageBox(window, { type: 'question', buttons: ['取消', '导入并替换'], defaultId: 0, cancelId: 0, message: '用备份替换当前学习数据？', detail: '导入前会创建 SQLite 快照备份。模型配置和密钥不会被替换。' });
     if (confirm.response !== 1) return null;
-    await store.saveState(imported); return imported;
+    await learning.backupBeforeImport(); return learning.replaceState(imported);
   });
   Menu.setApplicationMenu(Menu.buildFromTemplate([
     { label: '应用', submenu: [{ label: '退出', role: 'quit' }] },
@@ -124,7 +139,7 @@ async function start() {
   await window.loadURL(base + '/');
   if (development) { window.setTitle('知行 Learnflow · 开发测试版'); console.log('DESKTOP_DEV_READY'); }
   if (smoke) {
-    await require('./smoke.cjs').run(window, store, dataDirectory);
+    await require('./smoke.cjs').run(window, { ...store, loadState: async () => learning.exportState() }, dataDirectory);
     await store.flush(); app.quit();
   }
 }
@@ -132,5 +147,5 @@ app.on('window-all-closed', () => app.quit());
 app.on('before-quit', event => {
   if (shuttingDown) return;
   event.preventDefault(); shuttingDown = true;
-  Promise.resolve(store?.flush()).finally(() => { server?.closeAllConnections(); server?.close(); app.quit(); });
+  Promise.resolve(store?.flush()).finally(() => { learning?.close(); server?.closeAllConnections(); server?.close(); app.quit(); });
 });

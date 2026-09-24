@@ -54,6 +54,9 @@ export function createApp(config = {}) {
         } else if (path === '/api/wiki') {
           if (!str(data.title, 160) || !validLesson(data.lesson) || typeof data.reflection !== 'string' || data.reflection.length > 5000) fail('课程或学习笔记不完整。');
           result = await generate('将已学课程整理为个人 Wiki，保留核心概念、实际例子、易错点、适用边界与用户心得。用户心得中的错误要指出，不要把它当成正确知识。格式：{"summary":"一句话摘要","content":"完整纯文本知识笔记"}。', data, v => v && str(v.summary, 500) && str(v.content));
+        } else if (path === '/api/lesson-ask') {
+          if (!str(data.title, 160) || !str(data.objective, 1000) || !validLesson(data.lesson) || !str(data.question, 1000) || !Array.isArray(data.history) || data.history.length > 12 || !data.history.every(item => item && ['user', 'assistant'].includes(item.role) && str(item.content, item.role === 'user' ? 1000 : 12000))) fail('请提供当前课程、问题和最多 12 条有效对话记录。');
+          result = await generate('你正在辅导用户学习当前课程。根据 lesson 的讲解、示例、练习和上下文 history 回答当前 question；可以用通用知识补充，但要区分课程已有内容与补充说明。先直接回答，再用简短例子或思路帮助理解。若用户问练习题，优先提示解题思路，避免直接代答。不要编造已经执行的操作。格式：{"answer":"清晰、具体的中文答复"}。', data, v => v && str(v.answer, 12000));
         } else if (path === '/api/ask') {
           if (!str(data.question, 1000) || !Array.isArray(data.notes) || data.notes.length > 30 || !data.notes.length || !data.notes.every(n => str(n.id, 160) && str(n.title, 160) && str(n.content))) fail('请提供问题和最多 30 篇有效知识笔记。');
           result = await generate('只根据提供的 notes 回答问题。资料不足就明确说明不足，不得补充无依据的知识。返回实际支撑答案的笔记 id；引用只能使用所给 id。格式：{"answer":"回答","citations":["笔记id"]}。', data, v => v && str(v.answer) && Array.isArray(v.citations) && v.citations.every(id => data.notes.some(n => n.id === id)));

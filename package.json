@@ -1,6 +1,6 @@
 {
   "name": "learnflow",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "main": "desktop/main.cjs",
   "private": true,
   "type": "module",
@@ -14,7 +14,7 @@
     "start": "node --env-file-if-exists=.env server.mjs",
     "test": "node --test"
   },
-  "engines": { "node": ">=22.12" },
+  "engines": { "node": ">=22.16" },
   "devDependencies": {
     "electron": "44.4.5",
     "electron-builder": "26.15.3"

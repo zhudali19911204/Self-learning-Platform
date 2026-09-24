@@ -15,6 +15,7 @@ export function validState(v) {
   const planIds = v.plans.map(p => p.id), lessonIds = v.plans.flatMap(p => p.lessons.map(l => l.id));
   if (new Set(planIds).size !== planIds.length || new Set(lessonIds).size !== lessonIds.length || !planIds.includes(v.active)) return false;
   if (!dict(v.lessons, validLesson) || !dict(v.reflections, s => string(s, 5000))) return false;
+  if (v.chats !== undefined && !dict(v.chats, messages => Array.isArray(messages) && messages.length <= 20 && messages.every(message => object(message) && ['user', 'assistant'].includes(message.role) && string(message.content, message.role === 'user' ? 1000 : 12000)))) return false;
   if (!dict(v.progress, p => object(p) && typeof p.completed === 'boolean' && Number.isInteger(p.attempts) && p.attempts >= 0 && [p.lastScore, p.bestScore].every(n => Number.isInteger(n) && n >= 0 && n <= 100) && Array.isArray(p.lastAnswers) && p.lastAnswers.length <= 5 && p.lastAnswers.every(a => Number.isInteger(a) && a >= 0 && a < 4))) return false;
   if (!Array.isArray(v.notes) || !v.notes.every(n => object(n) && id(n.id) && id(n.lessonId) && lessonIds.includes(n.lessonId) && string(n.title, 160) && string(n.summary, 500) && string(n.content) && string(n.courseTitle, 160) && ['ai', 'demo'].includes(n.source) && Number.isFinite(n.updated) && Array.isArray(n.tags) && n.tags.length <= 6 && n.tags.every(t => string(t, 200)))) return false;
   return new Set(v.notes.map(n => n.id)).size === v.notes.length;
@@ -54,7 +55,7 @@ export function normalizeSettings(input, previous = defaults) {
 export function createLocalStore(directory, secrets) {
   let queue = Promise.resolve();
   let settings = { ...defaults, apiKey: '' };
-  let settingsError = '', stateError = '';
+  let settingsError = '';
   const enqueue = task => { const operation = queue.then(task); queue = operation.catch(() => {}); return operation; };
   async function read(name) {
     try {
@@ -99,16 +100,6 @@ export function createLocalStore(directory, secrets) {
         settings = next;
         return safeSettings();
       });
-    },
-    async loadState() {
-      await queue;
-      try { const value = await read('learning.json'); if (value && !validState(value)) throw new Error(); return value; }
-      catch { stateError = '本地学习数据无法读取。原文件已保留，请检查 learning.json 及其 .bak 备份；本次会话不会覆盖旧文件。'; throw new Error(stateError); }
-    },
-    saveState(value) {
-      if (!validState(value) || Buffer.byteLength(JSON.stringify(value), 'utf8') > 25 * 1024 * 1024) return Promise.reject(new Error('学习数据格式不正确或超过 25 MB。'));
-      const snapshot = structuredClone(value);
-      return enqueue(async () => { if (stateError) throw new Error(stateError); await atomic('learning.json', snapshot); });
     },
     flush: () => queue
   };

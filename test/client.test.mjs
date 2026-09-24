@@ -86,6 +86,30 @@ test('offline Wiki retrieval finds relevant notes and labels results honestly', 
   assert.equal(app.run('answer.citations.length'), 0);
 });
 
+test('lesson Q&A keeps per-lesson context across turns, persists locally and escapes answers', async () => {
+  const requests = [];
+  const app = harness(undefined, async (url, init) => {
+    if (url === '/api/status') return { ok: true, json: async () => ({ mode: 'ai', timeoutMs: 120000 }) };
+    requests.push({ url, body: JSON.parse(init.body) });
+    return { ok: true, json: async () => ({ answer: requests.length === 1 ? '先看 print 的输入。' : '<script>bad</script> 再看输出。' }) };
+  });
+  app.run("status = { mode: 'ai' }; openLesson('p1', 'chat')");
+  assert.match(app.node('#app').innerHTML, /AI 答疑/);
+  await app.submit('lesson-ask-form', { question: 'print 是什么？' }, 'p1');
+  await app.submit('lesson-ask-form', { question: '能再举个例子吗？' }, 'p1');
+  assert.equal(requests.length, 2);
+  assert.equal(requests[0].url, '/api/lesson-ask');
+  assert.equal(requests[0].body.lesson.intro, demoLessons.p1.intro);
+  assert.equal(requests[1].body.history.length, 2);
+  assert.equal(requests[1].body.history[1].content, '先看 print 的输入。');
+  assert.equal(app.run('state.chats.p1.length'), 4);
+  assert.ok(!app.node('#app').innerHTML.includes('<script>bad</script>'));
+  const restored = harness(app.storage.get('learnflow.v1'));
+  restored.run("openLesson('p1', 'chat')");
+  assert.equal(restored.run('chatFor("p1").length'), 4);
+  assert.equal(restored.run('chatFor("p2").length'), 0);
+});
+
 test('settings display cloud status, test connection and keep failures visible', async () => {
   let fail = false;
   const requests = [];
