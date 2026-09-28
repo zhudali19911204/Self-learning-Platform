@@ -325,7 +325,7 @@ async function action(name, element) {
   if (name === 'quiz' || name === 'notes-tab' || name === 'read-tab') { lessonTab = name === 'quiz' ? 'quiz' : name === 'read-tab' ? 'read' : 'notes'; render(); return; }
   if (name === 'generate-lesson') {
     const meta = lessonById(id), p = state.plans.find(p => p.lessons.some(l => l.id === id));
-    const outline = await api('lesson-outline', { goal: p.goal, level: p.level, title: meta.title, objective: meta.objective });
+    const outline = await api('lesson-outline', { goal: p.goal, level: p.level, title: meta.title, objective: meta.objective, route: p.lessons.map(({ title, objective }) => ({ title, objective })), lessonPosition: p.lessons.findIndex(lesson => lesson.id === id) + 1 });
     if (!validOutline(outline)) throw new Error('模型返回的大纲格式不正确，请重试。');
     const course = desktop ? await desktop.saveOutline(id, outline) : { intro: outline.intro, blocks: outline.blocks.map(block => ({ id: crypto.randomUUID(), ...block, content: null })) };
     state.blockCourses ||= {}; state.blockCourses[id] = course; if (!desktop) save(); render(); return;

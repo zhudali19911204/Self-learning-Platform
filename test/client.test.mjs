@@ -61,10 +61,10 @@ test('learning loop: incorrect answers, retry, completion, Wiki creation, edit a
 });
 test('AI course expands from outline to independently generated blocks', async () => {
   const outline = { intro: '循序学习', blocks: [{ type: 'reading', title: '概念', objective: '理解' }, { type: 'quiz', title: '练习', objective: '检验' }] };
-  const calls = [];
+  const calls = [], payloads = [];
   const app = harness(null, async (url, options) => {
     if (url === '/api/status') return { ok: true, json: async () => ({ mode: 'ai' }) };
-    calls.push(url);
+    calls.push(url); payloads.push(JSON.parse(options.body));
     return { ok: true, json: async () => url.endsWith('lesson-outline') ? outline : { text: '这一块的正文' } };
   });
   app.run("state.plans[0].source = 'ai'; state.plans[0].lessons[0].id = 'custom-1'; state.lessons = {}; activeLesson = 'custom-1'; page = 'study'; render()");
@@ -75,7 +75,22 @@ test('AI course expands from outline to independently generated blocks', async (
   await app.run(`action('generate-block', {dataset:{id:'custom-1', block:'${blockId}'}})`);
   assert.equal(app.run('state.blockCourses["custom-1"].blocks[0].content.text'), '这一块的正文');
   assert.deepEqual(calls, ['/api/lesson-outline', '/api/lesson-block']);
+  assert.equal(payloads[0].route.length, demoPlan.lessons.length);
+  assert.equal(payloads[0].lessonPosition, 1);
+  assert.equal(payloads[1].sequence.position, 1);
+  assert.equal(payloads[1].outline.length, 2);
   assert.match(app.node('#app').innerHTML, /这一块的正文/);
+});
+test('block generation carries bounded nearby outline and prior teaching context', () => {
+  const blocks = Array.from({ length: 45 }, (_, index) => ({ id: `block-${index}`, type: 'reading', title: `模块 ${index}`, objective: `目标 ${index}`, content: index < 30 ? { text: '概念解释'.repeat(400) } : null }));
+  const context = blockGenerationContext({ intro: '课程导语'.repeat(800), blocks }, 'block-30');
+  assert.equal(context.outline.length, 25);
+  assert.equal(context.previous.length, 3);
+  assert.ok(context.previous.every(item => item.excerpt.length <= 1000));
+  assert.equal(context.intro.length, 2000);
+  assert.deepEqual(context.sequence, { position: 31, total: 45 });
+  assert.equal(context.outline[0].title, '模块 18');
+  assert.equal(context.outline.at(-1).title, '模块 42');
 });
 test('existing routes are categorized locally; deletion removes only the selected route and can be restored', async () => {
   const app = harness();

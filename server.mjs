@@ -3,7 +3,7 @@ import { readFile } from 'node:fs/promises';
 import { pathToFileURL } from 'node:url';
 import { randomUUID } from 'node:crypto';
 import { createLLM } from './llm.mjs';
-import { validOutline, validBlockSpec, validBlockContent } from './public/blocks.js';
+import { blockTypes, validOutline, validBlockSpec, validBlockContent } from './public/blocks.js';
 
 const publicDir = new URL('./public/', import.meta.url);
 const assets = { '/': ['index.html', 'text/html'], '/app.js': ['app.js', 'text/javascript'], '/demo.js': ['demo.js', 'text/javascript'], '/blocks.js': ['blocks.js', 'text/javascript'], '/styles.css': ['styles.css', 'text/css'], '/favicon.svg': ['favicon.svg', 'image/svg+xml'] };
@@ -24,6 +24,13 @@ async function body(req) {
 }
 const planShape = '{"title":"路线名","description":"课程说明","lessons":[{"title":"课程名","objective":"具体学习目标","phase":"阶段名","minutes":25,"tags":["知识标签"]}]}';
 const lessonShape = '{"intro":"引言","sections":[{"heading":"小标题","body":"详细讲解"}],"example":"完整示例（代码或具体情境）","challenge":"可独立完成的实践任务","questions":[{"prompt":"单选题","options":["选项A","选项B","选项C","选项D"],"answer":0,"explanation":"答案解析"}],"takeaways":["要点"]}';
+const blockGuidance = {
+  reading: '讲解块：先用一句易懂的话回答“这是什么、为什么要学”，再从学习者已有基础出发分 2–5 个短段落逐步解释。首次出现的术语要定义；加入一个贴近目标的小例子，指出一个常见误解并纠正。必要时使用类比，但要说明类比的局限。段落之间留空行，小标题简短，不堆砌术语。',
+  example: '示例块：给一个与课程目标直接相关、可复现的完整例子。按“场景与输入 → 分步操作/推理 → 预期结果 → 为什么这样做”的顺序写；代码或公式逐步解释关键行，并说明前提与边界。只描述预期结果，不声称已经执行代码或验证外部系统。',
+  practice: '实践块：给学习者一个可以独立完成的小任务，写清起点、操作步骤、完成标准和两个由浅入深的提示。任务应可在普通学习环境中完成，不依赖本应用执行代码。不要直接交出完整答案；提醒一个常见错误和自查方法。',
+  summary: '总结块：用 3–5 条简短结论提炼本课已讲的知识，包含一个易错点和一个能迁移到新情境的判断方法。指出下一步可练习什么，不添加前文未解释的新概念。',
+  quiz: '测验块：生成 2–4 道四选一单选题，覆盖概念理解与情境应用，不只考术语记忆。每题只能有一个明确正确答案；错误选项要对应常见误解，不用“以上皆是”。answer 必须是正确选项的 0–3 整数下标；explanation 要说明正确原因，并点出容易误选的原因。'
+};
 function planIssue(value, budget) {
   if (!value || !str(value.title, 160) || !str(value.description, 2000)) return '路线名称或说明缺失、为空或过长';
   if (!Array.isArray(value.lessons) || value.lessons.length < 3 || value.lessons.length > 12) return '课程数量必须为 3–12 节';
@@ -75,13 +82,18 @@ export function createApp(config = {}) {
           result = { ...result, id: randomUUID(), goal: data.goal, level: data.level, daily: data.daily, days: data.days, source: 'ai', lessons: result.lessons.map(l => ({ ...l, id: randomUUID() })) };
         } else if (path === '/api/lesson-outline') {
           if (!str(data.goal, 1000) || !str(data.title, 160) || !str(data.objective, 1000) || !str(data.level, 80)) fail('课程参数不完整。');
-          result = await generate('请为这一节自学课程设计可逐步生成的内容大纲。根据课程目标选择有意义的模块：reading 讲解、example 示例、practice 实践、quiz 测验、summary 总结。至少包含一段讲解和一个测验；可以有多个同类型模块，按学习顺序排列。只规划模块，不写完整正文。返回 JSON：{"intro":"简短课程导语","blocks":[{"type":"reading","title":"模块标题","objective":"本模块的具体目标"}]}。模块共 2 到 20 个。', data, validOutline);
+          if (data.route !== undefined && (!Array.isArray(data.route) || data.route.length < 1 || data.route.length > 12 || !data.route.every(lesson => lesson && str(lesson.title, 160) && str(lesson.objective, 1000)))) fail('路线课程上下文不正确。');
+          if (data.lessonPosition !== undefined && (!Number.isInteger(data.lessonPosition) || data.lessonPosition < 1 || data.lessonPosition > (data.route?.length || 12))) fail('当前课程顺序不正确。');
+          const outlineRequest = { goal: data.goal, level: data.level, title: data.title, objective: data.objective, ...(data.route === undefined ? {} : { route: data.route.map(({ title, objective }) => ({ title, objective })) }), ...(data.lessonPosition === undefined ? {} : { lessonPosition: data.lessonPosition }) };
+          result = await generate('请为这一节自学课程设计清晰、循序渐进的大纲。route 是整条学习路线，lessonPosition 是本课位置：衔接前面的课程，避免重复已学内容，并为后续课程留出空间。先确定学习者已知什么、结束后能做什么，再按“核心概念 → 具体示例 → 自己动手 → 检验理解 → 提炼要点”的学习顺序安排模块；可按主题灵活调整，不要为凑数量重复。模块类型：reading 讲解、example 示例、practice 实践、quiz 测验、summary 总结。至少包含一个 reading 和一个 quiz，尽量包含示例与实践。每块的 objective 要写成可观察的学习成果，不要只是重复标题。intro 用 2–3 句说明本课价值、前置知识和达成目标。这里只规划大纲，不写正文。返回 JSON：{"intro":"课程导语","blocks":[{"type":"reading","title":"明确的模块标题","objective":"本块学完能做到什么"}]}。模块共 2–20 个，通常 4–8 个。', outlineRequest, validOutline);
         } else if (path === '/api/lesson-block') {
           if (!str(data.goal, 1000) || !str(data.title, 160) || !str(data.objective, 1000) || !str(data.level, 80) || !validBlockSpec(data.block) || typeof data.intro !== 'string' || data.intro.length > 20000) fail('内容块参数不完整。');
-          const requested = { ...data, block: { type: data.block.type, title: data.block.title, objective: data.block.objective } };
-          const instructions = data.block.type === 'quiz'
-            ? '生成 2 到 4 道紧扣当前模块的四选一练习题，answer 是正确选项的 0-3 整数下标，并解释答案。返回 JSON：{"questions":[{"prompt":"题目","options":["A","B","C","D"],"answer":0,"explanation":"解析"}]}。'
-            : `只生成当前 ${data.block.type} 模块的具体内容，不重复整节课。内容要符合模块目标，可以换行但请使用纯文本。返回 JSON：{"text":"详细内容"}。`;
+          if (data.minutes !== undefined && (!Number.isInteger(data.minutes) || data.minutes < 5 || data.minutes > 180)) fail('课程时长不正确。');
+          if (data.outline !== undefined && (!Array.isArray(data.outline) || data.outline.length < 1 || data.outline.length > 25 || !data.outline.every(validBlockSpec))) fail('课程大纲上下文不正确。');
+          if (data.previous !== undefined && (!Array.isArray(data.previous) || data.previous.length > 3 || !data.previous.every(item => item && blockTypes.includes(item.type) && str(item.title, 160) && str(item.excerpt, 1000)))) fail('前文上下文不正确。');
+          if (data.sequence !== undefined && (!data.sequence || !Number.isInteger(data.sequence.position) || !Number.isInteger(data.sequence.total) || data.sequence.position < 1 || data.sequence.total > 1000 || data.sequence.position > data.sequence.total)) fail('模块顺序不正确。');
+          const requested = { goal: data.goal, level: data.level, title: data.title, objective: data.objective, intro: data.intro, block: { type: data.block.type, title: data.block.title, objective: data.block.objective }, ...(data.minutes === undefined ? {} : { minutes: data.minutes }), ...(data.outline === undefined ? {} : { outline: data.outline.map(({ type, title, objective }) => ({ type, title, objective })) }), ...(data.previous === undefined ? {} : { previous: data.previous.map(({ type, title, excerpt }) => ({ type, title, excerpt })) }), ...(data.sequence === undefined ? {} : { sequence: { position: data.sequence.position, total: data.sequence.total } }) };
+          const instructions = `你只负责生成当前内容块，不要重写整节课。根据 level 调整起点与术语密度，根据本课 objective 与 block.objective 控制深度；参考 minutes 控制篇幅，短课不要写成大段教材。outline 是附近模块顺序，previous 是已生成内容的节选：承接前文，不重复已经讲过的定义，也不要提前讲完后续模块。内容必须准确、具体、可让学习者照着理解或实践；遇到依赖版本或无法确定的事实，明确说明条件，不编造。${blockGuidance[data.block.type]}${data.block.type === 'quiz' ? '返回 JSON：{"questions":[{"prompt":"题目","options":["选项A","选项B","选项C","选项D"],"answer":0,"explanation":"正确原因与易错点"}]}。' : '使用清楚的短段落和必要的小标题，文本中用换行分隔，不要 Markdown 代码围栏。返回 JSON：{"text":"当前模块的完整纯文本内容"}。'}`;
           result = await generate(instructions, requested, value => validBlockContent(data.block.type, value));
         } else if (path === '/api/lesson') {
           if (!str(data.goal, 1000) || !str(data.title, 160) || !str(data.objective, 1000) || !str(data.level, 80)) fail('课程参数不完整。');

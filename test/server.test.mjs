@@ -40,9 +40,17 @@ test('stepwise lesson APIs validate outline and individual block output', async 
   const app = await serve(t, { model: 'test', fetchImpl: mock(outline) });
   const context = { goal: '学习 Python', level: '零基础', title: '变量', objective: '认识变量' };
   assert.deepEqual(await (await app.post('/api/lesson-outline', context)).json(), outline);
+  assert.equal((await app.post('/api/lesson-outline', { ...context, route: [{ title: '缺目标' }], lessonPosition: 1 })).status, 400);
   assert.equal((await app.post('/api/lesson-block', { ...context, intro: outline.intro, block: outline.blocks[0] })).status, 502);
-  const blockApp = await serve(t, { model: 'test', fetchImpl: mock({ text: '分步讲解正文' }) });
-  assert.deepEqual(await (await blockApp.post('/api/lesson-block', { ...context, intro: outline.intro, block: outline.blocks[0] })).json(), { text: '分步讲解正文' });
+  let sent;
+  const blockApp = await serve(t, { model: 'test', fetchImpl: async (_url, init) => { sent = JSON.parse(init.body); return Response.json({ message: { content: JSON.stringify({ text: '分步讲解正文' }) } }); } });
+  const blockRequest = { ...context, intro: outline.intro, block: outline.blocks[0], minutes: 25, outline: outline.blocks, previous: [{ type: 'reading', title: '前一段', excerpt: '已经解释过的概念' }], sequence: { position: 2, total: 4 } };
+  assert.deepEqual(await (await blockApp.post('/api/lesson-block', blockRequest)).json(), { text: '分步讲解正文' });
+  assert.match(sent.messages[0].content, /首次出现的术语要定义/);
+  assert.deepEqual(JSON.parse(sent.messages[1].content).previous, blockRequest.previous);
+  assert.deepEqual(await (await blockApp.post('/api/lesson-block', { ...blockRequest, block: { type: 'practice', title: '动手做', objective: '独立完成' } })).json(), { text: '分步讲解正文' });
+  assert.match(sent.messages[0].content, /完成标准和两个由浅入深的提示/);
+  assert.equal((await blockApp.post('/api/lesson-block', { ...blockRequest, previous: [{ ...blockRequest.previous[0], excerpt: 'x'.repeat(1001) }] })).status, 400);
   assert.equal((await blockApp.post('/api/lesson-block', { ...context, intro: outline.intro, block: { type: 'unknown', title: '错', objective: '错' } })).status, 400);
 });
 test('demo mode refuses arbitrary AI generation instead of returning fabricated results', async t => {
