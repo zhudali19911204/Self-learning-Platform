@@ -24,6 +24,15 @@ async function body(req) {
 }
 const planShape = '{"title":"路线名","description":"课程说明","lessons":[{"title":"课程名","objective":"具体学习目标","phase":"阶段名","minutes":25,"tags":["知识标签"]}]}';
 const lessonShape = '{"intro":"引言","sections":[{"heading":"小标题","body":"详细讲解"}],"example":"完整示例（代码或具体情境）","challenge":"可独立完成的实践任务","questions":[{"prompt":"单选题","options":["选项A","选项B","选项C","选项D"],"answer":0,"explanation":"答案解析"}],"takeaways":["要点"]}';
+function planIssue(value, budget) {
+  if (!value || !str(value.title, 160) || !str(value.description, 2000)) return '路线名称或说明缺失、为空或过长';
+  if (!Array.isArray(value.lessons) || value.lessons.length < 3 || value.lessons.length > 12) return '课程数量必须为 3–12 节';
+  const badIndex = value.lessons.findIndex(lesson => !lesson || !str(lesson.title, 160) || !str(lesson.objective, 1000) || !str(lesson.phase, 80) || !Number.isInteger(lesson.minutes) || lesson.minutes < 5 || lesson.minutes > 180 || !strings(lesson.tags, 6) || lesson.tags.some(tag => tag.length > 40));
+  if (badIndex !== -1) return `第 ${badIndex + 1} 节课程的标题、目标、阶段、整数分钟数或标签不符合要求`;
+  const total = value.lessons.reduce((sum, lesson) => sum + lesson.minutes, 0);
+  if (total > budget) return `课程总时长 ${total} 分钟超过可用的 ${budget} 分钟`;
+  return null;
+}
 
 export function createApp(config = {}) {
   const defaultLLM = config.getLLM ? null : createLLM(config);
@@ -48,7 +57,21 @@ export function createApp(config = {}) {
         let result;
         if (path === '/api/plan') {
           if (!str(data.goal, 1000) || !['零基础', '有一点基础', '希望进阶'].includes(data.level) || !Number.isInteger(data.daily) || data.daily < 10 || data.daily > 120 || !Number.isInteger(data.days) || data.days < 7 || data.days > 90) fail('请填写目标、基础、每日时长与学习周期。');
-          result = await generate(`根据目标、已有基础、每日分钟数与天数设计 3–12 节循序渐进的课程。课程总时长不要超过 daily * days。每课具有具体目标。格式：${planShape}`, data, v => validPlan(v) && v.lessons.reduce((sum, l) => sum + l.minutes, 0) <= data.daily * data.days);
+          const budget = data.daily * data.days;
+          const instruction = `根据目标、已有基础、每日分钟数与天数设计 3–12 节循序渐进的课程。严格返回 JSON 对象，包含非空 title、description 和 lessons。lessons 必须有 3–12 个对象，不能只按下面的单节字段示例生成一节。每节都需要非空 title、objective、phase，以及 5–180 之间的整数 minutes、1–6 个非空字符串 tags（每个不超过 40 字）。全部课程分钟数之和必须不超过 ${budget}，不要把天数误认为单节时长。字段示例：${planShape}`;
+          let issue = null;
+          const validate = value => { issue = planIssue(value, budget); return issue === null; };
+          try { result = await generate(instruction, data, validate); }
+          catch (error) {
+            if (!issue) throw error;
+            const firstIssue = issue;
+            issue = null;
+            try { result = await generate(`${instruction} 上次生成未通过校验，原因：${firstIssue}。请重新规划并逐项核对所有字段与总时长；只返回修正后的完整 JSON。`, data, validate); }
+            catch (retryError) {
+              if (!issue) throw retryError;
+              fail(`路线生成两次仍未符合要求：${issue}。可缩短目标描述或调整学习周期后重试。`, 502);
+            }
+          }
           result = { ...result, id: randomUUID(), goal: data.goal, level: data.level, daily: data.daily, days: data.days, source: 'ai', lessons: result.lessons.map(l => ({ ...l, id: randomUUID() })) };
         } else if (path === '/api/lesson-outline') {
           if (!str(data.goal, 1000) || !str(data.title, 160) || !str(data.objective, 1000) || !str(data.level, 80)) fail('课程参数不完整。');

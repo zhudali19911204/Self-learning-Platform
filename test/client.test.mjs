@@ -4,10 +4,10 @@ import vm from 'node:vm';
 import { readFile } from 'node:fs/promises';
 import { webcrypto } from 'node:crypto';
 import { demoPlan, demoLessons } from '../public/demo.js';
-import { lessonFromBlocks, validOutline, validBlockContent, validBlockSpec } from '../public/blocks.js';
+import { lessonFromBlocks, validOutline, validBlockContent, validBlockSpec, blockGenerationContext } from '../public/blocks.js';
 
 // This harness checks application state transitions, not browser rendering.
-const source = (await readFile(new URL('../public/app.js', import.meta.url), 'utf8')).replace("import { demoPlan, demoLessons } from './demo.js';", '').replace("import { lessonFromBlocks, validOutline, validBlockContent, validBlockSpec } from './blocks.js';", '');
+const source = (await readFile(new URL('../public/app.js', import.meta.url), 'utf8')).replace("import { demoPlan, demoLessons } from './demo.js';", '').replace("import { lessonFromBlocks, validOutline, validBlockContent, validBlockSpec, blockGenerationContext } from './blocks.js';", '');
 function harness(saved, fetchImpl) {
   const nodes = new Map(), listeners = new Map(), storage = new Map(saved ? [['learnflow.v1', saved]] : []);
   const node = selector => {
@@ -15,10 +15,10 @@ function harness(saved, fetchImpl) {
     return nodes.get(selector);
   };
   const context = vm.createContext({
-    demoPlan, demoLessons, lessonFromBlocks, validOutline, validBlockContent, validBlockSpec, structuredClone, crypto: webcrypto, AbortSignal,
+    demoPlan, demoLessons, lessonFromBlocks, validOutline, validBlockContent, validBlockSpec, blockGenerationContext, structuredClone, crypto: webcrypto, AbortSignal,
     document: { querySelector: node, addEventListener(name, listener) { listeners.set(name, listener); } },
-    localStorage: { getItem: key => storage.get(key) ?? null, setItem: (key, value) => storage.set(key, value) },
-    window: { scrollTo() {} }, setTimeout: () => 1, clearTimeout() {},
+    localStorage: { get length() { return storage.size; }, key: index => [...storage.keys()][index] ?? null, getItem: key => storage.get(key) ?? null, setItem: (key, value) => storage.set(key, value), removeItem: key => storage.delete(key) },
+    window: { scrollTo() {}, confirm: () => true }, setTimeout: () => 1, clearTimeout() {},
     fetch: fetchImpl || (async () => ({ ok: true, json: async () => ({ mode: 'demo', model: null }) })),
     FormData: class { constructor(form) { this.values = form.values; } get(key) { return this.values[key] ?? null; } }
   });
@@ -76,6 +76,23 @@ test('AI course expands from outline to independently generated blocks', async (
   assert.equal(app.run('state.blockCourses["custom-1"].blocks[0].content.text'), '这一块的正文');
   assert.deepEqual(calls, ['/api/lesson-outline', '/api/lesson-block']);
   assert.match(app.node('#app').innerHTML, /这一块的正文/);
+});
+test('existing routes are categorized locally; deletion removes only the selected route and can be restored', async () => {
+  const app = harness();
+  assert.equal(app.run("categoryFor({title:'GitHub 中文实践路线', goal:'', description:'', lessons:[]})"), '开发工具');
+  assert.equal(app.run("categoryFor({title:'Power BI DAX 基础', goal:'', description:'', lessons:[]})"), '数据分析');
+  assert.equal(app.run("categoryFor({title:'LLM 基本原理', goal:'', description:'', lessons:[]})"), 'AI 与大模型');
+  app.run("const extra = structuredClone(demoPlan); extra.id = 'data-route'; extra.title = 'Power BI DAX 基础'; extra.source = 'ai'; extra.lessons.forEach((lesson, index) => { lesson.id = 'data-' + index }); state.plans.push(extra); state.active = extra.id; state.progress['data-0'] = {completed:true, attempts:1, lastScore:100, bestScore:100, lastAnswers:[0]}; page = 'routes'; render()");
+  assert.match(app.node('#app').innerHTML, /数据分析/);
+  assert.match(app.node('#app').innerHTML, /编程开发/);
+  await app.run("action('delete-plan', {dataset:{id:'data-route'}})");
+  assert.equal(app.run('state.plans.length'), 1);
+  assert.equal(app.run('state.active'), demoPlan.id);
+  assert.equal(app.run("state.progress['data-0']"), undefined);
+  assert.ok([...app.storage.keys()].some(key => key.startsWith('learnflow.before-delete.')));
+  await app.run("action('restore-deleted-plan', {dataset:{}})");
+  assert.equal(app.run('state.plans.length'), 2);
+  assert.equal(app.run("state.progress['data-0'].completed"), true);
 });
 test('all pages render with empty and populated state; untrusted content is escaped', async () => {
   const app = harness();

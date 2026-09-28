@@ -8,6 +8,13 @@ export const validBlockContent = (type, content) => type === 'quiz'
   ? !!content && Array.isArray(content.questions) && content.questions.length >= 1 && content.questions.length <= 5 && content.questions.every(validQuestion)
   : blockTypes.includes(type) && !!content && str(content.text, 12000);
 export const validBlockCourse = course => !!course && str(course.intro, 20000) && Array.isArray(course.blocks) && course.blocks.length >= 2 && course.blocks.length <= 1000 && course.blocks.every(block => validBlockSpec(block) && safeId(block.id) && (block.content === null || validBlockContent(block.type, block.content))) && new Set(course.blocks.map(block => block.id)).size === course.blocks.length;
+export function blockGenerationContext(course, blockId) {
+  const index = course.blocks.findIndex(block => block.id === blockId);
+  if (index < 0) return null;
+  const outline = course.blocks.slice(Math.max(0, index - 12), index + 13).map(({ type, title, objective }) => ({ type, title, objective }));
+  const previous = course.blocks.slice(0, index).filter(block => block.content && block.type !== 'quiz').slice(-3).map(block => ({ type: block.type, title: block.title, excerpt: block.content.text.slice(0, 1000) }));
+  return { intro: course.intro.slice(0, 2000), outline, previous, sequence: { position: index + 1, total: course.blocks.length } };
+}
 export function lessonFromBlocks(course) {
   if (!course) return null;
   const ready = course.blocks.filter(block => block.content);

@@ -76,6 +76,24 @@ test('AI planning uses user constraints and assigns application-owned IDs', asyn
   assert.equal(sent.stream, false); assert.equal(sent.format, 'json'); assert.equal(sent.model, 'test-model');
   assert.deepEqual(JSON.parse(sent.messages[1].content), input);
 });
+test('planning repairs one structurally invalid model response and explains repeated budget failures', async t => {
+  let calls = 0, repairPrompt = '';
+  const repaired = await serve(t, { model: 'test', fetchImpl: async (_url, init) => {
+    calls++;
+    const payload = JSON.parse(init.body);
+    if (calls === 2) repairPrompt = payload.messages[0].content;
+    return Response.json({ message: { content: JSON.stringify(calls === 1 ? { title: '过短路线', description: '只有一节', lessons: [demoPlan.lessons[0]] } : demoPlan) } });
+  } });
+  assert.equal((await repaired.post('/api/plan', input)).status, 200);
+  assert.equal(calls, 2);
+  assert.match(repairPrompt, /课程数量必须为 3–12 节/);
+  let failedCalls = 0;
+  const overBudget = await serve(t, { model: 'test', fetchImpl: async () => { failedCalls++; return Response.json({ message: { content: JSON.stringify(demoPlan) } }); } });
+  const response = await overBudget.post('/api/plan', { ...input, daily: 10, days: 7 });
+  assert.equal(response.status, 502);
+  assert.match((await response.json()).error, /总时长.*超过可用/);
+  assert.equal(failedCalls, 2);
+});
 test('rejects impossible study budgets and incomplete model output', async t => {
   const app = await serve(t, { model: 'test', fetchImpl: mock(demoPlan) });
   assert.equal((await app.post('/api/plan', { ...input, daily: 10, days: 7 })).status, 502);

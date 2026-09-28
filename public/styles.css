@@ -22,3 +22,17 @@
 .append-block-form label { display: block; margin: 12px 0 7px; }
 .append-block-form input, .append-block-form select { width: 100%; }
 .append-block-form button { margin-top: 18px; }
+.route-page-actions { display: flex; gap: 10px; flex-wrap: wrap; justify-content: flex-end; }
+.route-library { background: #fff; border: 1px solid var(--line); border-radius: 12px; padding: 20px 22px; margin-bottom: 18px; }
+.route-library-heading { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; flex-wrap: wrap; margin-bottom: 16px; }
+.route-library-heading h2 { font-size: 15px; margin: 0; }
+.route-library-heading span { color: var(--muted); font-size: 11px; }
+.route-group + .route-group { border-top: 1px solid var(--line); margin-top: 16px; padding-top: 16px; }
+.route-group h3 { color: #8b76a1; font-size: 12px; margin: 0 0 10px; }
+.route-group h3 span { color: #aaa0b7; font-weight: 400; margin-left: 6px; }
+.route-group-items { display: flex; flex-wrap: wrap; gap: 9px; }
+.route-group-items .route-chip { max-width: min(100%, 360px); white-space: normal; text-align: left; }
+.route-group-items .route-chip span { overflow-wrap: anywhere; }
+.route-overview-actions { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-top: 18px; }
+.btn.danger { background: #fff; color: #b25b65; border-color: #eacbd0; }
+.btn.danger:hover:not(:disabled) { background: #fff3f4; }

@@ -1,5 +1,5 @@
 import { demoPlan, demoLessons } from './demo.js';
-import { lessonFromBlocks, validOutline, validBlockContent, validBlockSpec } from './blocks.js';
+import { lessonFromBlocks, validOutline, validBlockContent, validBlockSpec, blockGenerationContext } from './blocks.js';
 
 const $ = s => document.querySelector(s);
 const escape = v => String(v ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -42,6 +42,19 @@ let page = 'home', activeLesson = null, activeNote = null, lessonTab = 'read', q
 let status = { mode: 'loading' };
 let connectionResult = '';
 const plan = () => state.plans.find(p => p.id === state.active) || state.plans[0];
+const categoryRules = [
+  ['AI 与大模型', /(?:大模型|人工智能|机器学习|深度学习|智能体|提示词|\b(?:LLM|GPT|RAG|AI)\b|DeepSeek|通义|千问)/i],
+  ['数据分析', /(?:数据分析|数据可视化|数据库|数据处理|\b(?:Power\s*(?:BI|Query)|DAX|Excel|SQL|Tableau|BI)\b)/i],
+  ['开发工具', /(?:版本控制|代码管理|容器|运维|\b(?:Git|GitHub|Docker|Linux|Kubernetes|CI\/CD)\b)/i],
+  ['编程开发', /(?:编程|程序设计|代码|软件开发|前端|后端|自动化脚本|\b(?:Python|JavaScript|TypeScript|Java|Rust|C\+\+)\b)/i],
+  ['游戏与兴趣', /(?:游戏|电竞|三角洲行动|摄影|绘画|音乐|烹饪|旅行)/i]
+];
+function categoryFor(planValue) {
+  const title = planValue.title || '';
+  const details = [planValue.goal, planValue.description, ...planValue.lessons.flatMap(lesson => [lesson.title, ...lesson.tags])].join(' ');
+  for (const text of [title, details]) for (const [label, pattern] of categoryRules) if (pattern.test(text)) return label;
+  return '其他主题';
+}
 const progress = id => state.progress[id] || {};
 const completed = () => plan().lessons.filter(l => progress(l.id).completed).length;
 const percent = () => Math.round(completed() / plan().lessons.length * 100);
@@ -49,6 +62,12 @@ const nextLesson = () => plan().lessons.find(l => !progress(l.id).completed) || 
 const contentFor = id => state.blockCourses?.[id] ? lessonFromBlocks(state.blockCourses[id]) : state.lessons[id] || demoLessons[id];
 const lessonById = id => state.plans.flatMap(p => p.lessons).find(l => l.id === id);
 const chatFor = id => state.chats?.[id] || [];
+const deletedBackupPrefix = 'learnflow.before-delete.';
+function recentDeleteBackup() {
+  if (desktop) return null;
+  try { return Array.from({ length: localStorage.length }, (_, index) => localStorage.key(index)).filter(name => name?.startsWith(deletedBackupPrefix)).sort().at(-1) || null; }
+  catch { return null; }
+}
 function save() {
   if (storageWarning) return;
   if (desktop) throw new Error('桌面数据必须按条目保存。');
@@ -98,9 +117,11 @@ function home() {
 }
 function routes() {
   const p = plan();
-  return `<section class="page-intro"><div><div class="eyebrow">YOUR LEARNING JOURNEY</div><h1>每个目标，都有一条路。</h1><p>把远处的目标，拆解为今天可以迈出的一步。</p></div>${button('新建学习路线', 'planner', 'primary', '', 'plus')}</section>
-  <div class="route-switch">${state.plans.map(p => `<button class="route-chip ${p.id === state.active ? 'selected' : ''}" data-action="switch-plan" data-id="${p.id}">${icon('route')}${escape(p.title)}</button>`).join('')}</div>
-  <section class="route-overview"><div>${pill(p.source === 'demo' ? '精选示例 · 非 AI 生成' : 'AI 定制路线', 'purple')}<h2>${escape(p.title)}</h2><p>${escape(p.goal)}</p><div class="metadata">${icon('clock')}每天 ${p.daily} 分钟 <span>·</span>计划 ${p.days} 天 <span>·</span>${escape(p.level)}</div></div><div class="progress-ring" style="--progress:${percent()}%"><div><strong>${percent()}<small>%</small></strong><span>已完成</span></div></div></section>
+  const grouped = new Map();
+  for (const route of state.plans) { const category = categoryFor(route); if (!grouped.has(category)) grouped.set(category, []); grouped.get(category).push(route); }
+  return `<section class="page-intro"><div><div class="eyebrow">YOUR LEARNING JOURNEY</div><h1>每个目标，都有一条路。</h1><p>把远处的目标，拆解为今天可以迈出的一步。</p></div><div class="route-page-actions">${recentDeleteBackup() ? button('恢复最近删除', 'restore-deleted-plan', 'secondary', '', 'back') : ''}${button('新建学习路线', 'planner', 'primary', '', 'plus')}</div></section>
+  <div class="route-library"><div class="route-library-heading"><h2>我的课程分类</h2><span>根据标题、目标和课程标签自动整理</span></div>${[...grouped].map(([category, routes]) => `<section class="route-group"><h3>${escape(category)} <span>${routes.length}</span></h3><div class="route-group-items">${routes.map(route => `<button class="route-chip ${route.id === state.active ? 'selected' : ''}" data-action="switch-plan" data-id="${route.id}" aria-pressed="${route.id === state.active}">${icon('route')}<span>${escape(route.title)}</span></button>`).join('')}</div></section>`).join('')}</div>
+  <section class="route-overview"><div>${pill(p.source === 'demo' ? '精选示例 · 非 AI 生成' : 'AI 定制路线', 'purple')}<h2>${escape(p.title)}</h2><p>${escape(p.goal)}</p><div class="metadata">${icon('clock')}每天 ${p.daily} 分钟 <span>·</span>计划 ${p.days} 天 <span>·</span>${escape(p.level)}</div><div class="route-overview-actions">${pill(categoryFor(p))}${button('删除这条路线', 'delete-plan', 'danger', `data-id="${p.id}" ${state.plans.length <= 1 ? 'disabled title="至少保留一条路线"' : ''}`, 'close')}</div></div><div class="progress-ring" style="--progress:${percent()}%"><div><strong>${percent()}<small>%</small></strong><span>已完成</span></div></div></section>
   <div class="route-layout"><section class="timeline">${p.lessons.map((l, i) => `${i === 0 || l.phase !== p.lessons[i - 1].phase ? `<h3 class="phase">${escape(l.phase)}</h3>` : ''}<article class="lesson-row ${progress(l.id).completed ? 'complete' : ''}"><div class="step-number">${progress(l.id).completed ? icon('check') : String(i + 1).padStart(2, '0')}</div><div class="lesson-row-main"><div class="lesson-title"><h3>${escape(l.title)}</h3>${progress(l.id).completed ? pill('已掌握', 'success') : l.id === nextLesson().id ? pill('推荐下一步', 'purple') : ''}</div><p>${escape(l.objective)}</p><div class="lesson-meta">${icon('clock')}${l.minutes} 分钟<span>·</span>${escape(l.tags.join(' / '))}</div></div>${button(progress(l.id).completed ? '复习' : '进入课程', 'open-lesson', 'secondary', `data-id="${l.id}"`)}</article>`).join('')}</section><aside class="tip-card"><span class="float-icon lavender">${icon('target')}</span><h3>按自己的节奏前进</h3><p>路线是一张地图。你可以先预览任意课程，再根据自己的基础选择起点。</p><hr><strong>掌握比完成更重要</strong><p>每节课通过全部测验后会记录为已掌握。答错时，读一读解析，再试一次。</p>${button('去练习与巩固', 'practice', 'secondary full', '', 'bolt')}</aside></div>`;
 }
 function study() {
@@ -265,6 +286,39 @@ async function action(name, element) {
   if (name === 'start') return openLesson(nextLesson().id);
   if (name === 'demo') { $('#planner').close(); state.active = demoPlan.id; persist('setActivePlan', demoPlan.id); return navigate('routes'); }
   if (name === 'switch-plan') { state.active = id; activeLesson = null; persist('setActivePlan', id); return render(); }
+  if (name === 'delete-plan') {
+    const target = state.plans.find(route => route.id === id);
+    if (!target || state.plans.length <= 1) throw new Error('至少保留一条学习路线。');
+    if (storageWarning) throw new Error('当前本地存储有错误，请先处理后再删除。');
+    if (desktop) {
+      await pendingSave;
+      const result = await desktop.deletePlan(id);
+      if (!result) return;
+      state = result.state; activeLesson = null; activeNote = null; answer = null;
+      navigate('routes'); toast('路线已删除；完整 JSON 备份已保存在本地数据目录的 backups 文件夹。');
+      return;
+    }
+    const lessonIds = new Set(target.lessons.map(lesson => lesson.id));
+    const notesCount = state.notes.filter(note => lessonIds.has(note.lessonId)).length;
+    if (!window.confirm(`删除「${target.title}」及其 ${lessonIds.size} 节课程、练习记录和 ${notesCount} 张 Wiki 卡片？删除前会在浏览器保存可恢复备份。`)) return;
+    const backupKey = `${deletedBackupPrefix}${Date.now()}-${crypto.randomUUID()}`;
+    const next = structuredClone(state);
+    next.plans = next.plans.filter(route => route.id !== id);
+    if (next.active === id) next.active = next.plans[0].id;
+    for (const lessonId of lessonIds) for (const collection of ['lessons', 'blockCourses', 'progress', 'reflections', 'chats']) if (next[collection]) delete next[collection][lessonId];
+    next.notes = next.notes.filter(note => !lessonIds.has(note.lessonId));
+    try { localStorage.setItem(backupKey, JSON.stringify(state)); localStorage.setItem(key, JSON.stringify(next)); }
+    catch { throw new Error('浏览器空间不足，无法先保存删除前备份；路线未删除。'); }
+    state = next; activeLesson = null; activeNote = null; answer = null; navigate('routes'); toast('路线已删除，可用“恢复最近删除”撤销。'); return;
+  }
+  if (name === 'restore-deleted-plan' && !desktop) {
+    const backupKey = recentDeleteBackup();
+    if (!backupKey || !window.confirm('恢复最近一次删除前的完整学习记录？这会覆盖删除之后的新修改。')) return;
+    const raw = localStorage.getItem(backupKey), restored = JSON.parse(raw);
+    if (restored?.version !== 1 || !Array.isArray(restored.plans) || !restored.plans.length || !restored.plans.some(route => route.id === restored.active)) throw new Error('删除前备份格式不正确，未覆盖现有记录。');
+    localStorage.setItem(key, raw); localStorage.removeItem(backupKey);
+    state = restored; activeLesson = null; activeNote = null; answer = null; navigate('routes'); toast('已恢复删除前的学习记录。'); return;
+  }
   if (name === 'open-lesson') return openLesson(id);
   if (name === 'open-quiz') return openLesson(id, 'quiz');
   if (name === 'lesson-tab') { lessonTab = element.dataset.tab; return render(); }
@@ -280,7 +334,8 @@ async function action(name, element) {
     const block = state.blockCourses?.[id]?.blocks.find(item => item.id === element.dataset.block);
     if (!block || block.content) throw new Error('内容块不存在或已生成。');
     const meta = lessonById(id), p = state.plans.find(plan => plan.lessons.some(item => item.id === id));
-    const content = await api('lesson-block', { goal: p.goal, level: p.level, title: meta.title, objective: meta.objective, intro: state.blockCourses[id].intro, block: { type: block.type, title: block.title, objective: block.objective } });
+    const context = blockGenerationContext(state.blockCourses[id], block.id);
+    const content = await api('lesson-block', { goal: p.goal, level: p.level, title: meta.title, objective: meta.objective, minutes: meta.minutes, ...context, block: { type: block.type, title: block.title, objective: block.objective } });
     if (!validBlockContent(block.type, content)) throw new Error('模型返回的内容格式不正确，请重试。');
     if (desktop) await desktop.saveBlock(id, block.id, content);
     block.content = content;

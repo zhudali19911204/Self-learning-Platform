@@ -1,5 +1,5 @@
 import { DatabaseSync, backup } from 'node:sqlite';
-import { mkdir, readFile, rename, stat } from 'node:fs/promises';
+import { mkdir, readFile, rename, stat, writeFile } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
 import path from 'node:path';
@@ -159,8 +159,19 @@ export async function createSqliteStore(directory) {
     return { lesson: row.content_json ? fromJSON(row.content_json) : null, blockCourse, reflection, chats };
   }
   const exportState = () => readExport(db);
+  function planDeletionPreview(planId) {
+    if (!id(planId)) throw new Error('学习路线不存在。');
+    const plan = db.prepare('SELECT title FROM plans WHERE id = ?').get(planId);
+    if (!plan) throw new Error('学习路线不存在。');
+    if (db.prepare('SELECT COUNT(*) AS count FROM plans').get().count <= 1) throw new Error('至少保留一条学习路线，不能删除最后一条。');
+    return {
+      title: plan.title,
+      lessons: db.prepare('SELECT COUNT(*) AS count FROM lessons WHERE plan_id = ?').get(planId).count,
+      notes: db.prepare('SELECT COUNT(*) AS count FROM notes WHERE lesson_id IN (SELECT id FROM lessons WHERE plan_id = ?)').get(planId).count
+    };
+  }
   return {
-    filename, overview, getLesson, exportState,
+    filename, overview, getLesson, exportState, planDeletionPreview,
     savePlan(plan) {
       if (!validState({ version: 1, plans: [plan], active: plan.id, lessons: {}, progress: {}, notes: [], reflections: {}, chats: {} })) throw new Error('学习路线格式不正确。');
       transaction(db, () => {
@@ -173,6 +184,24 @@ export async function createSqliteStore(directory) {
     setActivePlan(planId) {
       if (!id(planId) || !db.prepare('SELECT 1 FROM plans WHERE id = ?').get(planId)) throw new Error('学习路线不存在。');
       db.prepare("UPDATE meta SET value = ? WHERE key = 'active_plan'").run(planId);
+    },
+    async deletePlan(planId) {
+      planDeletionPreview(planId);
+      const snapshot = JSON.stringify(exportState(), null, 2);
+      const folder = path.join(directory, 'backups');
+      await mkdir(folder, { recursive: true });
+      const backupPath = path.join(folder, `before-delete-${new Date().toISOString().replace(/[:.]/g, '-')}-${randomUUID()}.json`);
+      await writeFile(backupPath, snapshot, { encoding: 'utf8', mode: 0o600, flag: 'wx' });
+      if (await readFile(backupPath, 'utf8') !== snapshot) throw new Error('删除前备份校验失败，学习路线未删除。');
+      transaction(db, () => {
+        planDeletionPreview(planId);
+        const current = db.prepare("SELECT value FROM meta WHERE key = 'active_plan'").get()?.value;
+        const next = current === planId ? db.prepare('SELECT id FROM plans WHERE id <> ? ORDER BY position LIMIT 1').get(planId)?.id : current;
+        db.prepare('DELETE FROM plans WHERE id = ?').run(planId);
+        db.prepare("UPDATE meta SET value = ? WHERE key = 'active_plan'").run(next);
+        for (const [position, row] of db.prepare('SELECT id FROM plans ORDER BY position').all().entries()) db.prepare('UPDATE plans SET position = ? WHERE id = ?').run(position, row.id);
+      });
+      return { state: overview(), backupPath };
     },
     saveLesson(lessonId, content) {
       requireLesson(lessonId);

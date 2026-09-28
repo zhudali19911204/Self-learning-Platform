@@ -9,6 +9,7 @@ contextBridge.exposeInMainWorld('learnflowDesktop', Object.freeze({
   getLesson: id => invoke('learnflow:get-lesson', id),
   savePlan: value => invoke('learnflow:save-plan', value),
   setActivePlan: id => invoke('learnflow:set-active-plan', id),
+  deletePlan: id => invoke('learnflow:delete-plan', id),
   saveLesson: (id, value) => invoke('learnflow:save-lesson', id, value),
   saveOutline: (id, value) => invoke('learnflow:save-outline', id, value),
   appendBlock: (id, value) => invoke('learnflow:append-block', id, value),

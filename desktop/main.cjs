@@ -66,6 +66,15 @@ async function start() {
   handle('learnflow:get-lesson', id => learning.getLesson(id));
   handle('learnflow:save-plan', value => learning.savePlan(value));
   handle('learnflow:set-active-plan', id => learning.setActivePlan(id));
+  handle('learnflow:delete-plan', async id => {
+    const preview = learning.planDeletionPreview(id);
+    const choice = await dialog.showMessageBox(window, {
+      type: 'warning', title: '删除学习路线', message: `删除「${preview.title}」？`,
+      detail: `这会同时移除 ${preview.lessons} 节课程、关联的练习进度与答疑记录，以及 ${preview.notes} 张 Wiki 卡片。删除前会在本地 backups 目录保存完整 JSON 备份。`,
+      buttons: ['取消', '删除路线'], defaultId: 0, cancelId: 0, noLink: true
+    });
+    return choice.response === 1 ? learning.deletePlan(id) : null;
+  });
   handle('learnflow:save-lesson', (id, value) => learning.saveLesson(id, value));
   handle('learnflow:save-outline', (id, value) => learning.saveOutline(id, value));
   handle('learnflow:append-block', (id, value) => learning.appendBlock(id, value));

@@ -99,6 +99,40 @@ test('outlines and blocks save independently and survive export/import', async t
   } finally { store.close(); }
 });
 
+test('deleting a route creates an importable backup and removes only its related records', async t => {
+  const directory = await temporary(t), store = await createSqliteStore(directory);
+  try {
+    const route = structuredClone(demoPlan);
+    route.id = 'remove-this-route'; route.source = 'ai'; route.goal = '测试分类与删除';
+    route.lessons = route.lessons.map((lesson, index) => ({ ...lesson, id: `remove-lesson-${index}` }));
+    store.savePlan(route);
+    const lessonId = route.lessons[0].id;
+    store.saveLesson(lessonId, demoLessons.p1);
+    store.saveProgress(lessonId, { completed: true, attempts: 1, lastScore: 100, bestScore: 100, lastAnswers: [1, 1] });
+    store.saveReflection(lessonId, '需要保留在备份中的心得');
+    store.appendChat(lessonId, '测试问题', '测试回答');
+    store.saveNote({ ...legacy().notes[0], id: 'delete-note', lessonId, source: 'ai' });
+    assert.equal(store.planDeletionPreview(route.id).notes, 1);
+    const deleted = await store.deletePlan(route.id);
+    assert.equal(deleted.state.active, demoPlan.id);
+    assert.equal(deleted.state.plans.length, 1);
+    assert.equal(store.getLesson('p1').lesson.intro, demoLessons.p1.intro);
+    assert.throws(() => store.getLesson(lessonId), /课程不存在/);
+    const exported = store.exportState();
+    assert.equal(exported.notes.length, 0);
+    assert.equal(exported.progress[lessonId], undefined);
+    await assert.rejects(store.deletePlan(demoPlan.id), /至少保留一条/);
+    const backup = JSON.parse(await readFile(deleted.backupPath, 'utf8'));
+    assert.equal(backup.plans.length, 2);
+    assert.equal(backup.reflections[lessonId], '需要保留在备份中的心得');
+    assert.equal(backup.notes[0].id, 'delete-note');
+    store.replaceState(backup);
+    assert.equal(store.getLesson(lessonId).chats.length, 2);
+    assert.equal(store.overview().plans.length, 2);
+    await assert.rejects(store.deletePlan('missing'), /路线不存在/);
+  } finally { store.close(); }
+});
+
 test('targeted progress, reflection, note and chat updates persist without whole-state replacement', async t => {
   const store = await createSqliteStore(await temporary(t));
   try {
