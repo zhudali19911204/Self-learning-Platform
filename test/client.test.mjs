@@ -23,7 +23,7 @@ function harness(saved, fetchImpl) {
     demoPlan, demoLessons, lessonFromBlocks, validOutline, validBlockContent, validBlockSpec, blockGenerationContext, revisedContent, restoredContent, Marked, DOMPurify, createMarkdownRenderer, structuredClone, crypto: webcrypto, AbortSignal,
     document: { querySelector: node, addEventListener(name, listener) { listeners.set(name, listener); } },
     localStorage: { get length() { return storage.size; }, key: index => [...storage.keys()][index] ?? null, getItem: key => storage.get(key) ?? null, setItem: (key, value) => storage.set(key, value), removeItem: key => storage.delete(key) },
-    window: { scrollTo() {}, confirm: () => true }, setTimeout: () => 1, clearTimeout() {},
+    window: { scrollY: 0, scrollTo({ top }) { this.scrollY = top; }, confirm: () => true }, setTimeout: () => 1, clearTimeout() {},
     fetch: fetchImpl || (async () => ({ ok: true, json: async () => ({ mode: 'demo', model: null }) })),
     FormData: class { constructor(form) { this.values = form.values; } get(key) { return this.values[key] ?? null; } }
   });
@@ -89,6 +89,41 @@ test('AI course expands from outline to independently generated blocks', async (
   assert.equal(payloads[1].sequence.position, 1);
   assert.equal(payloads[1].outline.length, 2);
   assert.match(app.node('#app').innerHTML, /这一块的正文/);
+});
+
+test('the persistent lesson Q&A shortcut opens the current course in both lesson formats', () => {
+  const app = harness();
+  app.run("openLesson('p1')");
+  assert.match(app.node('#app').innerHTML, /data-action="quick-ask"/);
+  assert.equal(app.run('lessonTab'), 'read');
+  app.run("action('quick-ask', { dataset: {} })");
+  assert.equal(app.run('lessonTab'), 'chat');
+  assert.match(app.node('#app').innerHTML, /class="study-chat"/);
+  assert.match(app.node('#app').innerHTML, /data-action="quick-ask"/);
+  app.run("state.blockCourses.p1 = {intro:'分步课程',blocks:[{id:'reading-1',type:'reading',title:'讲解',objective:'理解',content:null},{id:'quiz-1',type:'quiz',title:'练习',objective:'检验',content:null}]}; openLesson('p1')");
+  assert.match(app.node('#app').innerHTML, /data-action="quick-ask"/);
+  app.run("action('quick-ask', { dataset: {} })");
+  assert.equal(app.run('lessonTab'), 'chat');
+  assert.match(app.node('#app').innerHTML, /当前课程的 AI 答疑/);
+});
+test('returning from Q&A restores the reading position for both lesson formats and tab entry', () => {
+  const app = harness();
+  app.run("openLesson('p1')");
+  app.run('window.scrollY = 742');
+  app.run("action('quick-ask', { dataset: {} })");
+  assert.match(app.node('#app').innerHTML, /data-action="back-to-reading"/);
+  app.run('window.scrollY = 0');
+  app.run("action('back-to-reading', { dataset: {} })");
+  assert.equal(app.run('lessonTab'), 'read');
+  assert.equal(app.run('window.scrollY'), 742);
+
+  app.run("state.blockCourses.p1 = {intro:'分步课程',blocks:[{id:'reading-1',type:'reading',title:'讲解',objective:'理解',content:null}]}; openLesson('p1')");
+  assert.equal(app.run('readingReturn'), null, 'opening a lesson clears the previous return position');
+  app.run('window.scrollY = 386');
+  app.run("action('lesson-tab', { dataset: { tab: 'chat' } })");
+  app.run('window.scrollY = 0');
+  app.run("action('lesson-tab', { dataset: { tab: 'read' } })");
+  assert.equal(app.run('window.scrollY'), 386);
 });
 test('block generation carries bounded nearby outline and prior teaching context', () => {
   const blocks = Array.from({ length: 45 }, (_, index) => ({ id: `block-${index}`, type: 'reading', title: `模块 ${index}`, objective: `目标 ${index}`, content: index < 30 ? { text: '概念解释'.repeat(400) } : null }));

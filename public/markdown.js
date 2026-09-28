@@ -1,3 +1,5 @@
+import { renderVisual } from './diagrams.js';
+
 const escapeHTML = value => String(value ?? '').replace(/[&<>"']/g, character => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[character]));
 
 // Dependencies are supplied by the browser entry point (and by the DOM test harness).
@@ -5,6 +7,15 @@ export function createMarkdownRenderer(Marked, purifier) {
   const parser = new Marked({
     async: false, gfm: true, breaks: true,
     renderer: {
+      code({ text, lang }) {
+        const visual = renderVisual(lang, text);
+        if (visual) return visual;
+        const language = (lang || '').split(/\s+/)[0].toLowerCase();
+        const code = `<pre><code class="language-${escapeHTML(language)}">${escapeHTML(text)}</code></pre>`;
+        return ['flow', 'architecture', 'chart'].includes(language)
+          ? `<div class="visual-fallback"><p>图示暂时无法绘制，已保留原文。可请 AI 按图示语法重新生成。</p>${code}</div>`
+          : code;
+      },
       heading({ tokens, depth }) {
         // The lesson is h1 and the module is h2; body headings must not compete with them.
         const level = Math.min(6, Math.max(3, depth + 1));
@@ -24,8 +35,8 @@ export function createMarkdownRenderer(Marked, purifier) {
     const text = String(source ?? '');
     try {
       return purifier.sanitize(parser.parse(text), {
-        ALLOWED_TAGS: ['p', 'h3', 'h4', 'h5', 'h6', 'strong', 'em', 'del', 'ul', 'ol', 'li', 'blockquote', 'pre', 'code', 'br', 'hr', 'table', 'thead', 'tbody', 'tr', 'th', 'td'],
-        ALLOWED_ATTR: ['class', 'start', 'align'], ALLOW_DATA_ATTR: false, ALLOW_ARIA_ATTR: false
+        ALLOWED_TAGS: ['p', 'h3', 'h4', 'h5', 'h6', 'strong', 'em', 'del', 'ul', 'ol', 'li', 'blockquote', 'pre', 'code', 'br', 'hr', 'table', 'thead', 'tbody', 'tr', 'th', 'td', 'figure', 'figcaption', 'details', 'summary', 'div', 'small', 'svg', 'rect', 'path', 'circle', 'polyline', 'text', 'span'],
+        ALLOWED_ATTR: ['class', 'start', 'align', 'style', 'viewBox', 'role', 'aria-label', 'x', 'y', 'width', 'height', 'rx', 'cx', 'cy', 'r', 'd', 'points', 'fill', 'text-anchor'], ALLOW_DATA_ATTR: false, ALLOW_ARIA_ATTR: true
       });
     } catch {
       // A renderer failure must not hide a saved lesson or expose unsanitized HTML.

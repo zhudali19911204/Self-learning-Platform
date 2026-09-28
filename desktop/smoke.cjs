@@ -67,6 +67,25 @@ exports.run = async (window, store, directory) => {
   await wait("document.querySelector('main h1')");
   await evaluate("document.querySelector('[data-page=routes]').click(); document.querySelector('[data-action=open-lesson][data-id=p1]').click()");
   await wait("document.querySelector('[data-tab=quiz]')");
+  await evaluate("window.scrollTo(0, 350); new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))");
+  const quickAskPosition = await evaluate("(() => { const quick = document.querySelector('.quick-ask-button').getBoundingClientRect(), lesson = document.querySelector('.lesson-content').getBoundingClientRect(); return {left:quick.left,right:quick.right,top:quick.top,bottom:quick.bottom,lessonRight:lesson.right,viewportWidth:innerWidth,viewportHeight:innerHeight,scrollWidth:document.documentElement.scrollWidth,scrollTop:scrollY}; })()");
+  assert.ok(quickAskPosition.left >= quickAskPosition.lessonRight && quickAskPosition.right <= quickAskPosition.viewportWidth, JSON.stringify(quickAskPosition));
+  assert.ok(quickAskPosition.scrollWidth <= quickAskPosition.viewportWidth + 1, JSON.stringify(quickAskPosition));
+  assert.ok(Math.abs((quickAskPosition.top + quickAskPosition.bottom) / 2 - quickAskPosition.viewportHeight / 2) < 110);
+  await writeFile(path.join(directory, '..', 'quick-ask-smoke.png'), (await window.webContents.capturePage()).toPNG());
+  const originalSize = window.getSize();
+  window.setSize(900, originalSize[1]);
+  await evaluate('new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))');
+  assert.equal(await evaluate("getComputedStyle(document.querySelector('.quick-ask-dock')).position"), 'fixed');
+  assert.equal(await evaluate("document.querySelector('.quick-ask-button').getBoundingClientRect().right <= innerWidth"), true);
+  window.setSize(...originalSize);
+  await evaluate('new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))');
+  await evaluate("document.querySelector('[data-action=quick-ask]').click()");
+  await wait("document.querySelector('#lesson-question') && document.querySelector('.study-chat')");
+  assert.equal(await evaluate("document.activeElement?.id"), 'lesson-question');
+  await evaluate("document.querySelector('[data-action=back-to-reading]').click()");
+  await wait("document.querySelector('.lesson-intro')");
+  assert.ok(Math.abs((await evaluate('scrollY')) - quickAskPosition.scrollTop) <= 2, 'returning from Q&A should restore the reading scroll position');
   await evaluate("document.querySelector('[data-tab=quiz]').click(); document.querySelector('[name=q0][value=\"1\"]').checked = true; document.querySelector('[name=q1][value=\"1\"]').checked = true; document.querySelector('#quiz-form').requestSubmit()");
   await wait("document.querySelector('.quiz-result.passed')");
   const reflectionMarkdown = '## 桌面集成测试心得\n\n**掌握核心概念**。';
@@ -117,7 +136,7 @@ exports.run = async (window, store, directory) => {
       res.writeHead(503, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({error:{message:'Test-only unavailable model'}})); return;
     }
-    const markdownAnswer = ['## 核心结论', '', '**剩余现金 40 元**：收入 100 元，减去支出 60 元。', '', '### 计算步骤', '', '1. 从收支表中找到收入。', '2. 减去支出，得到剩余现金。', '', '> 提示：先确认收入与支出的时间范围一致。', '', '| 项目 | 金额 |', '| --- | ---: |', '| 收入 | 100 |', '| 支出 | 60 |', '', '```python', 'balance = 100 - 60', 'print(balance)', '```'].join('\n');
+    const markdownAnswer = ['## 核心结论', '', '**剩余现金 40 元**：收入 100 元，减去支出 60 元。', '', '### 计算步骤', '', '1. 从收支表中找到收入。', '2. 减去支出，得到剩余现金。', '', '> 提示：先确认收入与支出的时间范围一致。', '', '| 项目 | 金额 |', '| --- | ---: |', '| 收入 | 100 |', '| 支出 | 60 |', '', '```flow', '开始 -> 员工提交申请', '员工提交申请 -> 主管审批', '主管审批 -> 判断天数', '判断天数 ->|是（<=3天）| 主管批准', '判断天数 ->|否（>3天）| 部门经理审批', '主管批准 -> 结束1', '部门经理审批 -> 经理判断', '经理判断 ->|批准| 结束2', '经理判断 ->|驳回| 结束3', '```', '', '```chart', 'type: bar', 'title: 示例收支', '收入 | 100', '支出 | 60', '```', '', '```python', 'balance = 100 - 60', 'print(balance)', '```'].join('\n');
     const output = input.daily !== undefined ? {...demoPlan,title:'路线纠正集成测试',lessons:input.repair ? demoPlan.lessons : [demoPlan.lessons[0]]}
       : input.revisionRequest ? {text:markdownAnswer}
       : input.notes ? {answer:'## 检索结论\n\n**输入与输出**已记录在你的知识卡片中。',citations:[input.notes[0].id]}
@@ -203,8 +222,20 @@ exports.run = async (window, store, directory) => {
     assert.ok(typography.table && typography.code && typography.quote);
     assert.equal(typography.bodyWhiteSpace, 'normal');
     assert.ok(typography.headingSize > typography.textSize);
+    assert.equal(await evaluate("document.querySelectorAll('.teaching-reading .diagram-node').length"), 10);
+    assert.equal(await evaluate("document.querySelectorAll('.teaching-reading .diagram-edge-label').length"), 4);
+    assert.equal(await evaluate("document.querySelectorAll('.teaching-reading .learning-chart svg rect').length"), 2);
+    assert.match(revised.blockCourses[lessonId].blocks[0].content.text, /```chart/);
     await evaluate('new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))');
     await writeFile(path.join(directory, '..', 'teaching-smoke.png'), (await window.webContents.capturePage()).toPNG());
+    await evaluate("document.querySelector('.teaching-reading .learning-flow').scrollIntoView({block:'center'})");
+    await evaluate('new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))');
+    await writeFile(path.join(directory, '..', 'visual-smoke.png'), (await window.webContents.capturePage()).toPNG());
+    window.webContents.reload();
+    await new Promise(resolve => window.webContents.once('did-finish-load', resolve));
+    await wait("document.querySelector('main h1')");
+    await evaluate(`document.querySelector('[data-page=routes]').click(); document.querySelector('[data-action=open-lesson][data-id="${lessonId}"]').click()`);
+    await wait("document.querySelector('.teaching-reading .learning-chart svg rect')");
     // A failed regeneration keeps both the original text and the feedback field.
     await evaluate(`document.querySelector('[data-action=request-revision][data-block="${exampleId}"]').click()`);
     await evaluate("document.querySelector('#revision-request').value = '测试模型不可用'; document.querySelector('#revision-form').requestSubmit()");
@@ -246,5 +277,5 @@ exports.run = async (window, store, directory) => {
   await wait("document.querySelector('#desktop-settings-form')");
   const image = await window.webContents.capturePage();
   await writeFile(path.join(directory, '..', 'settings-smoke.png'), image.toPNG());
-  console.log('DESKTOP_SMOKE', JSON.stringify({ passed: true, checks: ['window', 'sandbox', 'settings-save', 'os-encryption', 'cloud-save-confirmation', 'cloud-settings-reload', 'lan-save-confirmation', 'quiz', 'wiki', 'disk-persistence', 'reload', 'lesson-qa', 'plan-invalid-count-repair', 'teaching-unit', 'feedback-regeneration', 'markdown-typography', 'markdown-revision-preset', 'reflection-markdown-preview', 'note-markdown-read-edit', 'chat-markdown', 'grounded-markdown-citations', 'ai-wiki-markdown-reload', 'revision-failure-preserves-content', 'revision-restore-reload'], screenshot: path.join(directory, '..', 'settings-smoke.png') }));
+  console.log('DESKTOP_SMOKE', JSON.stringify({ passed: true, checks: ['window', 'sandbox', 'settings-save', 'os-encryption', 'cloud-save-confirmation', 'cloud-settings-reload', 'lan-save-confirmation', 'quick-ask-right-dock-and-focus', 'quick-ask-return-position', 'quiz', 'wiki', 'disk-persistence', 'reload', 'lesson-qa', 'plan-invalid-count-repair', 'teaching-unit', 'feedback-regeneration', 'markdown-typography', 'local-diagrams-and-charts-reload', 'markdown-revision-preset', 'reflection-markdown-preview', 'note-markdown-read-edit', 'chat-markdown', 'grounded-markdown-citations', 'ai-wiki-markdown-reload', 'revision-failure-preserves-content', 'revision-restore-reload'], screenshot: path.join(directory, '..', 'settings-smoke.png') }));
 };

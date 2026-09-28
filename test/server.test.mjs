@@ -29,7 +29,7 @@ test('serves all client assets and demo status; does not expose server files', a
   assert.equal(status.model, null);
   assert.equal(status.provider, 'ollama');
   assert.equal(status.configurationError, null);
-  for (const path of ['/', '/app.js', '/demo.js', '/blocks.js', '/markdown.js', '/vendor/marked.js', '/vendor/purify.js', '/styles.css', '/favicon.svg']) {
+  for (const path of ['/', '/app.js', '/demo.js', '/blocks.js', '/markdown.js', '/diagrams.js', '/vendor/marked.js', '/vendor/purify.js', '/styles.css', '/favicon.svg']) {
     const r = await app.get(path); assert.equal(r.status, 200); assert.ok((await r.text()).length > 0);
     assert.ok(r.headers.get('content-security-policy').includes("script-src 'self'"));
   }
@@ -49,9 +49,14 @@ test('stepwise lesson APIs validate outline and individual block output', async 
   assert.match(sent.messages[0].content, /首次出现的术语要定义/);
   assert.match(sent.messages[0].content, /text 字段内使用 Markdown 文档格式/);
   assert.match(sent.messages[0].content, /关键定义或核心结论用 \*\*加粗\*\*/);
+  assert.match(sent.messages[0].content, /flow 或 architecture/);
+  assert.match(sent.messages[0].content, /最多 24 个节点、40 条连线/);
+  assert.match(sent.messages[0].content, /条件或结果/);
+  assert.match(sent.messages[0].content, /数据必须来自本课给定的数值/);
   assert.deepEqual(JSON.parse(sent.messages[1].content).previous, blockRequest.previous);
   assert.deepEqual(await (await blockApp.post('/api/lesson-block', { ...blockRequest, block: { type: 'practice', title: '动手做', objective: '独立完成' } })).json(), { text: '分步讲解正文' });
   assert.match(sent.messages[0].content, /完成标准和两个由浅入深的提示/);
+  assert.doesNotMatch(sent.messages[0].content, /flow 或 architecture/);
   assert.equal((await blockApp.post('/api/lesson-block', { ...blockRequest, previous: [{ ...blockRequest.previous[0], excerpt: 'x'.repeat(1001) }] })).status, 400);
   assert.equal((await blockApp.post('/api/lesson-block', { ...context, intro: outline.intro, block: { type: 'unknown', title: '错', objective: '错' } })).status, 400);
 });
