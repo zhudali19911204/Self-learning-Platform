@@ -6,7 +6,7 @@ import path from 'node:path';
 import { demoPlan, demoLessons } from '../public/demo.js';
 import { validLesson } from '../server.mjs';
 import { validState } from './local-store.mjs';
-import { validOutline, validBlockSpec, validBlockContent } from '../public/blocks.js';
+import { validOutline, validBlockSpec, validBlockContent, revisedContent, restoredContent } from '../public/blocks.js';
 
 const exists = async file => { try { await stat(file); return true; } catch (error) { if (error.code === 'ENOENT') return false; throw error; } };
 const id = value => typeof value === 'string' && /^[a-zA-Z0-9_-]{1,160}$/.test(value) && !['__proto__', 'constructor', 'prototype'].includes(value);
@@ -241,6 +241,32 @@ export async function createSqliteStore(directory) {
       transaction(db, () => {
         db.prepare('UPDATE lesson_blocks SET content_json = ? WHERE lesson_id = ? AND id = ? AND content_json IS NULL').run(JSON.stringify(content), lessonId, blockId);
         if (block.type === 'quiz') db.prepare("UPDATE progress SET completed = 0, last_score = 0, last_answers_json = '[]' WHERE lesson_id = ?").run(lessonId);
+      });
+    },
+    reviseBlock(lessonId, blockId, content, expectedText) {
+      requireLesson(lessonId);
+      if (!id(blockId)) throw new Error('内容块不存在。');
+      return transaction(db, () => {
+        const block = db.prepare('SELECT type, content_json FROM lesson_blocks WHERE lesson_id = ? AND id = ?').get(lessonId, blockId);
+        if (!block?.content_json) throw new Error('内容块尚未生成。');
+        const previous = fromJSON(block.content_json);
+        if (previous.text !== expectedText) throw new Error('内容已更新，请重新打开课程后重试。');
+        const next = revisedContent(block.type, previous, content);
+        db.prepare('UPDATE lesson_blocks SET content_json = ? WHERE lesson_id = ? AND id = ?').run(JSON.stringify(next), lessonId, blockId);
+        return next;
+      });
+    },
+    restoreBlock(lessonId, blockId, expectedText) {
+      requireLesson(lessonId);
+      if (!id(blockId)) throw new Error('内容块不存在。');
+      return transaction(db, () => {
+        const block = db.prepare('SELECT type, content_json FROM lesson_blocks WHERE lesson_id = ? AND id = ?').get(lessonId, blockId);
+        if (!block?.content_json) throw new Error('内容块尚未生成。');
+        const previous = fromJSON(block.content_json);
+        if (previous.text !== expectedText) throw new Error('内容已更新，请重新打开课程后重试。');
+        const next = restoredContent(block.type, previous);
+        db.prepare('UPDATE lesson_blocks SET content_json = ? WHERE lesson_id = ? AND id = ?').run(JSON.stringify(next), lessonId, blockId);
+        return next;
       });
     },
     saveProgress(lessonId, value) {

@@ -1,6 +1,6 @@
 {
   "name": "learnflow",
-  "version": "1.0.2",
+  "version": "1.0.3",
   "main": "desktop/main.cjs",
   "private": true,
   "type": "module",
@@ -14,19 +14,35 @@
     "start": "node --env-file-if-exists=.env server.mjs",
     "test": "node --test"
   },
-  "engines": { "node": ">=22.16" },
+  "engines": {
+    "node": ">=22.16"
+  },
   "devDependencies": {
     "electron": "44.4.5",
-    "electron-builder": "26.15.3"
+    "electron-builder": "26.15.3",
+    "jsdom": "27.4.0"
   },
   "build": {
     "appId": "cn.learnflow.desktop",
     "productName": "Learnflow",
-    "directories": { "output": "release" },
-    "files": ["desktop/**", "public/**", "server.mjs", "llm.mjs", "package.json"],
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "desktop/**",
+      "public/**",
+      "server.mjs",
+      "llm.mjs",
+      "package.json"
+    ],
     "asar": true,
-    "electronFuses": { "runAsNode": false },
-    "win": { "target": "nsis", "signAndEditExecutable": false },
+    "electronFuses": {
+      "runAsNode": false
+    },
+    "win": {
+      "target": "nsis",
+      "signAndEditExecutable": false
+    },
     "nsis": {
       "oneClick": false,
       "perMachine": false,
@@ -36,5 +52,9 @@
       "deleteAppDataOnUninstall": false,
       "artifactName": "Learnflow-Setup-${version}.${ext}"
     }
+  },
+  "dependencies": {
+    "dompurify": "3.4.16",
+    "marked": "18.0.14"
   }
 }

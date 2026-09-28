@@ -14,6 +14,8 @@ contextBridge.exposeInMainWorld('learnflowDesktop', Object.freeze({
   saveOutline: (id, value) => invoke('learnflow:save-outline', id, value),
   appendBlock: (id, value) => invoke('learnflow:append-block', id, value),
   saveBlock: (id, blockId, value) => invoke('learnflow:save-block', id, blockId, value),
+  reviseBlock: (id, blockId, value, expectedText) => invoke('learnflow:revise-block', id, blockId, value, expectedText),
+  restoreBlock: (id, blockId, expectedText) => invoke('learnflow:restore-block', id, blockId, expectedText),
   saveProgress: (id, value) => invoke('learnflow:save-progress', id, value),
   saveReflection: (id, value) => invoke('learnflow:save-reflection', id, value),
   appendChat: (id, question, answer) => invoke('learnflow:append-chat', id, question, answer),

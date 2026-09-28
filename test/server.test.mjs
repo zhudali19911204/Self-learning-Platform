@@ -29,11 +29,11 @@ test('serves all client assets and demo status; does not expose server files', a
   assert.equal(status.model, null);
   assert.equal(status.provider, 'ollama');
   assert.equal(status.configurationError, null);
-  for (const path of ['/', '/app.js', '/demo.js', '/blocks.js', '/styles.css', '/favicon.svg']) {
+  for (const path of ['/', '/app.js', '/demo.js', '/blocks.js', '/markdown.js', '/vendor/marked.js', '/vendor/purify.js', '/styles.css', '/favicon.svg']) {
     const r = await app.get(path); assert.equal(r.status, 200); assert.ok((await r.text()).length > 0);
     assert.ok(r.headers.get('content-security-policy').includes("script-src 'self'"));
   }
-  for (const path of ['/server.mjs', '/.env', '/package.json', '/unknown']) assert.equal((await app.get(path)).status, 404);
+  for (const path of ['/server.mjs', '/.env', '/package.json', '/vendor/package.json', '/node_modules/marked/package.json', '/unknown']) assert.equal((await app.get(path)).status, 404);
 });
 test('stepwise lesson APIs validate outline and individual block output', async t => {
   const outline = { intro: '从概念开始', blocks: [{ type: 'reading', title: '概念', objective: '理解概念' }, { type: 'quiz', title: '自测', objective: '检验理解' }] };
@@ -47,11 +47,34 @@ test('stepwise lesson APIs validate outline and individual block output', async 
   const blockRequest = { ...context, intro: outline.intro, block: outline.blocks[0], minutes: 25, outline: outline.blocks, previous: [{ type: 'reading', title: '前一段', excerpt: '已经解释过的概念' }], sequence: { position: 2, total: 4 } };
   assert.deepEqual(await (await blockApp.post('/api/lesson-block', blockRequest)).json(), { text: '分步讲解正文' });
   assert.match(sent.messages[0].content, /首次出现的术语要定义/);
+  assert.match(sent.messages[0].content, /text 字段内使用 Markdown 文档格式/);
+  assert.match(sent.messages[0].content, /关键定义或核心结论用 \*\*加粗\*\*/);
   assert.deepEqual(JSON.parse(sent.messages[1].content).previous, blockRequest.previous);
   assert.deepEqual(await (await blockApp.post('/api/lesson-block', { ...blockRequest, block: { type: 'practice', title: '动手做', objective: '独立完成' } })).json(), { text: '分步讲解正文' });
   assert.match(sent.messages[0].content, /完成标准和两个由浅入深的提示/);
   assert.equal((await blockApp.post('/api/lesson-block', { ...blockRequest, previous: [{ ...blockRequest.previous[0], excerpt: 'x'.repeat(1001) }] })).status, 400);
   assert.equal((await blockApp.post('/api/lesson-block', { ...context, intro: outline.intro, block: { type: 'unknown', title: '错', objective: '错' } })).status, 400);
+});
+
+test('regeneration uses user clarity requirements and original text, but cannot revise quizzes', async t => {
+  let sent;
+  const app = await serve(t, {model:'test', fetchImpl:async (_url, init) => {
+    sent = JSON.parse(init.body);
+    return Response.json({message:{content:JSON.stringify({text:'重新解释的完整正文', revisions:[{text:'模型伪造的历史',updated:1}]})}});
+  }});
+  const request = {goal:'学习财务分析', level:'零基础', title:'现金流', objective:'理解现金流', intro:'课程', block:{type:'reading', title:'概念', objective:'理解'}, revisionRequest:'用家庭收支表讲清第二段，逐步计算', currentExcerpt:'原始正文', related:[{type:'example',title:'收支表',excerpt:'当前配套案例'}]};
+  assert.deepEqual(await (await app.post('/api/lesson-block', request)).json(), {text:'重新解释的完整正文'});
+  const payload = JSON.parse(sent.messages[1].content);
+  assert.equal(payload.revisionRequest, request.revisionRequest);
+  assert.equal(payload.currentExcerpt, request.currentExcerpt);
+  assert.deepEqual(payload.related, request.related);
+  assert.match(sent.messages[0].content, /明确解决反馈中的困惑/);
+  for (const patch of [{revisionRequest:''}, {revisionRequest:'x'.repeat(1001)}, {currentExcerpt:undefined}, {currentExcerpt:'x'.repeat(12001)}, {block:{...request.block,type:'quiz'}}, {related:[{type:'reading',title:'越界',excerpt:'错误'}]}]) {
+    assert.equal((await app.post('/api/lesson-block', {...request,...patch})).status, 400);
+  }
+  assert.equal((await app.post('/api/lesson-block', {...request,block:{...request.block,type:'example'}})).status, 200);
+  assert.match(sent.messages[0].content, /操作步骤使用编号列表/);
+  assert.match(sent.messages[0].content, /若反馈仅要求优化排版，保留原有事实/);
 });
 test('demo mode refuses arbitrary AI generation instead of returning fabricated results', async t => {
   const app = await serve(t);
@@ -85,22 +108,66 @@ test('AI planning uses user constraints and assigns application-owned IDs', asyn
   assert.deepEqual(JSON.parse(sent.messages[1].content), input);
 });
 test('planning repairs one structurally invalid model response and explains repeated budget failures', async t => {
-  let calls = 0, repairPrompt = '';
+  let calls = 0, repairPrompt = '', repairData;
   const repaired = await serve(t, { model: 'test', fetchImpl: async (_url, init) => {
     calls++;
     const payload = JSON.parse(init.body);
-    if (calls === 2) repairPrompt = payload.messages[0].content;
+    if (calls === 2) { repairPrompt = payload.messages[0].content; repairData = JSON.parse(payload.messages[1].content); }
     return Response.json({ message: { content: JSON.stringify(calls === 1 ? { title: '过短路线', description: '只有一节', lessons: [demoPlan.lessons[0]] } : demoPlan) } });
   } });
   assert.equal((await repaired.post('/api/plan', input)).status, 200);
   assert.equal(calls, 2);
   assert.match(repairPrompt, /课程数量必须为 3–12 节/);
+  assert.match(repairPrompt, /实际返回了 1 节/);
+  assert.equal(repairData.goal, input.goal);
+  assert.equal(repairData.repair.receivedLessonCount, 1);
+  assert.equal(repairData.repair.previousPlan.lessons[0].title, demoPlan.lessons[0].title);
   let failedCalls = 0;
   const overBudget = await serve(t, { model: 'test', fetchImpl: async () => { failedCalls++; return Response.json({ message: { content: JSON.stringify(demoPlan) } }); } });
   const response = await overBudget.post('/api/plan', { ...input, daily: 10, days: 7 });
   assert.equal(response.status, 502);
   assert.match((await response.json()).error, /总时长.*超过可用/);
   assert.equal(failedCalls, 2);
+});
+
+test('planning uses a full multi-course example and reports actual count versus a missing array', async t => {
+  let prompt;
+  const valid = await serve(t, {model:'test', fetchImpl:async (_url, init) => {
+    prompt = JSON.parse(init.body).messages[0].content;
+    return Response.json({message:{content:JSON.stringify(demoPlan)}});
+  }});
+  assert.equal((await valid.post('/api/plan', input)).status, 200);
+  const shape = JSON.parse(prompt.slice(prompt.indexOf('{"title":"根据目标命名的路线"')));
+  assert.ok(shape.lessons.length >= 3 && shape.lessons.length <= 12);
+  assert.ok(shape.lessons.reduce((total, lesson) => total + lesson.minutes, 0) <= input.daily * input.days);
+  assert.match(prompt, /days 表示整个学习周期，不等于课程数量/);
+  for (const count of [0, 1, 2, 13, 30]) {
+    const lessons = Array.from({length:count}, (_, index) => ({...demoPlan.lessons[0],title:`课程 ${index}`}));
+    const app = await serve(t, {model:'test',fetchImpl:mock({...demoPlan,lessons})});
+    const response = await app.post('/api/plan', input);
+    assert.equal(response.status, 502);
+    assert.match((await response.json()).error, new RegExp(`实际返回了 ${count} 节`));
+  }
+  for (const lessons of [undefined, '课程列表', {title:'单个对象'}]) {
+    const app = await serve(t, {model:'test',fetchImpl:mock({title:'路线',description:'课程',lessons})});
+    assert.match((await (await app.post('/api/plan',input)).json()).error, /lessons/);
+  }
+});
+
+test('planning repair bounds rejected drafts and preserves the original goal when too many courses are returned', async t => {
+  let calls = 0, repair;
+  const app = await serve(t, {model:'test',fetchImpl:async (_url, init) => {
+    calls++;
+    const payload = JSON.parse(init.body);
+    if (calls === 2) repair = JSON.parse(payload.messages[1].content).repair;
+    const output = calls === 1 ? {...demoPlan,lessons:Array.from({length:80}, (_, index) => ({...demoPlan.lessons[0],title:`主题 ${index}`,objective:'x'.repeat(1500)}))} : demoPlan;
+    return Response.json({message:{content:JSON.stringify(output)}});
+  }});
+  assert.equal((await app.post('/api/plan',input)).status, 200);
+  assert.equal(repair.receivedLessonCount, 80);
+  assert.equal(repair.previousPlan.lessons.length, 24);
+  assert.ok(repair.previousPlan.lessons.every(lesson => lesson.objective.length <= 320));
+  assert.equal(calls, 2);
 });
 test('rejects impossible study budgets and incomplete model output', async t => {
   const app = await serve(t, { model: 'test', fetchImpl: mock(demoPlan) });

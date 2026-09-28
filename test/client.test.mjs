@@ -4,18 +4,23 @@ import vm from 'node:vm';
 import { readFile } from 'node:fs/promises';
 import { webcrypto } from 'node:crypto';
 import { demoPlan, demoLessons } from '../public/demo.js';
-import { lessonFromBlocks, validOutline, validBlockContent, validBlockSpec, blockGenerationContext } from '../public/blocks.js';
+import { lessonFromBlocks, validOutline, validBlockContent, validBlockSpec, blockGenerationContext, revisedContent, restoredContent } from '../public/blocks.js';
+import { Marked } from 'marked';
+import createDOMPurify from 'dompurify';
+import { JSDOM } from 'jsdom';
+import { createMarkdownRenderer } from '../public/markdown.js';
+const DOMPurify = createDOMPurify(new JSDOM('').window);
 
 // This harness checks application state transitions, not browser rendering.
-const source = (await readFile(new URL('../public/app.js', import.meta.url), 'utf8')).replace("import { demoPlan, demoLessons } from './demo.js';", '').replace("import { lessonFromBlocks, validOutline, validBlockContent, validBlockSpec, blockGenerationContext } from './blocks.js';", '');
+const source = (await readFile(new URL('../public/app.js', import.meta.url), 'utf8')).replace(/^import .* from '\.\/[^']+';$/gm, '');
 function harness(saved, fetchImpl) {
   const nodes = new Map(), listeners = new Map(), storage = new Map(saved ? [['learnflow.v1', saved]] : []);
   const node = selector => {
-    if (!nodes.has(selector)) nodes.set(selector, { innerHTML: '', textContent: '', classList: { add() {}, remove() {} }, scrollIntoView() {}, showModal() {}, close() {} });
+    if (!nodes.has(selector)) nodes.set(selector, { innerHTML: '', textContent: '', open: false, classList: { add() {}, remove() {} }, scrollIntoView() {}, focus() {}, showModal() { this.open = true; }, close() { this.open = false; } });
     return nodes.get(selector);
   };
   const context = vm.createContext({
-    demoPlan, demoLessons, lessonFromBlocks, validOutline, validBlockContent, validBlockSpec, blockGenerationContext, structuredClone, crypto: webcrypto, AbortSignal,
+    demoPlan, demoLessons, lessonFromBlocks, validOutline, validBlockContent, validBlockSpec, blockGenerationContext, revisedContent, restoredContent, Marked, DOMPurify, createMarkdownRenderer, structuredClone, crypto: webcrypto, AbortSignal,
     document: { querySelector: node, addEventListener(name, listener) { listeners.set(name, listener); } },
     localStorage: { get length() { return storage.size; }, key: index => [...storage.keys()][index] ?? null, getItem: key => storage.get(key) ?? null, setItem: (key, value) => storage.set(key, value), removeItem: key => storage.delete(key) },
     window: { scrollTo() {}, confirm: () => true }, setTimeout: () => 1, clearTimeout() {},
@@ -24,9 +29,9 @@ function harness(saved, fetchImpl) {
   });
   vm.runInContext(source, context);
   const run = code => vm.runInContext(code, context);
-  async function submit(id, values, lessonId) {
+  async function submit(id, values, lessonId, blockId) {
     const button = { innerHTML: 'Submit', disabled: false, isConnected: false };
-    await listeners.get('submit')({ preventDefault() {}, target: { id, values, dataset: { id: lessonId }, querySelector: () => button } });
+    await listeners.get('submit')({ preventDefault() {}, target: { id, values, dataset: { id: lessonId, block: blockId }, querySelector: () => button } });
   }
   return { run, submit, node, storage };
 }
@@ -91,6 +96,65 @@ test('block generation carries bounded nearby outline and prior teaching context
   assert.deepEqual(context.sequence, { position: 31, total: 45 });
   assert.equal(context.outline[0].title, '模块 18');
   assert.equal(context.outline.at(-1).title, '模块 42');
+});
+
+test('teaching units pair adjacent examples and regenerate only the requested block with recoverable history', async () => {
+  const payloads = [];
+  let fail = false;
+  const app = harness(null, async (url, options) => {
+    if (url === '/api/status') return { ok: true, json: async () => ({ mode: 'ai' }) };
+    payloads.push(JSON.parse(options.body));
+    return { ok: !fail, json: async () => fail ? { error: '模型暂时不可用' } : { text: '用收支表逐步解释后的正文' } };
+  });
+  app.run(`state.blockCourses = { p1: {intro: '课程导语', blocks: [
+    {id: 'reading-1', type: 'reading', title: '理解现金流', objective: '理解概念', content: {text: '原始讲解'}},
+    {id: 'example-1', type: 'example', title: '一张收支表', objective: '应用概念', content: {text: '原始案例'}},
+    {id: 'quiz-1', type: 'quiz', title: '检验理解', objective: '独立回答', content: null}
+  ]}}; state.progress.p1 = {completed:true}; state.notes = [{id:'note-1',lessonId:'p1',title:'现金流',content:'原Wiki',tags:[],updated:1}]; page = 'study'; activeLesson = 'p1'; status = {mode:'ai'}; render();`);
+  const html = app.node('#app').innerHTML;
+  assert.match(html, /<article class="teaching-unit"[^>]*>.*知识讲解.*原始讲解.*配套案例.*原始案例.*<\/article>/s);
+  assert.equal((html.match(/class="teaching-unit"/g) || []).length, 1);
+  assert.ok(html.indexOf('</article>') < html.indexOf('data-block-id="quiz-1"'));
+  await app.run("action('request-revision', {dataset:{id:'p1',block:'reading-1'}})");
+  assert.equal(app.node('#revise-block-dialog').open, true);
+  assert.match(app.node('#revise-block-dialog').innerHTML, /你的具体要求/);
+  await app.run("action('markdown-revision-preset', {dataset:{}})");
+  assert.match(app.node('#revision-request').value, /请仅优化.*Markdown/);
+  await app.submit('revision-form', { request: '请用收支表一步步解释' }, 'p1', 'reading-1');
+  assert.equal(payloads[0].revisionRequest, '请用收支表一步步解释');
+  assert.equal(payloads[0].currentExcerpt, '原始讲解');
+  assert.equal(payloads[0].related[0].excerpt, '原始案例');
+  assert.equal(app.run('state.blockCourses.p1.blocks[0].content.text'), '用收支表逐步解释后的正文');
+  assert.equal(app.run('state.blockCourses.p1.blocks[1].content.text'), '原始案例');
+  assert.equal(app.run('state.progress.p1.completed'), true);
+  assert.equal(app.run('state.notes[0].content'), '原Wiki');
+  assert.equal(app.node('#revise-block-dialog').open, false);
+  const restoredApp = harness(app.storage.get('learnflow.v1'));
+  assert.equal(restoredApp.run('state.blockCourses.p1.blocks[0].content.revisions[0].text'), '原始讲解');
+  await app.run("action('restore-block', {dataset:{id:'p1',block:'reading-1'}})");
+  assert.equal(app.run('state.blockCourses.p1.blocks[0].content.text'), '原始讲解');
+  fail = true;
+  await app.run("action('request-revision', {dataset:{id:'p1',block:'example-1'}})");
+  await app.submit('revision-form', { request: '改成家庭日常支出的案例' }, 'p1', 'example-1');
+  assert.equal(app.run('state.blockCourses.p1.blocks[1].content.text'), '原始案例');
+  assert.equal(app.node('#revise-block-dialog').open, true);
+  assert.match(app.node('#revision-error').textContent, /模型暂时不可用/);
+  assert.equal(app.run('revisionBusy'), false);
+});
+
+test('revision history is bounded, validated and restored in order', () => {
+  let content = { text: '初始正文' };
+  for (let index = 1; index <= 12; index++) content = revisedContent('reading', content, { text: `第 ${index} 版` }, index);
+  assert.equal(content.revisions.length, 10);
+  assert.equal(content.revisions[0].text, '第 2 版');
+  content = restoredContent('reading', content);
+  assert.equal(content.text, '第 11 版');
+  assert.equal(content.revisions.length, 9);
+  assert.equal(restoredContent('reading', content).text, '第 10 版');
+  assert.equal(validBlockContent('reading', { text: '正文', revisions: [{ text: '', updated: 1 }] }), false);
+  assert.equal(validBlockContent('reading', { text: '正文', revisions: Array(11).fill({text:'旧版',updated:1}) }), false);
+  assert.throws(() => revisedContent('practice', {text:'任务'}, {text:'新任务'}), /只能重新生成/);
+  assert.throws(() => restoredContent('reading', {text:'正文'}), /没有可恢复/);
 });
 test('existing routes are categorized locally; deletion removes only the selected route and can be restored', async () => {
   const app = harness();

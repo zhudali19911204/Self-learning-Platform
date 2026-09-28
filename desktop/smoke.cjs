@@ -4,6 +4,7 @@ const { readFile, writeFile } = require('node:fs/promises');
 const path = require('node:path');
 const http = require('node:http');
 exports.run = async (window, store, directory) => {
+  const { demoPlan } = await import('../public/demo.js');
   const evaluate = code => window.webContents.executeJavaScript(code).catch(error => { console.error('SMOKE_FAILED_STEP', code.slice(0, 220)); throw error; });
   const wait = expression => evaluate(`new Promise((resolve, reject) => { let attempts = 0; const timer = setInterval(() => { try { if (${expression}) { clearInterval(timer); resolve(true); } else if (++attempts > 150) { clearInterval(timer); reject(new Error('Desktop check timed out')); } } catch (error) { clearInterval(timer); reject(error); } }, 100); })`);
   await wait("document.querySelector('main h1')");
@@ -59,6 +60,11 @@ exports.run = async (window, store, directory) => {
   await evaluate("document.querySelector('#model-provider').value = 'ollama'; document.querySelector('#model-provider').dispatchEvent(new Event('change', {bubbles:true})); document.querySelector('#model-name').value = 'desktop-smoke-model'; document.querySelector('[name=localOnly]').checked = true; document.querySelector('#desktop-settings-form').requestSubmit()");
   await wait("document.querySelector('#connection-result')?.textContent.includes('配置已保存并生效')");
   // Complete a sample lesson, generate a Wiki card, and persist it on disk.
+  // A previous smoke run may have left its custom test route active.
+  await evaluate(`window.learnflowDesktop.setActivePlan(${JSON.stringify(demoPlan.id)})`);
+  window.webContents.reload();
+  await new Promise(resolve => window.webContents.once('did-finish-load', resolve));
+  await wait("document.querySelector('main h1')");
   await evaluate("document.querySelector('[data-page=routes]').click(); document.querySelector('[data-action=open-lesson][data-id=p1]').click()");
   await wait("document.querySelector('[data-tab=quiz]')");
   await evaluate("document.querySelector('[data-tab=quiz]').click(); document.querySelector('[name=q0][value=\"1\"]').checked = true; document.querySelector('[name=q1][value=\"1\"]').checked = true; document.querySelector('#quiz-form').requestSubmit()");
@@ -83,9 +89,17 @@ exports.run = async (window, store, directory) => {
   const model = http.createServer(async (req, res) => {
     const chunks = [];
     for await (const chunk of req) chunks.push(chunk);
-    requests.push({ path: req.url, payload: JSON.parse(Buffer.concat(chunks).toString('utf8')) });
+    const payload = JSON.parse(Buffer.concat(chunks).toString('utf8'));
+    requests.push({ path: req.url, payload });
+    const input = JSON.parse(payload.messages[1].content);
+    if (input.revisionRequest === '测试模型不可用') {
+      res.writeHead(503, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({error:{message:'Test-only unavailable model'}})); return;
+    }
+    const markdownAnswer = ['## 核心结论', '', '**剩余现金 40 元**：收入 100 元，减去支出 60 元。', '', '### 计算步骤', '', '1. 从收支表中找到收入。', '2. 减去支出，得到剩余现金。', '', '> 提示：先确认收入与支出的时间范围一致。', '', '| 项目 | 金额 |', '| --- | ---: |', '| 收入 | 100 |', '| 支出 | 60 |', '', '```python', 'balance = 100 - 60', 'print(balance)', '```'].join('\n');
+    const output = input.daily !== undefined ? {...demoPlan,title:'路线纠正集成测试',lessons:input.repair ? demoPlan.lessons : [demoPlan.lessons[0]]} : input.revisionRequest ? {text:markdownAnswer} : {answer:'输出会把内容显示给用户。'};
     res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ choices: [{ message: { content: JSON.stringify({ answer: '输出会把内容显示给用户。' }) }, finish_reason: 'stop' }] }));
+    res.end(JSON.stringify({ choices: [{ message: { content: JSON.stringify(output) }, finish_reason: 'stop' }] }));
   });
   await new Promise(resolve => model.listen(0, '127.0.0.1', resolve));
   try {
@@ -98,7 +112,7 @@ exports.run = async (window, store, directory) => {
     await evaluate("document.querySelector('[data-page=routes]').click(); document.querySelector('[data-action=open-lesson][data-id=p1]').click()");
     await wait("document.querySelector('[data-tab=chat]')");
     await evaluate("document.querySelector('[data-tab=chat]').click(); document.querySelector('#lesson-question').value = '什么是输出？'; document.querySelector('#lesson-ask-form').requestSubmit()");
-    await wait("document.querySelector('.chat-message.from-ai')?.textContent.includes('显示给用户')");
+    await wait("document.querySelector('.chat-message.from-ai')?.textContent.includes('显示给用户') && !document.querySelector('#lesson-ask-form button[type=submit]').disabled");
     await store.flush();
     assert.equal(requests.length, 1);
     assert.equal(requests[0].path, '/v1/chat/completions');
@@ -106,6 +120,76 @@ exports.run = async (window, store, directory) => {
     const chatted = await store.loadState();
     assert.equal(chatted.chats.p1.at(-2).content, '什么是输出？');
     assert.equal(chatted.chats.p1.at(-1).content, '输出会把内容显示给用户。');
+    // Reproduce a one-course response and exercise the corrected retry through the real planner.
+    await evaluate("document.querySelector('[data-page=routes]').click(); document.querySelector('[data-action=planner]').click(); document.querySelector('#goal').value = '用 Python 编写自动整理文件的小工具'; document.querySelector('#plan-form').requestSubmit()");
+    await wait("!document.querySelector('#planner').open && document.querySelector('.route-overview h2')?.textContent === '路线纠正集成测试'");
+    const planRequests = requests.map(request => JSON.parse(request.payload.messages[1].content)).filter(input => input.daily !== undefined);
+    assert.equal(planRequests.length, 2);
+    assert.equal(planRequests[1].repair.receivedLessonCount, 1);
+    assert.equal(planRequests[1].goal, planRequests[0].goal);
+    const planned = await store.loadState();
+    assert.equal(planned.plans.find(plan => plan.id === planned.active).lessons.length, demoPlan.lessons.length);
+    // Test grouped teaching and feedback regeneration on a fresh, isolated lesson.
+    const { randomUUID } = require('node:crypto');
+    const route = structuredClone(demoPlan);
+    route.id = randomUUID(); route.source = 'ai'; route.title = '讲解与案例桌面测试';
+    route.lessons = route.lessons.map(lesson => ({...lesson, id:randomUUID()}));
+    const lessonId = route.lessons[0].id;
+    await evaluate(`window.learnflowDesktop.savePlan(${JSON.stringify(route)})`);
+    const course = await evaluate(`window.learnflowDesktop.saveOutline(${JSON.stringify(lessonId)}, ${JSON.stringify({intro:'独立集成测试课程', blocks:[
+      {type:'reading',title:'理解现金流',objective:'理解收支与余额'},
+      {type:'example',title:'日常收支案例',objective:'计算剩余现金'},
+      {type:'quiz',title:'检验理解',objective:'独立作答'}
+    ]})})`);
+    const readingId = course.blocks[0].id, exampleId = course.blocks[1].id;
+    await evaluate(`window.learnflowDesktop.saveBlock(${JSON.stringify(lessonId)}, ${JSON.stringify(readingId)}, {text:'原始讲解：认识现金流。'})`);
+    await evaluate(`window.learnflowDesktop.saveBlock(${JSON.stringify(lessonId)}, ${JSON.stringify(exampleId)}, {text:'配套案例：收入 100 元，支出 60 元。'})`);
+    await evaluate(`window.learnflowDesktop.saveProgress(${JSON.stringify(lessonId)}, {completed:true,attempts:1,lastScore:100,bestScore:100,lastAnswers:[0],updated:1234})`);
+    window.webContents.reload();
+    await new Promise(resolve => window.webContents.once('did-finish-load', resolve));
+    await wait("document.querySelector('main h1')");
+    await evaluate(`document.querySelector('[data-page=routes]').click(); document.querySelector('[data-action=open-lesson][data-id="${lessonId}"]').click()`);
+    await wait("document.querySelector('.teaching-unit .teaching-example')");
+    assert.equal(await evaluate("document.querySelector('.teaching-unit').querySelectorAll('.teaching-part').length"), 2);
+    await evaluate(`document.querySelector('[data-action=request-revision][data-block="${readingId}"]').click()`);
+    await wait("document.querySelector('#revise-block-dialog').open");
+    await evaluate("document.querySelector('[data-action=markdown-revision-preset]').click()");
+    assert.match(await evaluate("document.querySelector('#revision-request').value"), /请仅优化.*Markdown/);
+    await evaluate("document.querySelector('#revision-request').value = '术语太多，请用收支表逐步计算并解释'; document.querySelector('#revision-form').requestSubmit()");
+    await wait("!document.querySelector('#revise-block-dialog').open && document.querySelector('.teaching-reading .block-text').textContent.includes('剩余现金 40 元')");
+    const revised = await store.loadState();
+    assert.equal(revised.blockCourses[lessonId].blocks[0].content.revisions[0].text, '原始讲解：认识现金流。');
+    assert.equal(revised.blockCourses[lessonId].blocks[1].content.text, '配套案例：收入 100 元，支出 60 元。');
+    assert.equal(revised.progress[lessonId].completed, true);
+    assert.deepEqual(revised.notes, chatted.notes);
+    assert.equal(JSON.parse(requests.at(-1).payload.messages[1].content).revisionRequest, '术语太多，请用收支表逐步计算并解释');
+    const typography = await evaluate("(() => { const body = document.querySelector('.teaching-reading .markdown-content'); return { heading:body.querySelector('h3')?.textContent, subheading:body.querySelector('h4')?.textContent, strong:body.querySelector('strong')?.textContent, steps:body.querySelectorAll('ol > li').length, table:!!body.querySelector('table'), code:!!body.querySelector('pre code'), quote:!!body.querySelector('blockquote'), bodyWhiteSpace:getComputedStyle(body).whiteSpace, headingSize:parseFloat(getComputedStyle(body.querySelector('h3')).fontSize), textSize:parseFloat(getComputedStyle(body.querySelector('p')).fontSize) }; })()");
+    assert.equal(typography.heading, '核心结论');
+    assert.equal(typography.subheading, '计算步骤');
+    assert.equal(typography.strong, '剩余现金 40 元');
+    assert.equal(typography.steps, 2);
+    assert.ok(typography.table && typography.code && typography.quote);
+    assert.equal(typography.bodyWhiteSpace, 'normal');
+    assert.ok(typography.headingSize > typography.textSize);
+    await evaluate('new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))');
+    await writeFile(path.join(directory, '..', 'teaching-smoke.png'), (await window.webContents.capturePage()).toPNG());
+    // A failed regeneration keeps both the original text and the feedback field.
+    await evaluate(`document.querySelector('[data-action=request-revision][data-block="${exampleId}"]').click()`);
+    await evaluate("document.querySelector('#revision-request').value = '测试模型不可用'; document.querySelector('#revision-form').requestSubmit()");
+    await wait("document.querySelector('#revision-error').textContent.length > 0 && !document.querySelector('#revision-form button[type=submit]').disabled");
+    assert.equal(await evaluate("document.querySelector('#revise-block-dialog').open"), true);
+    assert.equal(await evaluate("document.querySelector('#revision-request').value"), '测试模型不可用');
+    assert.equal((await store.loadState()).blockCourses[lessonId].blocks[1].content.text, '配套案例：收入 100 元，支出 60 元。');
+    await writeFile(path.join(directory, '..', 'feedback-smoke.png'), (await window.webContents.capturePage()).toPNG());
+    await evaluate("document.querySelector('[data-action=close-revision]').click()");
+    // Exercise restoration through IPC and then reload from the actual SQLite file.
+    await evaluate(`window.learnflowDesktop.restoreBlock(${JSON.stringify(lessonId)}, ${JSON.stringify(readingId)}, ${JSON.stringify(revised.blockCourses[lessonId].blocks[0].content.text)})`);
+    window.webContents.reload();
+    await new Promise(resolve => window.webContents.once('did-finish-load', resolve));
+    await wait("document.querySelector('main h1')");
+    await evaluate(`document.querySelector('[data-page=routes]').click(); document.querySelector('[data-action=open-lesson][data-id="${lessonId}"]').click()`);
+    await wait("document.querySelector('.teaching-reading .block-text')?.textContent.includes('原始讲解')");
+    assert.equal(await evaluate("document.querySelector('[data-action=restore-block]') === null"), true);
   } finally {
     model.closeAllConnections();
     await new Promise(resolve => model.close(resolve));
@@ -118,5 +202,5 @@ exports.run = async (window, store, directory) => {
   await wait("document.querySelector('#desktop-settings-form')");
   const image = await window.webContents.capturePage();
   await writeFile(path.join(directory, '..', 'settings-smoke.png'), image.toPNG());
-  console.log('DESKTOP_SMOKE', JSON.stringify({ passed: true, checks: ['window', 'sandbox', 'settings-save', 'os-encryption', 'cloud-save-confirmation', 'cloud-settings-reload', 'lan-save-confirmation', 'quiz', 'wiki', 'disk-persistence', 'reload', 'lesson-qa'], screenshot: path.join(directory, '..', 'settings-smoke.png') }));
+  console.log('DESKTOP_SMOKE', JSON.stringify({ passed: true, checks: ['window', 'sandbox', 'settings-save', 'os-encryption', 'cloud-save-confirmation', 'cloud-settings-reload', 'lan-save-confirmation', 'quiz', 'wiki', 'disk-persistence', 'reload', 'lesson-qa', 'plan-invalid-count-repair', 'teaching-unit', 'feedback-regeneration', 'markdown-typography', 'markdown-revision-preset', 'revision-failure-preserves-content', 'revision-restore-reload'], screenshot: path.join(directory, '..', 'settings-smoke.png') }));
 };

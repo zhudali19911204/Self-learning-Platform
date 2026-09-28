@@ -99,6 +99,46 @@ test('outlines and blocks save independently and survive export/import', async t
   } finally { store.close(); }
 });
 
+test('block revisions persist per block, guard stale writes and preserve unrelated learning data', async t => {
+  const directory = await temporary(t);
+  let store = await createSqliteStore(directory);
+  try {
+    const course = store.saveOutline('p1', { intro: '课程', blocks: [
+      {type:'reading', title:'概念', objective:'理解'},
+      {type:'example', title:'案例', objective:'应用'},
+      {type:'quiz', title:'练习', objective:'检验'}
+    ] });
+    const [reading, example, quiz] = course.blocks;
+    store.saveBlock('p1', reading.id, {text:'原讲解'});
+    store.saveBlock('p1', example.id, {text:'原案例'});
+    store.saveBlock('p1', quiz.id, {questions: demoLessons.p1.questions});
+    store.saveProgress('p1', legacy().progress.p1);
+    store.saveReflection('p1', '我的心得');
+    store.saveNote(legacy().notes[0]);
+    const result = store.reviseBlock('p1', reading.id, {text:'清楚的新讲解'}, '原讲解');
+    assert.equal(result.revisions[0].text, '原讲解');
+    assert.throws(() => store.reviseBlock('p1', reading.id, {text:'过期写入'}, '原讲解'), /内容已更新/);
+    assert.throws(() => store.reviseBlock('p1', example.id, {text:''}, '原案例'), /只能重新生成/);
+    assert.throws(() => store.reviseBlock('p2', reading.id, {text:'越界'}, '清楚的新讲解'), /尚未生成/);
+    assert.throws(() => store.reviseBlock('p1', quiz.id, {questions:demoLessons.p1.questions}), /只能重新生成/);
+    assert.throws(() => store.restoreBlock('p1', reading.id, '过期内容'), /内容已更新/);
+    const exported = store.exportState();
+    assert.equal(exported.blockCourses.p1.blocks[1].content.text, '原案例');
+    assert.deepEqual(exported.progress.p1, legacy().progress.p1);
+    assert.equal(exported.notes[0].content, legacy().notes[0].content);
+    assert.equal(exported.reflections.p1, '我的心得');
+    store.replaceState(exported);
+    store.close(); store = await createSqliteStore(directory);
+    assert.deepEqual(store.getLesson('p1').blockCourse.blocks[0].content, result);
+    assert.equal(store.restoreBlock('p1', reading.id, '清楚的新讲解').text, '原讲解');
+    assert.throws(() => store.restoreBlock('p1', reading.id, '原讲解'), /没有可恢复/);
+    const invalid = store.exportState();
+    invalid.blockCourses.p1.blocks[0].content.revisions = [{text:'',updated:1}];
+    assert.throws(() => store.replaceState(invalid), /格式不正确/);
+    assert.equal(store.getLesson('p1').blockCourse.blocks[0].content.text, '原讲解');
+  } finally { store.close(); }
+});
+
 test('deleting a route creates an importable backup and removes only its related records', async t => {
   const directory = await temporary(t), store = await createSqliteStore(directory);
   try {

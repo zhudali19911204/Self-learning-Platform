@@ -79,6 +79,8 @@ async function start() {
   handle('learnflow:save-outline', (id, value) => learning.saveOutline(id, value));
   handle('learnflow:append-block', (id, value) => learning.appendBlock(id, value));
   handle('learnflow:save-block', (id, blockId, value) => learning.saveBlock(id, blockId, value));
+  handle('learnflow:revise-block', (id, blockId, value, expectedText) => learning.reviseBlock(id, blockId, value, expectedText));
+  handle('learnflow:restore-block', (id, blockId, expectedText) => learning.restoreBlock(id, blockId, expectedText));
   handle('learnflow:save-progress', (id, value) => learning.saveProgress(id, value));
   handle('learnflow:save-reflection', (id, value) => learning.saveReflection(id, value));
   handle('learnflow:append-chat', (id, question, answer) => learning.appendChat(id, question, answer));

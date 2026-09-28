@@ -1,5 +1,10 @@
 import { demoPlan, demoLessons } from './demo.js';
-import { lessonFromBlocks, validOutline, validBlockContent, validBlockSpec, blockGenerationContext } from './blocks.js';
+import { lessonFromBlocks, validOutline, validBlockContent, validBlockSpec, blockGenerationContext, revisedContent, restoredContent } from './blocks.js';
+import { Marked } from './vendor/marked.js';
+import DOMPurify from './vendor/purify.js';
+import { createMarkdownRenderer } from './markdown.js';
+
+const renderMarkdown = createMarkdownRenderer(Marked, DOMPurify);
 
 const $ = s => document.querySelector(s);
 const escape = v => String(v ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -41,6 +46,7 @@ try {
 let page = 'home', activeLesson = null, activeNote = null, lessonTab = 'read', query = '', answer = null;
 let status = { mode: 'loading' };
 let connectionResult = '';
+let revisionBusy = false;
 const plan = () => state.plans.find(p => p.id === state.active) || state.plans[0];
 const categoryRules = [
   ['AI 与大模型', /(?:大模型|人工智能|机器学习|深度学习|智能体|提示词|\b(?:LLM|GPT|RAG|AI)\b|DeepSeek|通义|千问)/i],
@@ -134,10 +140,31 @@ function study() {
   <div class="tabs" role="tablist" aria-label="课程内容">${[['read', 'book', '学习内容'], ['quiz', 'bolt', `随堂练习${record.completed ? ' ✓' : ''}`], ['chat', 'spark', 'AI 答疑'], ['notes', 'brain', '学习笔记']].map(([tab, symbol, label]) => `<button role="tab" aria-selected="${lessonTab === tab}" class="${lessonTab === tab ? 'active' : ''}" data-action="lesson-tab" data-tab="${tab}">${icon(symbol)}${label}</button>`).join('')}</div>
   ${!lesson ? `<div class="empty-state">${icon('spark')}<h3>为你展开这一课</h3><p>根据你的目标与基础，生成讲解、示例和随堂练习。</p>${button('生成课程内容', 'generate-lesson', 'primary', `data-id="${meta.id}"`, 'spark')}</div>` : lessonTab === 'read' ? `<div class="lesson-intro">${escape(lesson.intro)}</div>${lesson.sections.map(s => `<section class="reading-section"><h2>${escape(s.heading)}</h2><p>${escape(s.body)}</p></section>`).join('')}<div class="code-block"><div>具体示例 <span>阅读与推演</span></div><pre><code>${escape(lesson.example)}</code></pre></div><div class="challenge"><h3>${icon('bolt')}动手试一试</h3><p>${escape(lesson.challenge)}</p><small>请在你自己的工具或编程环境中完成。这里不执行代码。</small></div><div class="lesson-actions"><span>理解之后，用练习检验一下。</span>${button('开始随堂练习', 'quiz', 'primary')}</div>` : lessonTab === 'quiz' ? quiz(meta, lesson) : lessonTab === 'chat' ? studyChat(meta) : `<section class="reflection"><h2>用自己的话，重新理解一次。</h2><p>哪些内容让你豁然开朗？你会把它用在哪里？</p><label class="sr-only" for="reflection">我的学习心得</label><textarea id="reflection" data-reflection="${meta.id}" maxlength="5000" placeholder="我的理解、实践结果，或仍然困惑的问题……">${escape(state.reflections[meta.id] || '')}</textarea><span class="field-hint">自动保存在${desktop ? '本机' : '当前浏览器'} · 最多 5000 字</span><div class="takeaways"><h3>本课关键收获</h3>${lesson.takeaways.map(t => `<p>${icon('check')}${escape(t)}</p>`).join('')}</div>${record.completed ? button(state.notes.some(n => n.lessonId === meta.id) ? '查看本课知识卡片' : '沉淀到我的 Wiki', 'create-note', 'primary', `data-id="${meta.id}"`, 'brain') : `<div class="notice">通过随堂练习后，即可将本课和心得整理为 Wiki 知识卡片。</div>${button('去完成练习', 'quiz', 'secondary')}`}</section>`}</section></div>`;
 }
+function blockPart(block, index, lessonId, teaching = false) {
+  const labels = { reading: '知识讲解', example: '配套案例', practice: '动手实践', quiz: '随堂练习', summary: '知识总结' };
+  const attrs = `data-id="${escape(lessonId)}" data-block="${escape(block.id)}"`;
+  const editable = ['reading', 'example'].includes(block.type) && block.content;
+  const actions = editable ? `<div class="revision-actions">${button(block.type === 'reading' ? '换个讲法' : '换个例子', 'request-revision', 'secondary', attrs, '')}${block.content.revisions?.length ? button('恢复上一版', 'restore-block', 'secondary', attrs, 'back') : ''}</div>` : '';
+  return `<section class="${teaching ? `teaching-part teaching-${block.type}` : 'reading-section content-block'}" data-block-id="${escape(block.id)}"><div class="teaching-part-heading"><span class="pill purple">${String(index + 1).padStart(2, '0')} · ${labels[block.type]}</span>${actions}</div><h2 class="block-title">${escape(block.title)}</h2><p class="block-objective">${escape(block.objective)}</p>${block.content ? block.type === 'quiz' ? `<p>已生成 ${block.content.questions.length} 道练习题。${button('去练习', 'quiz', 'secondary')}</p>` : `<div class="block-text markdown-content">${renderMarkdown(block.content.text)}</div>` : `<div class="block-pending"><span>此模块尚未生成，可以按需展开。</span>${button('生成这一块', 'generate-block', 'secondary', attrs, 'spark')}</div>`}</section>`;
+}
+function teachingSequence(course, lessonId) {
+  const units = [];
+  for (let index = 0; index < course.blocks.length; index++) {
+    const block = course.blocks[index];
+    if (block.type !== 'reading') { units.push(blockPart(block, index, lessonId, block.type === 'example')); continue; }
+    const parts = [blockPart(block, index, lessonId, true)];
+    while (course.blocks[index + 1]?.type === 'example') {
+      index++;
+      parts.push(blockPart(course.blocks[index], index, lessonId, true));
+    }
+    units.push(`<article class="teaching-unit" aria-label="讲解与配套案例">${parts.join('')}</article>`);
+  }
+  return units.join('');
+}
 function studyBlocks(meta, p, record) {
   const course = state.blockCourses[meta.id], lesson = lessonFromBlocks(course);
   const labels = { reading: '讲解', example: '示例', practice: '实践', quiz: '练习', summary: '总结' };
-  const read = `<div class="lesson-intro">${escape(course.intro)}</div><div class="block-sequence">${course.blocks.map((block, index) => `<section class="reading-section content-block"><div class="block-heading"><span class="pill purple">${String(index + 1).padStart(2, '0')} · ${labels[block.type]}</span><h2>${escape(block.title)}</h2></div><p class="block-objective">${escape(block.objective)}</p>${block.content ? block.type === 'quiz' ? `<p>已生成 ${block.content.questions.length} 道练习题。${button('去练习', 'quiz', 'secondary')}</p>` : `<p class="block-text">${escape(block.content.text)}</p>` : `<div class="block-pending"><span>此模块尚未生成，可以按需展开。</span>${button('生成这一块', 'generate-block', 'secondary', `data-id="${meta.id}" data-block="${block.id}"`, 'spark')}</div>`}</section>`).join('')}</div><form id="append-block-form" data-id="${meta.id}" class="append-block-form"><h3>继续扩展本课</h3><div class="form-row"><div><label for="block-type">内容类型</label><select id="block-type" name="type">${Object.entries(labels).map(([type, label]) => `<option value="${type}">${label}</option>`).join('')}</select></div><div><label for="block-title">模块标题</label><input id="block-title" name="title" required maxlength="160" placeholder="例如：更多实际案例"></div></div><label for="block-objective">本块的学习目标</label><input id="block-objective" name="objective" required maxlength="1000" placeholder="你想在这里学会什么？"><button class="btn secondary" type="submit">添加内容块 ${icon('plus')}</button></form>`;
+  const read = `<div class="lesson-intro">${escape(course.intro)}</div><div class="block-sequence">${teachingSequence(course, meta.id)}</div><form id="append-block-form" data-id="${meta.id}" class="append-block-form"><h3>继续扩展本课</h3><div class="form-row"><div><label for="block-type">内容类型</label><select id="block-type" name="type">${Object.entries(labels).map(([type, label]) => `<option value="${type}">${label}</option>`).join('')}</select></div><div><label for="block-title">模块标题</label><input id="block-title" name="title" required maxlength="160" placeholder="例如：更多实际案例"></div></div><label for="block-objective">本块的学习目标</label><input id="block-objective" name="objective" required maxlength="1000" placeholder="你想在这里学会什么？"><button class="btn secondary" type="submit">添加内容块 ${icon('plus')}</button></form>`;
   const notes = `<section class="reflection"><h2>用自己的话，重新理解一次。</h2><label class="sr-only" for="reflection">我的学习心得</label><textarea id="reflection" data-reflection="${meta.id}" maxlength="5000" placeholder="我的理解、实践结果，或仍然困惑的问题……">${escape(state.reflections[meta.id] || '')}</textarea><span class="field-hint">自动保存在${desktop ? '本机' : '当前浏览器'}</span><div class="takeaways"><h3>本课总结</h3>${lesson.takeaways.map(t => `<p>${icon('check')}${escape(t)}</p>`).join('')}</div>${record.completed ? button(state.notes.some(n => n.lessonId === meta.id) ? '查看本课知识卡片' : '沉淀到我的 Wiki', 'create-note', 'primary', `data-id="${meta.id}"`, 'brain') : `<div class="notice">生成练习内容并全部答对后，可整理为 Wiki 知识卡片。</div>${button('去完成练习', 'quiz', 'secondary')}`}</section>`;
   const quizBody = lesson.questions.length ? quiz(meta, lesson) : `<div class="empty-state"><h3>练习尚未生成</h3><p>请先在“学习内容”里生成练习模块。</p>${button('查看内容块', 'read-tab', 'secondary')}</div>`;
   return `<div class="study-top"><button class="text-button" data-page="routes">${icon('back')}返回学习路线</button>${pill('分步课程 · 可扩展', 'purple')}</div><div class="study-layout"><aside class="syllabus"><div class="syllabus-heading">课程目录 <span>${completed()}/${p.lessons.length}</span></div>${p.lessons.map((l, i) => `<button class="syllabus-item ${l.id === meta.id ? 'selected' : ''}" data-action="open-lesson" data-id="${l.id}"><span>${progress(l.id).completed ? icon('check') : String(i + 1).padStart(2, '0')}</span><strong>${escape(l.title)}</strong></button>`).join('')}</aside><section class="lesson-content"><div class="eyebrow">LESSON ${String(p.lessons.indexOf(meta) + 1).padStart(2, '0')}</div><h1>${escape(meta.title)}</h1><p class="lesson-objective">${escape(meta.objective)}</p><div class="tabs" role="tablist" aria-label="课程内容">${[['read', 'book', '学习内容'], ['quiz', 'bolt', `随堂练习${record.completed ? ' ✓' : ''}`], ['chat', 'spark', 'AI 答疑'], ['notes', 'brain', '学习笔记']].map(([tab, symbol, label]) => `<button role="tab" aria-selected="${lessonTab === tab}" class="${lessonTab === tab ? 'active' : ''}" data-action="lesson-tab" data-tab="${tab}">${icon(symbol)}${label}</button>`).join('')}</div>${lessonTab === 'read' ? read : lessonTab === 'quiz' ? quizBody : lessonTab === 'chat' ? studyChat(meta) : notes}</section></div>`;
@@ -342,6 +369,27 @@ async function action(name, element) {
     if (block.type === 'quiz' && state.progress[id]) state.progress[id] = { ...state.progress[id], completed: false, lastScore: 0, lastAnswers: [] };
     if (!desktop) save(); render(); return;
   }
+  if (name === 'request-revision') {
+    const block = state.blockCourses?.[id]?.blocks.find(item => item.id === element.dataset.block);
+    if (!block?.content || !['reading', 'example'].includes(block.type)) throw new Error('请先生成讲解或案例。');
+    if (status.mode !== 'ai') throw new Error('请先在设置中连接 AI 模型。');
+    const title = block.type === 'reading' ? '按你的需求重新讲解' : '按你的需求更换案例';
+    $('#revise-block-dialog').innerHTML = `<div class="modal-heading"><h2 id="revise-block-title">${title}</h2><button class="icon-button" data-action="close-revision" aria-label="关闭">${icon('close')}</button></div><p>当前模块：${escape(block.title)}。告诉 AI 哪里没讲清楚，以及你希望怎样解释。</p><form id="revision-form" data-id="${escape(id)}" data-block="${escape(block.id)}"><div class="revision-request-heading"><label for="revision-request">你的具体要求</label><button type="button" class="text-button" data-action="markdown-revision-preset">仅优化排版</button></div><textarea id="revision-request" name="request" required maxlength="1000" placeholder="例如：第二段术语太多，请用零基础能听懂的话解释；用一张收入与支出的表，逐步算出结果，并说明每一步为什么这样做。"></textarea><p class="field-hint">新内容支持 Markdown 标题、重点、列表、表格和代码。只替换当前模块，其他内容和学习进度不变。保留最近 10 个旧版本；已保存的 Wiki 不会自动改写。</p><p id="revision-error" class="inline-error" role="alert"></p><div class="revision-dialog-actions"><button type="button" class="btn secondary" data-action="close-revision">取消</button><button type="submit" class="btn primary">按要求重新生成 ${icon('spark')}</button></div></form>`;
+    $('#revise-block-dialog').showModal(); return;
+  }
+  if (name === 'markdown-revision-preset') {
+    if (revisionBusy) return;
+    $('#revision-request').value = '请仅优化当前内容的阅读排版，保留原有概念、事实、数值、案例、代码和关键说明，不额外扩充主题。按 Markdown 文档组织：用 ## 划分主题，用 ### 划分子主题；关键定义和结论使用少量 **加粗**；并列要点用列表，操作步骤用编号列表，提示和易错点用 > 引用块；代码使用标明语言的代码围栏。不要重复模块大标题，不要把整篇正文放进一个代码围栏。';
+    $('#revision-request').focus(); return;
+  }
+  if (name === 'close-revision') { if (!revisionBusy) $('#revise-block-dialog').close(); return; }
+  if (name === 'restore-block') {
+    const block = state.blockCourses?.[id]?.blocks.find(item => item.id === element.dataset.block);
+    if (!block?.content) throw new Error('内容块不存在。');
+    if (!window.confirm('恢复这一模块的上一版内容？其他模块、练习成绩和 Wiki 不会改变。')) return;
+    block.content = desktop ? await desktop.restoreBlock(id, block.id, block.content.text) : restoredContent(block.type, block.content);
+    if (!desktop) save(); render(); toast('已恢复上一版内容。'); return;
+  }
   if (name === 'create-note') return createNote(id);
   if (name === 'open-note') { activeNote = id; return navigate('wiki'); }
   if (name === 'close-note') { activeNote = null; return render(); }
@@ -354,12 +402,15 @@ document.addEventListener('click', async event => {
   const element = event.target.closest('[data-page], [data-action]'); if (!element || element.disabled) return;
   event.preventDefault();
   if (element.dataset.page) { activeNote = null; return element.dataset.page === 'study' ? openLesson(activeLesson || nextLesson().id, lessonTab) : navigate(element.dataset.page); }
-  const loading = ['generate-lesson', 'generate-block', 'create-note', 'test-connection'].includes(element.dataset.action);
+  const loading = ['generate-lesson', 'generate-block', 'restore-block', 'create-note', 'test-connection'].includes(element.dataset.action);
   const html = element.innerHTML;
   try { if (loading) { element.disabled = true; element.innerHTML = '<span class="spinner"></span>正在整理，请稍候…'; } await action(element.dataset.action, element); }
   catch (e) { toast(e.message); }
   finally { if (loading && element.isConnected) { element.disabled = false; element.innerHTML = html; } }
 });
+document.addEventListener('cancel', event => {
+  if (event.target.id === 'revise-block-dialog' && revisionBusy) event.preventDefault();
+}, true);
 document.addEventListener('input', event => {
   if (desktop && event.target.closest?.('#desktop-settings-form')) {
     $('#settings-error').textContent = '';
@@ -411,6 +462,22 @@ document.addEventListener('submit', async event => {
       $('#plan-error').textContent = ''; submit.innerHTML = '<span class="spinner"></span>正在规划学习路线…';
       const p = await api('plan', { goal: values.get('goal').trim(), level: values.get('level'), daily: Number(values.get('daily')), days: Number(values.get('days')) });
       state.plans.push(p); state.active = p.id; persist('savePlan', p); $('#planner').close(); navigate('routes'); toast('学习路线已生成，从第一步开始吧。');
+    } else if (form.id === 'revision-form') {
+      $('#revision-error').textContent = '';
+      const id = form.dataset.id, block = state.blockCourses?.[id]?.blocks.find(item => item.id === form.dataset.block);
+      const request = values.get('request')?.trim();
+      if (status.mode !== 'ai' || !block?.content || !['reading', 'example'].includes(block.type) || !request || request.length > 1000) throw new Error('请连接 AI 模型，并填写具体的讲解要求。');
+      if (revisionBusy) throw new Error('正在重新生成，请稍候。');
+      revisionBusy = true;
+      submit.innerHTML = '<span class="spinner"></span>正在按你的要求重新生成…';
+      const meta = lessonById(id), p = state.plans.find(route => route.lessons.some(item => item.id === id));
+      const previous = block.content, context = blockGenerationContext(state.blockCourses[id], block.id);
+      const content = await api('lesson-block', { goal: p.goal, level: p.level, title: meta.title, objective: meta.objective, minutes: meta.minutes, ...context, block: { type: block.type, title: block.title, objective: block.objective }, revisionRequest: request, currentExcerpt: previous.text.slice(0, 12000) });
+      if (!validBlockContent(block.type, content)) throw new Error('模型返回的内容格式不正确，原内容已保留，请重试。');
+      if (block.content !== previous) throw new Error('内容已更新，原请求未覆盖当前内容，请重新提交。');
+      block.content = desktop ? await desktop.reviseBlock(id, block.id, content, previous.text) : revisedContent(block.type, previous, content);
+      if (!desktop) save();
+      $('#revise-block-dialog').close(); render(); toast('已按你的要求更新；可在模块右上角恢复上一版。');
     } else if (form.id === 'append-block-form') {
       const id = form.dataset.id, spec = { type: values.get('type'), title: values.get('title')?.trim(), objective: values.get('objective')?.trim() };
       if (!validBlockSpec(spec) || !state.blockCourses?.[id]) throw new Error('请填写有效的内容类型、标题和学习目标。');
@@ -448,8 +515,8 @@ document.addEventListener('submit', async event => {
       }
       if ($('#wiki-answer')) $('#wiki-answer').innerHTML = answerHTML();
     }
-  } catch (e) { if (form.id === 'desktop-settings-form' && $('#settings-error')) $('#settings-error').textContent = e.message; else if (form.id === 'plan-form' && $('#plan-error')) $('#plan-error').textContent = e.message; else if (form.id === 'lesson-ask-form' && $('#lesson-ask-error')) $('#lesson-ask-error').textContent = e.message; else toast(e.message); }
-  finally { if (submit.isConnected) { submit.disabled = form.id === 'plan-form' && status.mode !== 'ai'; submit.innerHTML = label; } }
+  } catch (e) { if (form.id === 'revision-form' && $('#revision-error')) $('#revision-error').textContent = e.message; else if (form.id === 'desktop-settings-form' && $('#settings-error')) $('#settings-error').textContent = e.message; else if (form.id === 'plan-form' && $('#plan-error')) $('#plan-error').textContent = e.message; else if (form.id === 'lesson-ask-form' && $('#lesson-ask-error')) $('#lesson-ask-error').textContent = e.message; else toast(e.message); }
+  finally { if (form.id === 'revision-form') revisionBusy = false; if (submit.isConnected) { submit.disabled = form.id === 'plan-form' && status.mode !== 'ai'; submit.innerHTML = label; } }
 });
 if (desktop) {
   $('#app').innerHTML = '<div class="empty-state"><h2>正在读取本地数据…</h2></div>';
