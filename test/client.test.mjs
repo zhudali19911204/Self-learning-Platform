@@ -16,7 +16,7 @@ const source = (await readFile(new URL('../public/app.js', import.meta.url), 'ut
 function harness(saved, fetchImpl) {
   const nodes = new Map(), listeners = new Map(), storage = new Map(saved ? [['learnflow.v1', saved]] : []);
   const node = selector => {
-    if (!nodes.has(selector)) nodes.set(selector, { innerHTML: '', textContent: '', open: false, classList: { add() {}, remove() {} }, scrollIntoView() {}, focus() {}, showModal() { this.open = true; }, close() { this.open = false; } });
+    if (!nodes.has(selector)) nodes.set(selector, { innerHTML: '', textContent: '', open: false, attributes: {}, setAttribute(name, value) { this.attributes[name] = value; }, classList: { add() {}, remove() {} }, scrollIntoView() {}, focus() {}, showModal() { this.open = true; }, close() { this.open = false; } });
     return nodes.get(selector);
   };
   const context = vm.createContext({
@@ -33,7 +33,11 @@ function harness(saved, fetchImpl) {
     const button = { innerHTML: 'Submit', disabled: false, isConnected: false };
     await listeners.get('submit')({ preventDefault() {}, target: { id, values, dataset: { id: lessonId, block: blockId }, querySelector: () => button } });
   }
-  return { run, submit, node, storage };
+  const input = (id, value, dataset = {}) => {
+    node('#' + id).value = value;
+    listeners.get('input')({ target: { id, value, dataset } });
+  };
+  return { run, submit, input, node, storage };
 }
 test('learning loop: incorrect answers, retry, completion, Wiki creation, edit and persistence', async () => {
   const app = harness();
@@ -223,6 +227,71 @@ test('lesson Q&A keeps per-lesson context across turns, persists locally and esc
   restored.run("openLesson('p1', 'chat')");
   assert.equal(restored.run('chatFor("p1").length'), 4);
   assert.equal(restored.run('chatFor("p2").length'), 0);
+});
+
+test('lesson Q&A and grounded Wiki answers render Markdown while preserving raw stored messages and citations', async () => {
+  const response = '## 回答要点\n\n**先理解输入**，再看输出。\n\n1. 阅读代码\n2. 检查结果\n\n```python\nprint("你好")\n```';
+  const app = harness(null, async (url) => ({ ok: true, json: async () => url === '/api/status' ? {mode:'ai'} : { answer:response, citations:['note-1'] } }));
+  app.run("status={mode:'ai'}; openLesson('p1','chat')");
+  await app.submit('lesson-ask-form', {question:'**print** 是什么？'}, 'p1');
+  const chatDOM = new JSDOM(app.node('#app').innerHTML).window.document;
+  assert.equal(chatDOM.querySelector('.from-ai .markdown-content h3').textContent, '回答要点');
+  assert.equal(chatDOM.querySelector('.from-ai .markdown-content strong').textContent, '先理解输入');
+  assert.equal(chatDOM.querySelectorAll('.from-ai ol > li').length, 2);
+  assert.ok(chatDOM.querySelector('.from-ai pre code'));
+  assert.equal(chatDOM.querySelector('.from-user .markdown-content strong').textContent, 'print');
+  assert.equal(app.run('state.chats.p1[1].content'), response);
+  app.run("state.notes=[{id:'note-1',lessonId:'p1',title:'输入输出',summary:'**重点摘要**',content:'## 概念\\n\\n正文',tags:['Python'],updated:1}]; page='wiki'; activeNote=null; render()");
+  assert.match(app.node('#app').innerHTML, /<strong>重点摘要<\/strong>/);
+  await app.submit('ask-form', {question:'输入是什么？'});
+  const answerDOM = new JSDOM(app.node('#wiki-answer').innerHTML).window.document;
+  assert.ok(answerDOM.querySelector('.answer-body h3'));
+  assert.ok(answerDOM.querySelector('.citation[data-id="note-1"]'));
+});
+
+test('knowledge cards default to Markdown reading, preserve editing drafts and save source rather than rendered HTML', async () => {
+  const app = harness();
+  app.run("state.notes=[{id:'note-1',lessonId:'p1',courseTitle:'Python',title:'输入输出',summary:'**摘要重点**',content:'## 概念\\n\\n- 第一项\\n- 第二项',tags:['Python'],source:'demo',updated:1}]; activeNote='note-1'; page='wiki'; render()");
+  const initial = new JSDOM(app.node('#app').innerHTML).window.document;
+  assert.equal(initial.querySelector('#note-source-view').hidden, true);
+  assert.equal(initial.querySelector('#note-preview-content h3').textContent, '概念');
+  assert.equal(initial.querySelectorAll('#note-preview-content ul li').length, 2);
+  await app.run("action('note-view',{dataset:{mode:'edit'}})");
+  assert.equal(app.node('#note-source-view').hidden, false);
+  assert.equal(app.node('#note-preview-view').hidden, true);
+  const draft = '## 我自己的理解\n\n**记住区别**。\n\n<script>bad</script>';
+  app.node('#note-title').value = '未保存的标题';
+  app.node('#note-summary').value = '**未保存的摘要**';
+  app.node('#note-content').value = draft;
+  await app.run("action('note-view',{dataset:{mode:'read'}})");
+  assert.match(app.node('#note-preview-content').innerHTML, /<h3>我自己的理解<\/h3>/);
+  assert.ok(!app.node('#note-preview-content').innerHTML.includes('<script>'));
+  assert.equal(app.run('state.notes[0].title'), '输入输出');
+  assert.equal(app.node('#note-save').hidden, true);
+  await app.run("action('note-view',{dataset:{mode:'edit'}})");
+  assert.equal(app.node('#note-content').value, draft);
+  await app.submit('note-form', {title:'未保存的标题',summary:'**未保存的摘要**',content:draft,tags:'Python'}, 'note-1');
+  assert.equal(app.run('state.notes[0].content'), draft);
+  assert.equal(app.run('state.notes[0].title'), '未保存的标题');
+  const restored = harness(app.storage.get('learnflow.v1'));
+  assert.equal(restored.run('state.notes[0].content'), draft);
+  assert.ok(restored.run('markdown(state.notes[0])').includes(draft));
+});
+
+test('learning reflection and takeaways have safe Markdown previews without changing auto-save', () => {
+  const app = harness();
+  app.run("state.lessons.p1=structuredClone(demoLessons.p1); state.lessons.p1.takeaways=['**关键收获**']; openLesson('p1','notes')");
+  assert.match(app.node('#app').innerHTML, /id="reflection-preview"/);
+  assert.match(app.node('#app').innerHTML, /<strong>关键收获<\/strong>/);
+  const reflection = '## 我的理解\n\n**先看输入**。\n\n<img src=x onerror=alert(1)>';
+  app.input('reflection', reflection, {reflection:'p1'});
+  assert.match(app.node('#reflection-preview').innerHTML, /<h3>我的理解<\/h3>/);
+  assert.ok(!app.node('#reflection-preview').innerHTML.includes('<img'));
+  assert.equal(app.run('state.reflections.p1'), reflection);
+  assert.equal(harness(app.storage.get('learnflow.v1')).run('state.reflections.p1'), reflection);
+  app.run("state.blockCourses={p1:{intro:'课程',blocks:[{id:'summary-1',type:'summary',title:'总结',objective:'记住',content:{text:'**内容块总结**'}}]}}; render()");
+  assert.match(app.node('#app').innerHTML, /<strong>内容块总结<\/strong>/);
+  assert.match(app.node('#app').innerHTML, /id="reflection-preview"/);
 });
 
 test('settings display cloud status, test connection and keep failures visible', async () => {

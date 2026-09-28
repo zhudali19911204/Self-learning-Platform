@@ -69,13 +69,32 @@ exports.run = async (window, store, directory) => {
   await wait("document.querySelector('[data-tab=quiz]')");
   await evaluate("document.querySelector('[data-tab=quiz]').click(); document.querySelector('[name=q0][value=\"1\"]').checked = true; document.querySelector('[name=q1][value=\"1\"]').checked = true; document.querySelector('#quiz-form').requestSubmit()");
   await wait("document.querySelector('.quiz-result.passed')");
-  await evaluate("document.querySelector('[data-action=notes-tab]').click(); document.querySelector('#reflection').value = '桌面集成测试心得'; document.querySelector('#reflection').dispatchEvent(new Event('input', {bubbles:true})); document.querySelector('[data-action=create-note]').click()");
+  const reflectionMarkdown = '## 桌面集成测试心得\n\n**掌握核心概念**。';
+  await evaluate(`document.querySelector('[data-action=notes-tab]').click(); document.querySelector('#reflection').value = ${JSON.stringify(reflectionMarkdown)}; document.querySelector('#reflection').dispatchEvent(new Event('input', {bubbles:true}))`);
+  assert.equal(await evaluate("document.querySelector('#reflection-preview h3').textContent"), '桌面集成测试心得');
+  assert.equal(await evaluate("document.querySelector('#reflection-preview strong').textContent"), '掌握核心概念');
+  await evaluate("document.querySelector('[data-action=create-note]').click()");
   await wait("document.querySelector('#note-form')");
+  assert.equal(await evaluate("document.querySelector('#note-source-view').hidden"), true);
+  assert.equal(await evaluate("document.querySelector('#note-preview-view').hidden"), false);
+  const editedNote = '## 学习要点\n\n**输入与输出**是程序与用户交互的起点。\n\n1. 输入一条语句\n2. 观察输出\n\n```python\nprint("你好")\n```';
+  await evaluate(`document.querySelector('#note-edit-switch').click(); document.querySelector('#note-summary').value = '**知识卡片摘要**'; document.querySelector('#note-content').value = ${JSON.stringify(editedNote)}; document.querySelector('#note-read-switch').click()`);
+  assert.equal(await evaluate("document.querySelector('#note-preview-content h3').textContent"), '学习要点');
+  assert.equal(await evaluate("document.querySelector('#note-preview-content strong').textContent"), '输入与输出');
+  assert.equal(await evaluate("document.querySelector('#note-preview-summary strong').textContent"), '知识卡片摘要');
+  await evaluate("document.querySelector('#note-edit-switch').click()");
+  assert.equal(await evaluate("document.querySelector('#note-content').value"), editedNote);
+  await evaluate("document.querySelector('#note-form').requestSubmit()");
+  await wait("document.querySelector('#toast').textContent.includes('知识卡片已保存') && !document.querySelector('#note-save').disabled");
+  await evaluate("document.querySelector('#note-read-switch').click()");
+  await evaluate('new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))');
+  await writeFile(path.join(directory, '..', 'note-markdown-smoke.png'), (await window.webContents.capturePage()).toPNG());
   await store.flush();
   const state = await store.loadState();
   assert.equal(state.progress.p1.completed, true);
-  assert.equal(state.reflections.p1, '桌面集成测试心得');
+  assert.equal(state.reflections.p1, reflectionMarkdown);
   assert.ok(state.notes.some(note => note.lessonId === 'p1'));
+  assert.equal(state.notes.find(note => note.lessonId === 'p1').content, editedNote);
   // Reload the entire renderer, mimicking a new launch while preserving disk data.
   window.webContents.reload();
   await new Promise(resolve => window.webContents.once('did-finish-load', resolve));
@@ -86,6 +105,8 @@ exports.run = async (window, store, directory) => {
   assert.equal(loaded.settings.apiKey, undefined);
   // Exercise the complete lesson Q&A path against a local mock model.
   const requests = [];
+  const chatMarkdown = '## 直接回答\n\n**输出**会把内容显示给用户。\n\n```python\nprint("你好")\n```';
+  const wikiMarkdown = '## 核心概念\n\n**现金流**表示一定期间的现金收入与支出。\n\n### 实践检查\n\n- 确认时间范围\n- 比较收入与支出';
   const model = http.createServer(async (req, res) => {
     const chunks = [];
     for await (const chunk of req) chunks.push(chunk);
@@ -97,7 +118,11 @@ exports.run = async (window, store, directory) => {
       res.end(JSON.stringify({error:{message:'Test-only unavailable model'}})); return;
     }
     const markdownAnswer = ['## 核心结论', '', '**剩余现金 40 元**：收入 100 元，减去支出 60 元。', '', '### 计算步骤', '', '1. 从收支表中找到收入。', '2. 减去支出，得到剩余现金。', '', '> 提示：先确认收入与支出的时间范围一致。', '', '| 项目 | 金额 |', '| --- | ---: |', '| 收入 | 100 |', '| 支出 | 60 |', '', '```python', 'balance = 100 - 60', 'print(balance)', '```'].join('\n');
-    const output = input.daily !== undefined ? {...demoPlan,title:'路线纠正集成测试',lessons:input.repair ? demoPlan.lessons : [demoPlan.lessons[0]]} : input.revisionRequest ? {text:markdownAnswer} : {answer:'输出会把内容显示给用户。'};
+    const output = input.daily !== undefined ? {...demoPlan,title:'路线纠正集成测试',lessons:input.repair ? demoPlan.lessons : [demoPlan.lessons[0]]}
+      : input.revisionRequest ? {text:markdownAnswer}
+      : input.notes ? {answer:'## 检索结论\n\n**输入与输出**已记录在你的知识卡片中。',citations:[input.notes[0].id]}
+      : input.lesson && input.reflection !== undefined ? {summary:'**现金流**的核心概念与实践方法',content:wikiMarkdown}
+      : {answer:chatMarkdown};
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ choices: [{ message: { content: JSON.stringify(output) }, finish_reason: 'stop' }] }));
   });
@@ -119,7 +144,14 @@ exports.run = async (window, store, directory) => {
     assert.equal(JSON.parse(requests[0].payload.messages[1].content).question, '什么是输出？');
     const chatted = await store.loadState();
     assert.equal(chatted.chats.p1.at(-2).content, '什么是输出？');
-    assert.equal(chatted.chats.p1.at(-1).content, '输出会把内容显示给用户。');
+    assert.equal(chatted.chats.p1.at(-1).content, chatMarkdown);
+    assert.equal(await evaluate("document.querySelector('.chat-message.from-ai:last-child .markdown-content h3').textContent"), '直接回答');
+    assert.ok(await evaluate("!!document.querySelector('.chat-message.from-ai:last-child pre code')"));
+    assert.equal(await evaluate("getComputedStyle(document.querySelector('.chat-message.from-ai:last-child .markdown-content strong')).display"), 'inline');
+    await evaluate("document.querySelector('[data-page=wiki]').click(); document.querySelector('#wiki-question').value = '输入与输出有哪些要点？'; document.querySelector('#ask-form').requestSubmit()");
+    await wait("document.querySelector('.grounded-answer .answer-body h3')?.textContent === '检索结论' && !document.querySelector('#ask-form button[type=submit]').disabled");
+    assert.equal(await evaluate("document.querySelector('.grounded-answer .markdown-content strong').textContent"), '输入与输出');
+    assert.ok(await evaluate("!!document.querySelector('.grounded-answer .citation')"));
     // Reproduce a one-course response and exercise the corrected retry through the real planner.
     await evaluate("document.querySelector('[data-page=routes]').click(); document.querySelector('[data-action=planner]').click(); document.querySelector('#goal').value = '用 Python 编写自动整理文件的小工具'; document.querySelector('#plan-form').requestSubmit()");
     await wait("!document.querySelector('#planner').open && document.querySelector('.route-overview h2')?.textContent === '路线纠正集成测试'");
@@ -190,6 +222,18 @@ exports.run = async (window, store, directory) => {
     await evaluate(`document.querySelector('[data-page=routes]').click(); document.querySelector('[data-action=open-lesson][data-id="${lessonId}"]').click()`);
     await wait("document.querySelector('.teaching-reading .block-text')?.textContent.includes('原始讲解')");
     assert.equal(await evaluate("document.querySelector('[data-action=restore-block]') === null"), true);
+    // Generate an AI Wiki card and verify that source Markdown survives a renderer reload.
+    await evaluate("document.querySelector('[data-tab=notes]').click(); document.querySelector('[data-action=create-note]').click()");
+    await wait("document.querySelector('#note-preview-content h3')?.textContent === '核心概念'");
+    assert.equal(await evaluate("document.querySelector('#note-preview-content strong').textContent"), '现金流');
+    const aiNote = (await store.loadState()).notes.find(note => note.lessonId === lessonId);
+    assert.equal(aiNote.content, wikiMarkdown);
+    window.webContents.reload();
+    await new Promise(resolve => window.webContents.once('did-finish-load', resolve));
+    await wait("document.querySelector('main h1')");
+    await evaluate(`document.querySelector('[data-page=wiki]').click(); document.querySelector('[data-action=open-note][data-id="${aiNote.id}"]').click()`);
+    await wait("document.querySelector('#note-preview-content h3')?.textContent === '核心概念'");
+    assert.equal(await evaluate("document.querySelector('#note-content').value"), wikiMarkdown);
   } finally {
     model.closeAllConnections();
     await new Promise(resolve => model.close(resolve));
@@ -202,5 +246,5 @@ exports.run = async (window, store, directory) => {
   await wait("document.querySelector('#desktop-settings-form')");
   const image = await window.webContents.capturePage();
   await writeFile(path.join(directory, '..', 'settings-smoke.png'), image.toPNG());
-  console.log('DESKTOP_SMOKE', JSON.stringify({ passed: true, checks: ['window', 'sandbox', 'settings-save', 'os-encryption', 'cloud-save-confirmation', 'cloud-settings-reload', 'lan-save-confirmation', 'quiz', 'wiki', 'disk-persistence', 'reload', 'lesson-qa', 'plan-invalid-count-repair', 'teaching-unit', 'feedback-regeneration', 'markdown-typography', 'markdown-revision-preset', 'revision-failure-preserves-content', 'revision-restore-reload'], screenshot: path.join(directory, '..', 'settings-smoke.png') }));
+  console.log('DESKTOP_SMOKE', JSON.stringify({ passed: true, checks: ['window', 'sandbox', 'settings-save', 'os-encryption', 'cloud-save-confirmation', 'cloud-settings-reload', 'lan-save-confirmation', 'quiz', 'wiki', 'disk-persistence', 'reload', 'lesson-qa', 'plan-invalid-count-repair', 'teaching-unit', 'feedback-regeneration', 'markdown-typography', 'markdown-revision-preset', 'reflection-markdown-preview', 'note-markdown-read-edit', 'chat-markdown', 'grounded-markdown-citations', 'ai-wiki-markdown-reload', 'revision-failure-preserves-content', 'revision-restore-reload'], screenshot: path.join(directory, '..', 'settings-smoke.png') }));
 };

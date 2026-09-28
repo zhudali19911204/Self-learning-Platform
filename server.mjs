@@ -27,6 +27,7 @@ function planShape(count, budget) {
   return JSON.stringify({ title: '根据目标命名的路线', description: '说明学习成果与安排', lessons: Array.from({ length: count }, (_, index) => ({ title: `第 ${index + 1} 节的具体主题`, objective: '本节结束后能独立做到的事', phase: index < Math.ceil(count / 2) ? '基础与理解' : '应用与巩固', minutes, tags: ['对应的知识点'] })) });
 }
 const lessonShape = '{"intro":"引言","sections":[{"heading":"小标题","body":"详细讲解"}],"example":"完整示例（代码或具体情境）","challenge":"可独立完成的实践任务","questions":[{"prompt":"单选题","options":["选项A","选项B","选项C","选项D"],"answer":0,"explanation":"答案解析"}],"takeaways":["要点"]}';
+const markdownGuidance = '正文使用 Markdown：按内容长度用 ## 与 ### 区分小节，关键结论少量 **加粗**，并列要点用列表，步骤用编号列表，提示用 > 引用，代码用标明语言的代码围栏，短公式用行内代码。短答复不必硬凑小节。不要使用 HTML，不要把整个正文放进一个代码围栏。根输出仍须是 JSON，只在相应字符串字段中写 Markdown，正确转义换行与双引号。';
 const blockGuidance = {
   reading: '讲解块：先用一句易懂的话回答“这是什么、为什么要学”，再从学习者已有基础出发分 2–5 个小节逐步解释。用 ## 划分核心概念与应用，用 ### 区分必要的子主题；首次出现的术语要定义。关键定义或核心结论用 **加粗**，并列特征用列表，易错点用 > 引用提示，避免所有文字同一层级。加入一个贴近目标的小例子，指出一个常见误解并纠正。必要时使用类比，但要说明类比的局限。段落之间留空行，小标题简短，不堆砌术语。',
   example: '示例块：给一个与课程目标直接相关、可复现的完整例子。用 ## 小标题区分“场景与输入”“分步操作/推理”“预期结果”“为什么这样做”；操作步骤使用编号列表。少量 **加粗** 标出关键输入、结论或判断点，数据对比适合时使用 Markdown 表格；代码放在标明语言的代码围栏中，公式使用行内代码，逐步解释关键行，并说明前提与边界。只描述预期结果，不声称已经执行代码或验证外部系统。',
@@ -118,13 +119,13 @@ export function createApp(config = {}) {
           result = await generate(`生成充分且可自学的课程，包含 2–8 段讲解、一个完整示例、动手任务、2–5 道四选一单选题和总结。答案为 0–3 的整数下标，解释正确答案。使用纯文本（代码允许换行），不要 Markdown。格式：${lessonShape}`, data, validLesson);
         } else if (path === '/api/wiki') {
           if (!str(data.title, 160) || !validStudyLesson(data.lesson) || typeof data.reflection !== 'string' || data.reflection.length > 5000) fail('课程或学习笔记不完整。');
-          result = await generate('将已学课程整理为个人 Wiki，保留核心概念、实际例子、易错点、适用边界与用户心得。用户心得中的错误要指出，不要把它当成正确知识。格式：{"summary":"一句话摘要","content":"完整纯文本知识笔记"}。', data, v => v && str(v.summary, 500) && str(v.content));
+          result = await generate(`将已学课程整理为个人 Wiki，保留核心概念、实际例子、易错点、适用边界与用户心得。用户心得中的错误要指出，不要把它当成正确知识。按主题组织核心概念、具体案例、实践经验和个人心得，区别知识与未核验的个人记录。${markdownGuidance}summary 保持一句话，不使用多级标题；content 是完整 Markdown 知识笔记。格式：{"summary":"一句话摘要","content":"完整 Markdown 知识笔记"}。`, data, v => v && str(v.summary, 500) && str(v.content));
         } else if (path === '/api/lesson-ask') {
           if (!str(data.title, 160) || !str(data.objective, 1000) || !validStudyLesson(data.lesson) || !str(data.question, 1000) || !Array.isArray(data.history) || data.history.length > 12 || !data.history.every(item => item && ['user', 'assistant'].includes(item.role) && str(item.content, item.role === 'user' ? 1000 : 12000))) fail('请提供当前课程、问题和最多 12 条有效对话记录。');
-          result = await generate('你正在辅导用户学习当前课程。根据 lesson 的讲解、示例、练习和上下文 history 回答当前 question；可以用通用知识补充，但要区分课程已有内容与补充说明。先直接回答，再用简短例子或思路帮助理解。若用户问练习题，优先提示解题思路，避免直接代答。不要编造已经执行的操作。格式：{"answer":"清晰、具体的中文答复"}。', data, v => v && str(v.answer, 12000));
+          result = await generate(`你正在辅导用户学习当前课程。根据 lesson 的讲解、示例、练习和上下文 history 回答当前 question；可以用通用知识补充，但要区分课程已有内容与补充说明。先直接回答，再用简短例子或思路帮助理解。若用户问练习题，优先提示解题思路，避免直接代答。不要编造已经执行的操作。${markdownGuidance}格式：{"answer":"清晰、具体的中文 Markdown 答复"}。`, data, v => v && str(v.answer, 12000));
         } else if (path === '/api/ask') {
           if (!str(data.question, 1000) || !Array.isArray(data.notes) || data.notes.length > 30 || !data.notes.length || !data.notes.every(n => str(n.id, 160) && str(n.title, 160) && str(n.content))) fail('请提供问题和最多 30 篇有效知识笔记。');
-          result = await generate('只根据提供的 notes 回答问题。资料不足就明确说明不足，不得补充无依据的知识。返回实际支撑答案的笔记 id；引用只能使用所给 id。格式：{"answer":"回答","citations":["笔记id"]}。', data, v => v && str(v.answer) && Array.isArray(v.citations) && v.citations.every(id => data.notes.some(n => n.id === id)));
+          result = await generate(`只根据提供的 notes 回答问题。资料不足就明确说明不足，不得补充无依据的知识。返回实际支撑答案的笔记 id；引用只能使用所给 id。${markdownGuidance}格式：{"answer":"Markdown 回答","citations":["笔记id"]}。`, data, v => v && str(v.answer) && Array.isArray(v.citations) && v.citations.every(id => data.notes.some(n => n.id === id)));
         } else return send(404, { error: '接口不存在。' });
         return send(200, result);
       }

@@ -226,6 +226,28 @@ test('grounded Q&A rejects invented citations and handles insufficient evidence'
   assert.equal((await app.post('/api/ask', { ...input, notes: [] })).status, 400);
 });
 
+test('AI lesson Q&A, Wiki cards and grounded answers request Markdown within unchanged JSON fields', async t => {
+  const payloads = [];
+  const app = await serve(t, {model:'test',fetchImpl:async (_url, init) => {
+    const payload = JSON.parse(init.body); payloads.push(payload);
+    const request = JSON.parse(payload.messages[1].content);
+    const answer = request.notes ? {answer:'## 基于笔记的回答\n\n**print** 显示输出。',citations:['n1']} : request.question ? {answer:'## 直接回答\n\n**print** 显示输出。'} : {summary:'输出的作用',content:'## 核心概念\n\n**print** 显示输出。'};
+    return Response.json({message:{content:JSON.stringify(answer)}});
+  }});
+  const cases = [
+    ['/api/lesson-ask',{title:'输出',objective:'理解输出',lesson:demoLessons.p1,question:'print 是什么？',history:[]},'answer'],
+    ['/api/wiki',{title:'输出',lesson:demoLessons.p1,reflection:'## 我的理解\n\n输出显示内容。'},'content'],
+    ['/api/ask',{question:'print 是什么？',notes:[{id:'n1',title:'输出',content:'## 概念\n\nprint 显示内容。'}]},'answer']
+  ];
+  for (const [path,request,field] of cases) {
+    const response = await app.post(path, request);
+    assert.equal(response.status, 200);
+    assert.match((await response.json())[field], /^## /);
+    assert.match(payloads.at(-1).messages[0].content, /正文使用 Markdown/);
+    assert.match(payloads.at(-1).messages[0].content, /根输出仍须是 JSON/);
+  }
+});
+
 test('compatible service works over HTTP for connection, plan, lesson, Wiki and grounded Q&A', async t => {
   const captured = [];
   const upstream = http.createServer(async (req, res) => {
