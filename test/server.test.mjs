@@ -3,6 +3,8 @@ import assert from 'node:assert/strict';
 import http from 'node:http';
 import { createApp, validPlan, validLesson } from '../server.mjs';
 import { demoPlan, demoLessons } from '../public/demo.js';
+import { validQuestionnaire, learningBriefFrom } from '../public/planning.js';
+import { questionnaire, clarification } from '../test-support/planning.mjs';
 
 async function serve(t, config = {}) {
   const server = createApp({ env: {}, model: '', ...config });
@@ -13,6 +15,70 @@ async function serve(t, config = {}) {
 }
 const input = { goal: '学会 Python 编写工具', level: '零基础', daily: 25, days: 14 };
 const mock = output => async () => Response.json({ message: { content: JSON.stringify(output) } });
+
+test('AI clarification is topic-specific, bounded, repaired once, and uses application-owned identifiers', async t => {
+  let calls = 0, sent;
+  const app = await serve(t, {model:'test',fetchImpl:async (_url,init) => {
+    sent = JSON.parse(init.body); calls++;
+    return Response.json({message:{content:JSON.stringify(calls === 1 ? {summary:'缺问题',questions:[]} : {...questionnaire,questions:questionnaire.questions.map(question => ({...question,id:'model-id'}))})}});
+  }});
+  const response = await app.post('/api/plan-clarify', input);
+  assert.equal(response.status, 200);
+  const result = await response.json();
+  assert.ok(validQuestionnaire(result));
+  assert.deepEqual(result.questions.map(question => question.id), ['q1','q2']);
+  assert.equal(calls, 2);
+  assert.match(sent.messages[0].content, /不机械套用/);
+  assert.match(sent.messages[0].content, /不要默认替用户选择/);
+  assert.equal(JSON.parse(sent.messages[1].content).goal, input.goal);
+  assert.equal((await app.post('/api/plan-clarify',{...input,goal:''})).status,400);
+  assert.equal(calls,2);
+  const invalid = await serve(t,{model:'test',fetchImpl:mock({summary:'缺问题',questions:[]})});
+  assert.equal((await invalid.post('/api/plan-clarify',input)).status,502);
+});
+test('personalized plans prioritize confirmed answers, preserve original goals, and validate choices before model calls', async t => {
+  let calls = 0, sent;
+  const app = await serve(t,{model:'test',fetchImpl:async (_url,init) => {
+    calls++; sent=JSON.parse(init.body);
+    return Response.json({message:{content:JSON.stringify({...demoPlan,learningBrief:{summary:'模型编造的背景'}})}});
+  }});
+  const response=await app.post('/api/plan',{...input,clarification});
+  assert.equal(response.status,200);
+  const result=await response.json();
+  assert.equal(result.goal,input.goal);
+  assert.deepEqual(result.learningBrief,learningBriefFrom(clarification));
+  assert.deepEqual(JSON.parse(sent.messages[1].content).learningBrief,result.learningBrief);
+  assert.match(sent.messages[0].content,/验收方法/);
+  assert.match(sent.messages[0].content,/前置依赖/);
+  assert.match(sent.messages[0].content,/不能覆盖用户回答/);
+  assert.equal((await app.post('/api/plan',{...input,clarification:{...clarification,answers:[]}})).status,400);
+  assert.equal((await app.post('/api/plan',{...input,clarification:{...clarification,notes:'x'.repeat(1001)}})).status,400);
+  assert.equal(calls,1);
+});
+test('duplicate learning outcomes are diagnosed and repaired instead of accepted', async t => {
+  let calls=0,repair;
+  const app=await serve(t,{model:'test',fetchImpl:async (_url,init) => {
+    calls++;
+    if(calls===2) repair=JSON.parse(init.body).messages[0].content;
+    return Response.json({message:{content:JSON.stringify(calls===1 ? {...demoPlan,lessons:demoPlan.lessons.map(lesson => ({...lesson,objective:'重复的目标'}))} : demoPlan)}});
+  }});
+  assert.equal((await app.post('/api/plan',{...input,clarification})).status,200);
+  assert.equal(calls,2);
+  assert.match(repair,/学习目标重复/);
+});
+test('later course generation carries the confirmed learning brief without requiring it on old routes', async t => {
+  const sent=[];
+  const outline={intro:'针对文件整理',blocks:[{type:'reading',title:'规则',objective:'制定规则'},{type:'quiz',title:'检查',objective:'识别错误'}]};
+  const app=await serve(t,{model:'test',fetchImpl:async (_url,init) => {
+    const payload=JSON.parse(init.body); sent.push(payload);
+    return Response.json({message:{content:JSON.stringify(JSON.parse(payload.messages[1].content).block ? {text:'安全预览步骤'} : outline)}});
+  }});
+  const context={goal:input.goal,level:input.level,title:'文件整理',objective:'独立整理',learningBrief:learningBriefFrom(clarification)};
+  assert.equal((await app.post('/api/lesson-outline',context)).status,200);
+  assert.equal((await app.post('/api/lesson-block',{...context,intro:'预览再执行',block:outline.blocks[0]})).status,200);
+  for(const payload of sent){assert.deepEqual(JSON.parse(payload.messages[1].content).learningBrief,context.learningBrief);assert.match(payload.messages[0].content,/用户确认的学习需求/);}
+  assert.equal((await app.post('/api/lesson-outline',{...context,learningBrief:{}})).status,400);
+});
 
 test('every sample lesson contains usable content, questions, and unique IDs', () => {
   assert.ok(validPlan(demoPlan));
@@ -29,11 +95,11 @@ test('serves all client assets and demo status; does not expose server files', a
   assert.equal(status.model, null);
   assert.equal(status.provider, 'ollama');
   assert.equal(status.configurationError, null);
-  for (const path of ['/', '/app.js', '/demo.js', '/blocks.js', '/markdown.js', '/diagrams.js', '/vendor/marked.js', '/vendor/purify.js', '/styles.css', '/favicon.svg']) {
+  for (const path of ['/', '/app.js', '/demo.js', '/blocks.js', '/planning.js', '/markdown.js', '/vendor/marked.js', '/vendor/purify.js', '/styles.css', '/favicon.svg']) {
     const r = await app.get(path); assert.equal(r.status, 200); assert.ok((await r.text()).length > 0);
     assert.ok(r.headers.get('content-security-policy').includes("script-src 'self'"));
   }
-  for (const path of ['/server.mjs', '/.env', '/package.json', '/vendor/package.json', '/node_modules/marked/package.json', '/unknown']) assert.equal((await app.get(path)).status, 404);
+  for (const path of ['/server.mjs', '/.env', '/package.json', '/diagrams.js', '/vendor/package.json', '/node_modules/marked/package.json', '/unknown']) assert.equal((await app.get(path)).status, 404);
 });
 test('stepwise lesson APIs validate outline and individual block output', async t => {
   const outline = { intro: '从概念开始', blocks: [{ type: 'reading', title: '概念', objective: '理解概念' }, { type: 'quiz', title: '自测', objective: '检验理解' }] };
@@ -49,14 +115,13 @@ test('stepwise lesson APIs validate outline and individual block output', async 
   assert.match(sent.messages[0].content, /首次出现的术语要定义/);
   assert.match(sent.messages[0].content, /text 字段内使用 Markdown 文档格式/);
   assert.match(sent.messages[0].content, /关键定义或核心结论用 \*\*加粗\*\*/);
-  assert.match(sent.messages[0].content, /flow 或 architecture/);
-  assert.match(sent.messages[0].content, /最多 24 个节点、40 条连线/);
-  assert.match(sent.messages[0].content, /条件或结果/);
-  assert.match(sent.messages[0].content, /数据必须来自本课给定的数值/);
+  assert.match(sent.messages[0].content, /不要生成流程图、架构图、数据图表/);
+  assert.match(sent.messages[0].content, /普通 Markdown 表格/);
+  assert.doesNotMatch(sent.messages[0].content, /最多 24 个节点、40 条连线/);
   assert.deepEqual(JSON.parse(sent.messages[1].content).previous, blockRequest.previous);
   assert.deepEqual(await (await blockApp.post('/api/lesson-block', { ...blockRequest, block: { type: 'practice', title: '动手做', objective: '独立完成' } })).json(), { text: '分步讲解正文' });
   assert.match(sent.messages[0].content, /完成标准和两个由浅入深的提示/);
-  assert.doesNotMatch(sent.messages[0].content, /flow 或 architecture/);
+  assert.match(sent.messages[0].content, /不要生成流程图、架构图、数据图表/);
   assert.equal((await blockApp.post('/api/lesson-block', { ...blockRequest, previous: [{ ...blockRequest.previous[0], excerpt: 'x'.repeat(1001) }] })).status, 400);
   assert.equal((await blockApp.post('/api/lesson-block', { ...context, intro: outline.intro, block: { type: 'unknown', title: '错', objective: '错' } })).status, 400);
 });
@@ -250,6 +315,7 @@ test('AI lesson Q&A, Wiki cards and grounded answers request Markdown within unc
     assert.match((await response.json())[field], /^## /);
     assert.match(payloads.at(-1).messages[0].content, /正文使用 Markdown/);
     assert.match(payloads.at(-1).messages[0].content, /根输出仍须是 JSON/);
+    assert.match(payloads.at(-1).messages[0].content, /不要生成流程图、架构图、数据图表/);
   }
 });
 

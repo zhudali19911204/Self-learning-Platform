@@ -3,6 +3,7 @@ import { lessonFromBlocks, validOutline, validBlockContent, validBlockSpec, bloc
 import { Marked } from './vendor/marked.js';
 import DOMPurify from './vendor/purify.js';
 import { createMarkdownRenderer } from './markdown.js';
+import { validQuestionnaire, validClarification, learningBriefFrom } from './planning.js';
 
 const renderMarkdown = createMarkdownRenderer(Marked, DOMPurify);
 
@@ -48,6 +49,8 @@ let readingReturn = null;
 let status = { mode: 'loading' };
 let connectionResult = '';
 let revisionBusy = false;
+let plannerDraft = { step: 'goal', goal: '', level: '零基础', daily: 25, days: 14, questionnaire: null, answers: [], notes: '' };
+let plannerBusy = false, plannerError = '';
 const plan = () => state.plans.find(p => p.id === state.active) || state.plans[0];
 const categoryRules = [
   ['AI 与大模型', /(?:大模型|人工智能|机器学习|深度学习|智能体|提示词|\b(?:LLM|GPT|RAG|AI)\b|DeepSeek|通义|千问)/i],
@@ -143,6 +146,7 @@ function routes() {
   return `<section class="page-intro"><div><div class="eyebrow">YOUR LEARNING JOURNEY</div><h1>每个目标，都有一条路。</h1><p>把远处的目标，拆解为今天可以迈出的一步。</p></div><div class="route-page-actions">${recentDeleteBackup() ? button('恢复最近删除', 'restore-deleted-plan', 'secondary', '', 'back') : ''}${button('新建学习路线', 'planner', 'primary', '', 'plus')}</div></section>
   <div class="route-library"><div class="route-library-heading"><h2>我的课程分类</h2><span>根据标题、目标和课程标签自动整理</span></div>${[...grouped].map(([category, routes]) => `<section class="route-group"><h3>${escape(category)} <span>${routes.length}</span></h3><div class="route-group-items">${routes.map(route => `<button class="route-chip ${route.id === state.active ? 'selected' : ''}" data-action="switch-plan" data-id="${route.id}" aria-pressed="${route.id === state.active}">${icon('route')}<span>${escape(route.title)}</span></button>`).join('')}</div></section>`).join('')}</div>
   <section class="route-overview"><div>${pill(p.source === 'demo' ? '精选示例 · 非 AI 生成' : 'AI 定制路线', 'purple')}<h2>${escape(p.title)}</h2><p>${escape(p.goal)}</p><div class="metadata">${icon('clock')}每天 ${p.daily} 分钟 <span>·</span>计划 ${p.days} 天 <span>·</span>${escape(p.level)}</div><div class="route-overview-actions">${pill(categoryFor(p))}${button('删除这条路线', 'delete-plan', 'danger', `data-id="${p.id}" ${state.plans.length <= 1 ? 'disabled title="至少保留一条路线"' : ''}`, 'close')}</div></div><div class="progress-ring" style="--progress:${percent()}%"><div><strong>${percent()}<small>%</small></strong><span>已完成</span></div></div></section>
+  ${p.source === 'ai' ? `<section class="route-design"><h3>学习成果与规划说明</h3><p>${escape(p.description)}</p>${p.learningBrief ? `<details><summary>查看定制需求与回答</summary>${briefHTML(p.learningBrief)}${p.learningBrief.notes ? `<h4>最后补充</h4><p>${escape(p.learningBrief.notes)}</p>` : ''}</details>` : ''}</section>` : ''}
   <div class="route-layout"><section class="timeline">${p.lessons.map((l, i) => `${i === 0 || l.phase !== p.lessons[i - 1].phase ? `<h3 class="phase">${escape(l.phase)}</h3>` : ''}<article class="lesson-row ${progress(l.id).completed ? 'complete' : ''}"><div class="step-number">${progress(l.id).completed ? icon('check') : String(i + 1).padStart(2, '0')}</div><div class="lesson-row-main"><div class="lesson-title"><h3>${escape(l.title)}</h3>${progress(l.id).completed ? pill('已掌握', 'success') : l.id === nextLesson().id ? pill('推荐下一步', 'purple') : ''}</div><p>${escape(l.objective)}</p><div class="lesson-meta">${icon('clock')}${l.minutes} 分钟<span>·</span>${escape(l.tags.join(' / '))}</div></div>${button(progress(l.id).completed ? '复习' : '进入课程', 'open-lesson', 'secondary', `data-id="${l.id}"`)}</article>`).join('')}</section><aside class="tip-card"><span class="float-icon lavender">${icon('target')}</span><h3>按自己的节奏前进</h3><p>路线是一张地图。你可以先预览任意课程，再根据自己的基础选择起点。</p><hr><strong>掌握比完成更重要</strong><p>每节课通过全部测验后会记录为已掌握。答错时，读一读解析，再试一次。</p>${button('去练习与巩固', 'practice', 'secondary full', '', 'bolt')}</aside></div>`;
 }
 function study() {
@@ -278,9 +282,69 @@ function desktopSettingsPage() {
   <p class="field-hint">可导入网页版导出的 JSON 备份。导入前会确认替换；上一个版本保留为 .bak 文件。学习数据不包含模型配置或密钥。</p></section></div>`;
 }
 
-function planner() {
-  $('#planner').innerHTML = `<div class="modal-heading"><span class="float-icon lavender">${icon('spark')}</span><button class="icon-button" data-action="close-planner" aria-label="关闭">${icon('close')}</button></div><div class="eyebrow">START WITH CURIOSITY</div><h2 id="planner-title">你想学会什么？</h2><p>给自己一个目标，剩下的路，我们一起规划。</p><form id="plan-form"><label for="goal">我的学习目标</label><textarea id="goal" name="goal" maxlength="1000" required placeholder="例如：我想学 Python，在两周内做出一个自动整理文件的小工具。"></textarea><div class="form-row"><div><label for="level">目前的基础</label><select id="level" name="level"><option>零基础</option><option>有一点基础</option><option>希望进阶</option></select></div><div><label for="daily">每天投入</label><select id="daily" name="daily"><option value="15">15 分钟</option><option value="25" selected>25 分钟</option><option value="45">45 分钟</option><option value="60">60 分钟</option></select></div><div><label for="days">计划周期</label><select id="days" name="days"><option value="7">1 周</option><option value="14" selected>2 周</option><option value="30">1 个月</option><option value="90">3 个月</option></select></div></div>${status.mode !== 'ai' ? '<div class="notice">当前未配置 AI。你可以先体验完整的 Python 示例课程；自定义路线需配置云端或本地模型。</div>' : '<div class="notice">AI 会根据目标与可投入时间规划课程，生成可能需要一两分钟。</div>'}<p id="plan-error" class="inline-error" role="alert"></p><button class="btn primary full" type="submit" ${status.mode !== 'ai' ? 'disabled' : ''}>生成我的学习路线 ${icon('spark')}</button>${status.mode !== 'ai' ? button('体验 Python 示例课程', 'demo', 'secondary full', '', 'arrow') : ''}</form>`;
-  $('#planner').showModal();
+function planner() { renderPlanner(); if (!$('#planner').open) $('#planner').showModal(); }
+function briefHTML(brief) {
+  return `<div class="planner-summary"><h3>AI 的初步理解</h3><p>${escape(brief.summary)}</p></div><dl class="planner-answers">${brief.answers.map(answer => `<div><dt>${escape(answer.question)}</dt><dd>${escape(answer.selected.join('、'))}${answer.detail ? `<p>${escape(answer.detail)}</p>` : ''}</dd></div>`).join('')}</dl>`;
+}
+function renderPlanner() {
+  const draft = plannerDraft, step = ['goal', 'questions', 'review'].indexOf(draft.step);
+  let body;
+  if (draft.step === 'goal') {
+    body = `<h2 id="planner-title">先说说，你想学什么？</h2><p>还没有明确方向也没关系。描述你的兴趣、遇到的难题，或想完成的事情，AI 会先帮你澄清需求。</p><form id="plan-form"><fieldset class="planner-fields" ${plannerBusy ? 'disabled' : ''}><label for="goal">我的学习需求</label><textarea id="goal" name="goal" maxlength="1000" required placeholder="例如：我想学 AI，但不知道从哪里开始；或我想让日常报表更省时间。">${escape(draft.goal)}</textarea><div class="form-row"><div><label for="level">目前的基础</label><select id="level" name="level">${['零基础', '有一点基础', '希望进阶'].map(level => `<option ${draft.level === level ? 'selected' : ''}>${level}</option>`).join('')}</select></div><div><label for="daily">每天投入</label><select id="daily" name="daily">${[15,25,45,60].map(minutes => `<option value="${minutes}" ${draft.daily === minutes ? 'selected' : ''}>${minutes} 分钟</option>`).join('')}</select></div><div><label for="days">计划周期</label><select id="days" name="days">${[[7,'1 周'],[14,'2 周'],[30,'1 个月'],[90,'3 个月']].map(([days,label]) => `<option value="${days}" ${draft.days === days ? 'selected' : ''}>${label}</option>`).join('')}</select></div></div><button class="btn primary full" type="submit" ${status.mode !== 'ai' ? 'disabled' : ''}>${plannerBusy ? '<span class="spinner"></span>AI 正在分析需求…' : `让 AI 帮我澄清需求 ${icon('spark')}`}</button></fieldset></form>`;
+  } else if (draft.step === 'questions') {
+    body = `<h2 id="planner-title">一起确定适合你的方向</h2><p>这份问卷根据你的需求生成。不必懂专业术语，每题可选择方向、自由补充，或让 AI 推荐。</p><div class="planner-summary"><h3>AI 的初步理解</h3><p>${escape(draft.questionnaire.summary)}</p></div><form id="clarification-form"><fieldset class="planner-fields" ${plannerBusy ? 'disabled' : ''}>${draft.questionnaire.questions.map((question, index) => {
+      const answer = draft.answers.find(item => item.questionId === question.id) || { optionIds: [], detail: '' };
+      return `<fieldset class="clarification-question"><legend>${index + 1}. ${escape(question.question)} <small>${question.type === 'multiple' ? '可多选' : '单选'}</small></legend><p class="question-why">${escape(question.why)}</p><div class="clarification-options">${[...question.options, {id:'unsure',label:'还不确定，请 AI 推荐',description:'规划时会说明建议与假设。'}].map(option => `<label class="clarification-option"><input type="${question.type === 'multiple' ? 'checkbox' : 'radio'}" name="${question.id}" value="${option.id}" ${answer.optionIds.includes(option.id) ? 'checked' : ''}><span><strong>${escape(option.label)}</strong>${option.description ? `<small>${escape(option.description)}</small>` : ''}</span></label>`).join('')}</div><label class="question-detail-label" for="detail-${question.id}">自己的想法或补充（可代替选项）</label><textarea id="detail-${question.id}" name="detail-${question.id}" maxlength="500" rows="2" placeholder="没有合适的选项？可以直接告诉 AI。">${escape(answer.detail)}</textarea></fieldset>`;
+    }).join('')}<div class="planner-actions"><button type="button" class="btn secondary" data-action="planner-back">${icon('back')}修改需求</button><button type="submit" class="btn primary">确认我的选择 ${icon('arrow')}</button></div></fieldset></form>`;
+  } else {
+    const brief = learningBriefFrom({ questionnaire: draft.questionnaire, answers: draft.answers, notes: '' });
+    body = `<h2 id="planner-title">确认需求，再规划课程</h2><p>AI 将按这些回答倒推学习成果、必要知识和实践任务。若理解有偏差，请返回修改，或在下方补充。</p><div class="planner-original"><strong>原始需求</strong><p>${escape(draft.goal)}</p><small>${escape(draft.level)} · 每天 ${draft.daily} 分钟 · ${draft.days} 天</small></div>${briefHTML(brief)}<form id="plan-confirm-form"><fieldset class="planner-fields" ${plannerBusy ? 'disabled' : ''}><label for="planner-notes">最后补充：想达成的成果、不想学的内容、工具限制等（可选）</label><textarea id="planner-notes" name="notes" maxlength="1000" rows="3" placeholder="例如：只学能用于工作的内容，不学习编程；最终希望独立完成一份分析报告。">${escape(draft.notes)}</textarea><div class="planner-actions"><button type="button" class="btn secondary" data-action="planner-back">${icon('back')}修改回答</button><button type="submit" class="btn primary">${plannerBusy ? '<span class="spinner"></span>正在定制学习路线…' : `确认并生成学习路线 ${icon('spark')}`}</button></div></fieldset></form>`;
+  }
+  $('#planner').innerHTML = `<div class="modal-heading"><span class="float-icon lavender">${icon('spark')}</span><button class="icon-button" data-action="close-planner" aria-label="关闭" ${plannerBusy ? 'disabled' : ''}>${icon('close')}</button></div><ol class="planner-steps" aria-label="学习规划进度">${['描述需求','澄清方向','确认并规划'].map((label,index) => `<li ${index === step ? 'aria-current="step"' : ''}>${index + 1} · ${label}</li>`).join('')}</ol><p id="plan-error" class="inline-error" role="alert">${escape(plannerError)}</p>${body}${status.mode !== 'ai' ? `<div class="notice">当前未配置 AI。自定义问卷与路线需要连接模型。</div>${button('体验 Python 示例课程','demo','secondary full','','arrow')}` : '<p class="field-hint">需求和回答将发送到已配置的模型服务；路线生成后，确认后的需求随学习数据保存在本地。生成可能需要一两分钟。</p>'}`;
+}
+function collectPlannerAnswers(values) {
+  return plannerDraft.questionnaire.questions.map(question => ({ questionId: question.id, optionIds: values.getAll(question.id), detail: (values.get(`detail-${question.id}`) || '').trim() }));
+}
+async function submitPlanner(formId, values) {
+  if (plannerBusy) return;
+  plannerError = '';
+  try {
+    if (formId === 'clarification-form') {
+      plannerDraft.answers = collectPlannerAnswers(values);
+      if (!validClarification({ questionnaire: plannerDraft.questionnaire, answers: plannerDraft.answers, notes: plannerDraft.notes })) throw new Error('请回答每个问题：选择方向、补充自己的想法，或选择“还不确定”。');
+      plannerDraft.step = 'review'; return;
+    }
+    if (status.mode !== 'ai') throw new Error('请先连接 AI 模型，再生成澄清问卷或学习路线。');
+    plannerBusy = true;
+    if (formId === 'plan-form') {
+      const next = { goal: (values.get('goal') || '').trim(), level: values.get('level'), daily: Number(values.get('daily')), days: Number(values.get('days')) };
+      if (!next.goal) throw new Error('请先描述你想学习的内容。');
+      const unchanged = plannerDraft.questionnaireFor === JSON.stringify(next);
+      Object.assign(plannerDraft, next);
+      if (unchanged && plannerDraft.questionnaire) { plannerDraft.step = 'questions'; return; }
+      plannerDraft.questionnaire = null; plannerDraft.answers = []; plannerDraft.notes = '';
+      renderPlanner();
+      const questionnaire = await api('plan-clarify', next);
+      if (!validQuestionnaire(questionnaire)) throw new Error('模型返回的问卷格式不正确，请重新生成。');
+      plannerDraft.questionnaire = questionnaire; plannerDraft.questionnaireFor = JSON.stringify(next); plannerDraft.step = 'questions';
+    } else if (formId === 'plan-confirm-form') {
+      plannerDraft.notes = (values.get('notes') || '').trim();
+      const clarification = { questionnaire: plannerDraft.questionnaire, answers: plannerDraft.answers, notes: plannerDraft.notes };
+      if (!validClarification(clarification)) throw new Error('需求回答不完整，请返回修改。');
+      renderPlanner();
+      const { goal, level, daily, days } = plannerDraft;
+      const p = await api('plan', { goal, level, daily, days, clarification });
+      await pendingSave;
+      if (storageWarning) throw new Error('本地存储有错误，路线尚未保存：' + storageWarning);
+      const nextState = { ...state, plans: [...state.plans, p], active: p.id };
+      if (desktop) await desktop.savePlan(p);
+      else { try { localStorage.setItem(key, JSON.stringify(nextState)); } catch { throw new Error('浏览器本地存储不可用或已满，路线未保存。请释放空间后重试。'); } }
+      state = nextState;
+      $('#planner').close(); navigate('routes'); toast('定制学习路线已生成，从第一步开始吧。');
+      plannerDraft = { step: 'goal', goal: '', level: '零基础', daily: 25, days: 14, questionnaire: null, answers: [], notes: '' };
+    }
+  } catch (error) { plannerError = error.message; }
+  finally { plannerBusy = false; if ($('#planner').open) { renderPlanner(); $('#planner').scrollTop = 0; } }
 }
 async function openLesson(id, tab = 'read') {
   if (desktop) {
@@ -339,7 +403,13 @@ async function action(name, element) {
     return;
   }
   if (name === 'planner') return planner();
-  if (name === 'close-planner') return $('#planner').close();
+  if (name === 'close-planner') { if (!plannerBusy) $('#planner').close(); return; }
+  if (name === 'planner-back') {
+    if (plannerBusy) return;
+    if (plannerDraft.step === 'questions') { plannerDraft.answers = collectPlannerAnswers(new FormData($('#clarification-form'))); plannerDraft.step = 'goal'; }
+    else if (plannerDraft.step === 'review') { plannerDraft.notes = $('#planner-notes').value; plannerDraft.step = 'questions'; }
+    plannerError = ''; renderPlanner(); $('#planner').scrollTop = 0; return;
+  }
   if (['routes', 'practice'].includes(name)) return navigate(name);
   if (name === 'start') return openLesson(nextLesson().id);
   if (name === 'demo') { $('#planner').close(); state.active = demoPlan.id; persist('setActivePlan', demoPlan.id); return navigate('routes'); }
@@ -385,7 +455,7 @@ async function action(name, element) {
   if (name === 'quiz' || name === 'notes-tab' || name === 'read-tab') return switchLessonTab(name === 'quiz' ? 'quiz' : name === 'read-tab' ? 'read' : 'notes');
   if (name === 'generate-lesson') {
     const meta = lessonById(id), p = state.plans.find(p => p.lessons.some(l => l.id === id));
-    const outline = await api('lesson-outline', { goal: p.goal, level: p.level, title: meta.title, objective: meta.objective, route: p.lessons.map(({ title, objective }) => ({ title, objective })), lessonPosition: p.lessons.findIndex(lesson => lesson.id === id) + 1 });
+    const outline = await api('lesson-outline', { goal: p.goal, level: p.level, ...(p.learningBrief ? { learningBrief: p.learningBrief } : {}), title: meta.title, objective: meta.objective, route: p.lessons.map(({ title, objective }) => ({ title, objective })), lessonPosition: p.lessons.findIndex(lesson => lesson.id === id) + 1 });
     if (!validOutline(outline)) throw new Error('模型返回的大纲格式不正确，请重试。');
     const course = desktop ? await desktop.saveOutline(id, outline) : { intro: outline.intro, blocks: outline.blocks.map(block => ({ id: crypto.randomUUID(), ...block, content: null })) };
     state.blockCourses ||= {}; state.blockCourses[id] = course; if (!desktop) save(); render(); return;
@@ -395,7 +465,7 @@ async function action(name, element) {
     if (!block || block.content) throw new Error('内容块不存在或已生成。');
     const meta = lessonById(id), p = state.plans.find(plan => plan.lessons.some(item => item.id === id));
     const context = blockGenerationContext(state.blockCourses[id], block.id);
-    const content = await api('lesson-block', { goal: p.goal, level: p.level, title: meta.title, objective: meta.objective, minutes: meta.minutes, ...context, block: { type: block.type, title: block.title, objective: block.objective } });
+    const content = await api('lesson-block', { goal: p.goal, level: p.level, ...(p.learningBrief ? { learningBrief: p.learningBrief } : {}), title: meta.title, objective: meta.objective, minutes: meta.minutes, ...context, block: { type: block.type, title: block.title, objective: block.objective } });
     if (!validBlockContent(block.type, content)) throw new Error('模型返回的内容格式不正确，请重试。');
     if (desktop) await desktop.saveBlock(id, block.id, content);
     block.content = content;
@@ -407,7 +477,7 @@ async function action(name, element) {
     if (!block?.content || !['reading', 'example'].includes(block.type)) throw new Error('请先生成讲解或案例。');
     if (status.mode !== 'ai') throw new Error('请先在设置中连接 AI 模型。');
     const title = block.type === 'reading' ? '按你的需求重新讲解' : '按你的需求更换案例';
-    $('#revise-block-dialog').innerHTML = `<div class="modal-heading"><h2 id="revise-block-title">${title}</h2><button class="icon-button" data-action="close-revision" aria-label="关闭">${icon('close')}</button></div><p>当前模块：${escape(block.title)}。告诉 AI 哪里没讲清楚，以及你希望怎样解释。</p><form id="revision-form" data-id="${escape(id)}" data-block="${escape(block.id)}"><div class="revision-request-heading"><label for="revision-request">你的具体要求</label><button type="button" class="text-button" data-action="markdown-revision-preset">仅优化排版</button></div><textarea id="revision-request" name="request" required maxlength="1000" placeholder="例如：请画一张流程图解释这几个步骤；如果有准确数值，再用柱状图比较收入和支出。每张图下面解释结论。"></textarea><p class="field-hint">新内容支持 Markdown 排版、本地流程／架构图和数据图。只替换当前模块，其他内容和学习进度不变。保留最近 10 个旧版本；已保存的 Wiki 不会自动改写。</p><p id="revision-error" class="inline-error" role="alert"></p><div class="revision-dialog-actions"><button type="button" class="btn secondary" data-action="close-revision">取消</button><button type="submit" class="btn primary">按要求重新生成 ${icon('spark')}</button></div></form>`;
+    $('#revise-block-dialog').innerHTML = `<div class="modal-heading"><h2 id="revise-block-title">${title}</h2><button class="icon-button" data-action="close-revision" aria-label="关闭">${icon('close')}</button></div><p>当前模块：${escape(block.title)}。告诉 AI 哪里没讲清楚，以及你希望怎样解释。</p><form id="revision-form" data-id="${escape(id)}" data-block="${escape(block.id)}"><div class="revision-request-heading"><label for="revision-request">你的具体要求</label><button type="button" class="text-button" data-action="markdown-revision-preset">仅优化排版</button></div><textarea id="revision-request" name="request" required maxlength="1000" placeholder="例如：术语太多，请从基础概念开始，用编号步骤和一个具体案例解释；数据比较请用普通表格。"></textarea><p class="field-hint">新内容支持 Markdown 标题、重点、列表、普通表格和程序代码。只替换当前模块，其他内容和学习进度不变。保留最近 10 个旧版本；已保存的 Wiki 不会自动改写。</p><p id="revision-error" class="inline-error" role="alert"></p><div class="revision-dialog-actions"><button type="button" class="btn secondary" data-action="close-revision">取消</button><button type="submit" class="btn primary">按要求重新生成 ${icon('spark')}</button></div></form>`;
     $('#revise-block-dialog').showModal(); return;
   }
   if (name === 'markdown-revision-preset') {
@@ -453,8 +523,14 @@ document.addEventListener('click', async event => {
 });
 document.addEventListener('cancel', event => {
   if (event.target.id === 'revise-block-dialog' && revisionBusy) event.preventDefault();
+  if (event.target.id === 'planner' && plannerBusy) event.preventDefault();
 }, true);
 document.addEventListener('input', event => {
+  if (!plannerBusy && event.target.closest?.('#planner')) {
+    if (event.target.id === 'goal') plannerDraft.goal = event.target.value;
+    if (event.target.id === 'planner-notes') plannerDraft.notes = event.target.value;
+    if (event.target.id.startsWith('detail-')) plannerDraft.answers = collectPlannerAnswers(new FormData($('#clarification-form')));
+  }
   if (desktop && event.target.closest?.('#desktop-settings-form')) {
     $('#settings-error').textContent = '';
     $('#remote-permission').hidden = true;
@@ -467,6 +543,18 @@ document.addEventListener('input', event => {
   if (event.target.id === 'wiki-search') { query = event.target.value; $('#note-results').innerHTML = noteList(state.notes.filter(n => `${n.title} ${n.content} ${n.tags.join(' ')}`.toLowerCase().includes(query.toLowerCase()))); }
 });
 document.addEventListener('change', event => {
+  if (!plannerBusy && event.target.closest?.('#planner')) {
+    if (event.target.id === 'level') plannerDraft.level = event.target.value;
+    if (['daily','days'].includes(event.target.id)) plannerDraft[event.target.id] = Number(event.target.value);
+    if (event.target.closest('.clarification-question')) {
+      if (event.target.type === 'checkbox' && event.target.checked) {
+        for (const input of event.target.closest('.clarification-question').querySelectorAll('input[type=checkbox]')) {
+          if (input !== event.target && (event.target.value === 'unsure' || input.value === 'unsure')) input.checked = false;
+        }
+      }
+      plannerDraft.answers = collectPlannerAnswers(new FormData($('#clarification-form')));
+    }
+  }
   if (desktop && event.target.id === 'model-provider') {
     $('#model-url').value = ''; $('#model-name').value = ''; $('#model-key').value = ''; $('#key-action').value = ['deepseek', 'qwen'].includes(event.target.value) ? 'replace' : 'clear';
     $('#settings-error').textContent = '';
@@ -477,7 +565,9 @@ document.addEventListener('change', event => {
   if (desktop && event.target.id === 'key-action' && event.target.value !== 'replace') $('#model-key').value = '';
 });
 document.addEventListener('submit', async event => {
-  event.preventDefault(); const form = event.target; const values = new FormData(form); const submit = form.querySelector('button[type="submit"]');
+  event.preventDefault(); const form = event.target; const values = new FormData(form);
+  if (['plan-form', 'clarification-form', 'plan-confirm-form'].includes(form.id)) return submitPlanner(form.id, values);
+  const submit = form.querySelector('button[type="submit"]');
   const label = submit.innerHTML; submit.disabled = true;
   try {
     if (form.id === 'desktop-settings-form' && desktop) {
@@ -501,10 +591,6 @@ document.addEventListener('submit', async event => {
       }
       desktopSettings = result.settings; status = result.status; connectionResult = '配置已保存并生效，可测试模型连接。';
       render(); toast('模型配置已保存在本机。');
-    } else if (form.id === 'plan-form') {
-      $('#plan-error').textContent = ''; submit.innerHTML = '<span class="spinner"></span>正在规划学习路线…';
-      const p = await api('plan', { goal: values.get('goal').trim(), level: values.get('level'), daily: Number(values.get('daily')), days: Number(values.get('days')) });
-      state.plans.push(p); state.active = p.id; persist('savePlan', p); $('#planner').close(); navigate('routes'); toast('学习路线已生成，从第一步开始吧。');
     } else if (form.id === 'revision-form') {
       $('#revision-error').textContent = '';
       const id = form.dataset.id, block = state.blockCourses?.[id]?.blocks.find(item => item.id === form.dataset.block);
@@ -515,7 +601,7 @@ document.addEventListener('submit', async event => {
       submit.innerHTML = '<span class="spinner"></span>正在按你的要求重新生成…';
       const meta = lessonById(id), p = state.plans.find(route => route.lessons.some(item => item.id === id));
       const previous = block.content, context = blockGenerationContext(state.blockCourses[id], block.id);
-      const content = await api('lesson-block', { goal: p.goal, level: p.level, title: meta.title, objective: meta.objective, minutes: meta.minutes, ...context, block: { type: block.type, title: block.title, objective: block.objective }, revisionRequest: request, currentExcerpt: previous.text.slice(0, 12000) });
+      const content = await api('lesson-block', { goal: p.goal, level: p.level, ...(p.learningBrief ? { learningBrief: p.learningBrief } : {}), title: meta.title, objective: meta.objective, minutes: meta.minutes, ...context, block: { type: block.type, title: block.title, objective: block.objective }, revisionRequest: request, currentExcerpt: previous.text.slice(0, 12000) });
       if (!validBlockContent(block.type, content)) throw new Error('模型返回的内容格式不正确，原内容已保留，请重试。');
       if (block.content !== previous) throw new Error('内容已更新，原请求未覆盖当前内容，请重新提交。');
       block.content = desktop ? await desktop.reviseBlock(id, block.id, content, previous.text) : revisedContent(block.type, previous, content);

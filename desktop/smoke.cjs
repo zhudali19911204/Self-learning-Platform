@@ -124,6 +124,10 @@ exports.run = async (window, store, directory) => {
   assert.equal(loaded.settings.apiKey, undefined);
   // Exercise the complete lesson Q&A path against a local mock model.
   const requests = [];
+  const planningQuestionnaire = { summary:'你希望用 Python 整理文件，需要先明确成果与练习方式。', questions:[
+    {question:'你想优先整理哪类文件？',why:'选择贴近工作的案例。',type:'single',options:[{label:'本地文档',description:'按类型与日期整理。'},{label:'图片素材',description:'按项目整理和命名。'}]},
+    {question:'你希望达成什么成果？',why:'帮助设计验收任务。',type:'multiple',options:[{label:'独立完成小工具',description:'先预览再执行，避免误操作。'},{label:'理解关键代码',description:'能够解释并修改规则。'}]}
+  ] };
   const chatMarkdown = '## 直接回答\n\n**输出**会把内容显示给用户。\n\n```python\nprint("你好")\n```';
   const wikiMarkdown = '## 核心概念\n\n**现金流**表示一定期间的现金收入与支出。\n\n### 实践检查\n\n- 确认时间范围\n- 比较收入与支出';
   const model = http.createServer(async (req, res) => {
@@ -136,8 +140,10 @@ exports.run = async (window, store, directory) => {
       res.writeHead(503, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({error:{message:'Test-only unavailable model'}})); return;
     }
+    // Deliberately keep legacy fences in test-only output: they must remain inert code, not drawings.
     const markdownAnswer = ['## 核心结论', '', '**剩余现金 40 元**：收入 100 元，减去支出 60 元。', '', '### 计算步骤', '', '1. 从收支表中找到收入。', '2. 减去支出，得到剩余现金。', '', '> 提示：先确认收入与支出的时间范围一致。', '', '| 项目 | 金额 |', '| --- | ---: |', '| 收入 | 100 |', '| 支出 | 60 |', '', '```flow', '开始 -> 员工提交申请', '员工提交申请 -> 主管审批', '主管审批 -> 判断天数', '判断天数 ->|是（<=3天）| 主管批准', '判断天数 ->|否（>3天）| 部门经理审批', '主管批准 -> 结束1', '部门经理审批 -> 经理判断', '经理判断 ->|批准| 结束2', '经理判断 ->|驳回| 结束3', '```', '', '```chart', 'type: bar', 'title: 示例收支', '收入 | 100', '支出 | 60', '```', '', '```python', 'balance = 100 - 60', 'print(balance)', '```'].join('\n');
-    const output = input.daily !== undefined ? {...demoPlan,title:'路线纠正集成测试',lessons:input.repair ? demoPlan.lessons : [demoPlan.lessons[0]]}
+    const output = payload.messages[0].content.includes('自学课程顾问') ? planningQuestionnaire
+      : input.daily !== undefined ? {...demoPlan,title:'路线纠正集成测试',lessons:input.repair ? demoPlan.lessons : [demoPlan.lessons[0]]}
       : input.revisionRequest ? {text:markdownAnswer}
       : input.notes ? {answer:'## 检索结论\n\n**输入与输出**已记录在你的知识卡片中。',citations:[input.notes[0].id]}
       : input.lesson && input.reflection !== undefined ? {summary:'**现金流**的核心概念与实践方法',content:wikiMarkdown}
@@ -173,13 +179,32 @@ exports.run = async (window, store, directory) => {
     assert.ok(await evaluate("!!document.querySelector('.grounded-answer .citation')"));
     // Reproduce a one-course response and exercise the corrected retry through the real planner.
     await evaluate("document.querySelector('[data-page=routes]').click(); document.querySelector('[data-action=planner]').click(); document.querySelector('#goal').value = '用 Python 编写自动整理文件的小工具'; document.querySelector('#plan-form').requestSubmit()");
+    await wait("document.querySelector('#clarification-form')");
+    assert.equal(await evaluate("document.querySelectorAll('#clarification-form input:checked').length"),0);
+    await evaluate('new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))');
+    await writeFile(path.join(directory,'..','planner-questions-smoke.png'),(await window.webContents.capturePage()).toPNG());
+    await evaluate("document.querySelector('[name=q1][value=o1]').click(); document.querySelector('[name=q2][value=unsure]').click(); document.querySelector('[name=q2][value=o1]').click()");
+    assert.equal(await evaluate("document.querySelector('[name=q2][value=unsure]').checked"),false);
+    await evaluate("document.querySelector('#detail-q1').value = '先学习安全预览，再执行文件移动'; document.querySelector('#detail-q1').dispatchEvent(new Event('input',{bubbles:true})); document.querySelector('#clarification-form').requestSubmit()");
+    await wait("document.querySelector('#plan-confirm-form')");
+    await evaluate("document.querySelector('[data-action=planner-back]').click()");
+    assert.equal(await evaluate("document.querySelector('[name=q1][value=o1]').checked"),true);
+    assert.equal(await evaluate("document.querySelector('#detail-q1').value"),'先学习安全预览，再执行文件移动');
+    await evaluate("document.querySelector('#clarification-form').requestSubmit()");
+    await wait("document.querySelector('#plan-confirm-form')");
+    await evaluate('new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))');
+    await writeFile(path.join(directory,'..','planner-review-smoke.png'),(await window.webContents.capturePage()).toPNG());
+    await evaluate("document.querySelector('#planner-notes').value = '不学习网页开发'; document.querySelector('#plan-confirm-form').requestSubmit()");
     await wait("!document.querySelector('#planner').open && document.querySelector('.route-overview h2')?.textContent === '路线纠正集成测试'");
-    const planRequests = requests.map(request => JSON.parse(request.payload.messages[1].content)).filter(input => input.daily !== undefined);
+    const planRequests = requests.map(request => JSON.parse(request.payload.messages[1].content)).filter(input => input.daily !== undefined && input.learningBrief);
     assert.equal(planRequests.length, 2);
     assert.equal(planRequests[1].repair.receivedLessonCount, 1);
     assert.equal(planRequests[1].goal, planRequests[0].goal);
     const planned = await store.loadState();
     assert.equal(planned.plans.find(plan => plan.id === planned.active).lessons.length, demoPlan.lessons.length);
+    assert.equal(planned.plans.find(plan => plan.id === planned.active).learningBrief.notes,'不学习网页开发');
+    assert.equal(planRequests[1].learningBrief.answers[0].detail,'先学习安全预览，再执行文件移动');
+    assert.ok(await evaluate("!!document.querySelector('.route-design details')"));
     // Test grouped teaching and feedback regeneration on a fresh, isolated lesson.
     const { randomUUID } = require('node:crypto');
     const route = structuredClone(demoPlan);
@@ -222,20 +247,21 @@ exports.run = async (window, store, directory) => {
     assert.ok(typography.table && typography.code && typography.quote);
     assert.equal(typography.bodyWhiteSpace, 'normal');
     assert.ok(typography.headingSize > typography.textSize);
-    assert.equal(await evaluate("document.querySelectorAll('.teaching-reading .diagram-node').length"), 10);
-    assert.equal(await evaluate("document.querySelectorAll('.teaching-reading .diagram-edge-label').length"), 4);
-    assert.equal(await evaluate("document.querySelectorAll('.teaching-reading .learning-chart svg rect').length"), 2);
+    assert.equal(await evaluate("document.querySelector('.teaching-reading .markdown-content svg, .teaching-reading .learning-visual, .teaching-reading .visual-fallback') === null"), true);
+    assert.match(await evaluate("document.querySelector('.teaching-reading pre code.language-flow').textContent"), /判断天数 ->\|是（<=3天）\| 主管批准/);
+    assert.match(await evaluate("document.querySelector('.teaching-reading pre code.language-chart').textContent"), /收入 \| 100/);
     assert.match(revised.blockCourses[lessonId].blocks[0].content.text, /```chart/);
     await evaluate('new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))');
     await writeFile(path.join(directory, '..', 'teaching-smoke.png'), (await window.webContents.capturePage()).toPNG());
-    await evaluate("document.querySelector('.teaching-reading .learning-flow').scrollIntoView({block:'center'})");
+    await evaluate("document.querySelector('.teaching-reading pre code.language-flow').scrollIntoView({block:'center'})");
     await evaluate('new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))');
-    await writeFile(path.join(directory, '..', 'visual-smoke.png'), (await window.webContents.capturePage()).toPNG());
+    await writeFile(path.join(directory, '..', 'legacy-code-smoke.png'), (await window.webContents.capturePage()).toPNG());
     window.webContents.reload();
     await new Promise(resolve => window.webContents.once('did-finish-load', resolve));
     await wait("document.querySelector('main h1')");
     await evaluate(`document.querySelector('[data-page=routes]').click(); document.querySelector('[data-action=open-lesson][data-id="${lessonId}"]').click()`);
-    await wait("document.querySelector('.teaching-reading .learning-chart svg rect')");
+    await wait("document.querySelector('.teaching-reading pre code.language-chart')");
+    assert.equal(await evaluate("document.querySelector('.teaching-reading .markdown-content svg') === null"), true);
     // A failed regeneration keeps both the original text and the feedback field.
     await evaluate(`document.querySelector('[data-action=request-revision][data-block="${exampleId}"]').click()`);
     await evaluate("document.querySelector('#revision-request').value = '测试模型不可用'; document.querySelector('#revision-form').requestSubmit()");
@@ -277,5 +303,5 @@ exports.run = async (window, store, directory) => {
   await wait("document.querySelector('#desktop-settings-form')");
   const image = await window.webContents.capturePage();
   await writeFile(path.join(directory, '..', 'settings-smoke.png'), image.toPNG());
-  console.log('DESKTOP_SMOKE', JSON.stringify({ passed: true, checks: ['window', 'sandbox', 'settings-save', 'os-encryption', 'cloud-save-confirmation', 'cloud-settings-reload', 'lan-save-confirmation', 'quick-ask-right-dock-and-focus', 'quick-ask-return-position', 'quiz', 'wiki', 'disk-persistence', 'reload', 'lesson-qa', 'plan-invalid-count-repair', 'teaching-unit', 'feedback-regeneration', 'markdown-typography', 'local-diagrams-and-charts-reload', 'markdown-revision-preset', 'reflection-markdown-preview', 'note-markdown-read-edit', 'chat-markdown', 'grounded-markdown-citations', 'ai-wiki-markdown-reload', 'revision-failure-preserves-content', 'revision-restore-reload'], screenshot: path.join(directory, '..', 'settings-smoke.png') }));
+  console.log('DESKTOP_SMOKE', JSON.stringify({ passed: true, checks: ['window', 'sandbox', 'settings-save', 'os-encryption', 'cloud-save-confirmation', 'cloud-settings-reload', 'lan-save-confirmation', 'quick-ask-right-dock-and-focus', 'quick-ask-return-position', 'quiz', 'wiki', 'disk-persistence', 'reload', 'lesson-qa', 'adaptive-learning-questionnaire-and-confirmation', 'plan-invalid-count-repair', 'teaching-unit', 'feedback-regeneration', 'markdown-typography', 'legacy-diagram-fences-as-code-reload', 'markdown-revision-preset', 'reflection-markdown-preview', 'note-markdown-read-edit', 'chat-markdown', 'grounded-markdown-citations', 'ai-wiki-markdown-reload', 'revision-failure-preserves-content', 'revision-restore-reload'], screenshot: path.join(directory, '..', 'settings-smoke.png') }));
 };

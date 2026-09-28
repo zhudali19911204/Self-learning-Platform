@@ -96,7 +96,7 @@ async function start() {
     }
   });
   handle('learnflow:request', async (endpoint, data) => {
-    if (!['status', 'plan', 'lesson', 'lesson-outline', 'lesson-block', 'lesson-ask', 'wiki', 'ask', 'test-connection'].includes(endpoint)) throw new Error('接口不存在。');
+    if (!['status', 'plan-clarify', 'plan', 'lesson', 'lesson-outline', 'lesson-block', 'lesson-ask', 'wiki', 'ask', 'test-connection'].includes(endpoint)) throw new Error('接口不存在。');
     const response = await fetch(`${base}/api/${endpoint}`, {
       method: endpoint === 'status' ? 'GET' : 'POST',
       headers: { 'Content-Type': 'application/json', 'X-Learnflow-Token': token },

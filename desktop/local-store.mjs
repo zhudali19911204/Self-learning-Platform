@@ -4,6 +4,7 @@ import { randomUUID } from 'node:crypto';
 import { resolveConfig } from '../llm.mjs';
 import { validPlan, validLesson } from '../server.mjs';
 import { validBlockCourse } from '../public/blocks.js';
+import { validLearningBrief } from '../public/planning.js';
 
 export const defaults = { provider: 'ollama', model: '', baseUrl: '', jsonMode: 'auto', timeoutMs: 120000, maxTokens: 8192, localOnly: true };
 const id = v => typeof v === 'string' && /^[a-zA-Z0-9_-]{1,160}$/.test(v) && !['__proto__', 'constructor', 'prototype'].includes(v);
@@ -13,6 +14,7 @@ const dict = (v, check) => object(v) && Object.entries(v).every(([key, value]) =
 export function validState(v) {
   if (!object(v) || v.version !== 1 || !Array.isArray(v.plans) || !v.plans.length || v.plans.length > 1000 || !id(v.active)) return false;
   if (!v.plans.every(p => validPlan(p) && id(p.id) && string(p.goal, 1000) && string(p.level, 80) && Number.isInteger(p.daily) && Number.isInteger(p.days) && ['ai', 'demo'].includes(p.source) && p.lessons.every(l => id(l.id)))) return false;
+  if (!v.plans.every(p => p.learningBrief === undefined || validLearningBrief(p.learningBrief))) return false;
   const planIds = v.plans.map(p => p.id), lessonIds = v.plans.flatMap(p => p.lessons.map(l => l.id));
   if (new Set(planIds).size !== planIds.length || new Set(lessonIds).size !== lessonIds.length || !planIds.includes(v.active)) return false;
   if (!dict(v.lessons, validLesson) || !dict(v.reflections, s => string(s, 5000))) return false;

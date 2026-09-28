@@ -55,6 +55,7 @@ function replaceAll(db, state) {
     const noteStatement = db.prepare('INSERT INTO notes VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)');
     for (const [position, plan] of state.plans.entries()) {
       planStatement.run(plan.id, position, plan.title, plan.description, plan.goal, plan.level, plan.daily, plan.days, plan.source);
+      if (plan.learningBrief) db.prepare('INSERT INTO meta VALUES (?, ?)').run(`plan_brief:${plan.id}`, JSON.stringify(plan.learningBrief));
       for (const [lessonPosition, lesson] of plan.lessons.entries()) {
         const content = state.lessons[lesson.id] || (plan.source === 'demo' ? demoLessons[lesson.id] : null);
         lessonStatement.run(lesson.id, plan.id, lessonPosition, lesson.title, lesson.objective, lesson.phase, lesson.minutes, JSON.stringify(lesson.tags), content ? JSON.stringify(content) : null);
@@ -82,6 +83,10 @@ function checkDatabase(db) {
 function readOverview(db) {
   const plans = db.prepare('SELECT * FROM plans ORDER BY position').all().map(row => ({ id: row.id, title: row.title, description: row.description, goal: row.goal, level: row.level, daily: row.daily, days: row.days, source: row.source, lessons: [] }));
   const byId = new Map(plans.map(plan => [plan.id, plan]));
+  for (const row of db.prepare("SELECT key, value FROM meta WHERE key GLOB 'plan_brief:*'").all()) {
+    const plan = byId.get(row.key.slice('plan_brief:'.length));
+    if (plan) plan.learningBrief = fromJSON(row.value);
+  }
   for (const row of db.prepare('SELECT id, plan_id, title, objective, phase, minutes, tags_json FROM lessons ORDER BY plan_id, position').all()) byId.get(row.plan_id).lessons.push({ id: row.id, title: row.title, objective: row.objective, phase: row.phase, minutes: row.minutes, tags: fromJSON(row.tags_json) });
   const progress = {};
   for (const row of db.prepare('SELECT * FROM progress').all()) progress[row.lesson_id] = { completed: !!row.completed, attempts: row.attempts, lastScore: row.last_score, bestScore: row.best_score, lastAnswers: fromJSON(row.last_answers_json), ...(row.updated === null ? {} : { updated: row.updated }) };
@@ -176,6 +181,7 @@ export async function createSqliteStore(directory) {
       if (!validState({ version: 1, plans: [plan], active: plan.id, lessons: {}, progress: {}, notes: [], reflections: {}, chats: {} })) throw new Error('学习路线格式不正确。');
       transaction(db, () => {
         db.prepare('INSERT INTO plans VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)').run(plan.id, db.prepare('SELECT COUNT(*) AS count FROM plans').get().count, plan.title, plan.description, plan.goal, plan.level, plan.daily, plan.days, plan.source);
+        if (plan.learningBrief) db.prepare('INSERT INTO meta VALUES (?, ?)').run(`plan_brief:${plan.id}`, JSON.stringify(plan.learningBrief));
         const statement = db.prepare('INSERT INTO lessons VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL)');
         for (const [position, lesson] of plan.lessons.entries()) statement.run(lesson.id, plan.id, position, lesson.title, lesson.objective, lesson.phase, lesson.minutes, JSON.stringify(lesson.tags));
         db.prepare("UPDATE meta SET value = ? WHERE key = 'active_plan'").run(plan.id);
@@ -198,6 +204,7 @@ export async function createSqliteStore(directory) {
         const current = db.prepare("SELECT value FROM meta WHERE key = 'active_plan'").get()?.value;
         const next = current === planId ? db.prepare('SELECT id FROM plans WHERE id <> ? ORDER BY position LIMIT 1').get(planId)?.id : current;
         db.prepare('DELETE FROM plans WHERE id = ?').run(planId);
+        db.prepare('DELETE FROM meta WHERE key = ?').run(`plan_brief:${planId}`);
         db.prepare("UPDATE meta SET value = ? WHERE key = 'active_plan'").run(next);
         for (const [position, row] of db.prepare('SELECT id FROM plans ORDER BY position').all().entries()) db.prepare('UPDATE plans SET position = ? WHERE id = ?').run(position, row.id);
       });

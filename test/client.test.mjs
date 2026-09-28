@@ -9,6 +9,8 @@ import { Marked } from 'marked';
 import createDOMPurify from 'dompurify';
 import { JSDOM } from 'jsdom';
 import { createMarkdownRenderer } from '../public/markdown.js';
+import { validQuestionnaire, validClarification, learningBriefFrom } from '../public/planning.js';
+import { questionnaire, clarification } from '../test-support/planning.mjs';
 const DOMPurify = createDOMPurify(new JSDOM('').window);
 
 // This harness checks application state transitions, not browser rendering.
@@ -20,12 +22,12 @@ function harness(saved, fetchImpl) {
     return nodes.get(selector);
   };
   const context = vm.createContext({
-    demoPlan, demoLessons, lessonFromBlocks, validOutline, validBlockContent, validBlockSpec, blockGenerationContext, revisedContent, restoredContent, Marked, DOMPurify, createMarkdownRenderer, structuredClone, crypto: webcrypto, AbortSignal,
+    demoPlan, demoLessons, lessonFromBlocks, validOutline, validBlockContent, validBlockSpec, blockGenerationContext, revisedContent, restoredContent, Marked, DOMPurify, createMarkdownRenderer, validQuestionnaire, validClarification, learningBriefFrom, structuredClone, crypto: webcrypto, AbortSignal,
     document: { querySelector: node, addEventListener(name, listener) { listeners.set(name, listener); } },
     localStorage: { get length() { return storage.size; }, key: index => [...storage.keys()][index] ?? null, getItem: key => storage.get(key) ?? null, setItem: (key, value) => storage.set(key, value), removeItem: key => storage.delete(key) },
     window: { scrollY: 0, scrollTo({ top }) { this.scrollY = top; }, confirm: () => true }, setTimeout: () => 1, clearTimeout() {},
     fetch: fetchImpl || (async () => ({ ok: true, json: async () => ({ mode: 'demo', model: null }) })),
-    FormData: class { constructor(form) { this.values = form.values; } get(key) { return this.values[key] ?? null; } }
+    FormData: class { constructor(form) { this.values = form.values; } get(key) { return this.values[key] ?? null; } getAll(key) { const value = this.values[key]; return value === undefined ? [] : Array.isArray(value) ? value : [value]; } }
   });
   vm.runInContext(source, context);
   const run = code => vm.runInContext(code, context);
@@ -68,6 +70,90 @@ test('learning loop: incorrect answers, retry, completion, Wiki creation, edit a
   assert.equal(app.run('state.progress.p1.bestScore'), 100);
   assert.equal(app.run('state.progress.p1.lastScore'), 0);
 });
+test('new learning clarifies before planning, preserves answers on failure, and persists the confirmed brief', async () => {
+  const calls = [];
+  let failPlan = true;
+  const app = harness(null, async (url, options) => {
+    if (url === '/api/status') return { ok:true, json:async () => ({mode:'ai'}) };
+    const data = JSON.parse(options.body); calls.push({url,data});
+    if (url === '/api/plan-clarify') return {ok:true,json:async () => questionnaire};
+    if (failPlan) return {ok:false,json:async () => ({error:'测试模型暂时不可用'})};
+    return {ok:true,json:async () => ({...structuredClone(demoPlan),id:'new-route',source:'ai',goal:data.goal,learningBrief:learningBriefFrom(data.clarification),lessons:demoPlan.lessons.map((lesson,index) => ({...lesson,id:`new-${index}`}))})};
+  });
+  app.run("status = {mode:'ai'}; planner()");
+  await app.submit('plan-form', {goal:'我想用 Python 提高效率',level:'零基础',daily:'25',days:'14'});
+  assert.equal(app.run('plannerDraft.step'), 'questions');
+  assert.equal(app.run('state.plans.length'), 1, 'no route exists before confirmation');
+  assert.match(app.node('#planner').innerHTML, /type="checkbox"/);
+  assert.match(app.node('#planner').innerHTML, /还不确定/);
+  await app.submit('clarification-form', {q1:'o1'});
+  assert.equal(app.run('plannerDraft.step'), 'questions');
+  assert.match(app.node('#planner').innerHTML, /请回答每个问题/);
+  await app.submit('clarification-form', {q1:'o1',q2:['o1','o2'],'detail-q1':'先预览，再执行'});
+  assert.equal(app.run('plannerDraft.step'), 'review');
+  assert.equal(calls.length, 1, 'review itself must not call the model');
+  await app.submit('plan-confirm-form', {notes:'不学习网页开发'});
+  assert.equal(app.run('plannerDraft.step'), 'review');
+  assert.equal(app.run('plannerDraft.notes'), '不学习网页开发');
+  assert.match(app.node('#planner').innerHTML, /测试模型暂时不可用/);
+  assert.equal(app.run('plannerBusy'), false);
+  failPlan = false;
+  await app.submit('plan-confirm-form', {notes:'不学习网页开发'});
+  assert.equal(app.run('page'), 'routes');
+  assert.equal(app.node('#planner').open, false);
+  assert.equal(app.run('state.plans.length'), 2);
+  assert.equal(calls.at(-1).data.clarification.answers[0].detail, '先预览，再执行');
+  const restored = harness(app.storage.get('learnflow.v1'));
+  assert.equal(restored.run('plan().learningBrief.notes'), '不学习网页开发');
+  assert.match(app.node('#app').innerHTML, /查看定制需求与回答/);
+});
+test('questionnaire retries keep the goal; returning to edit invalidates answers only when input changes', async () => {
+  let calls = 0, failQuestionnaire = true;
+  const app = harness(null, async (url) => {
+    if (url === '/api/status') return {ok:true,json:async () => ({mode:'ai'})};
+    calls++;
+    return failQuestionnaire ? {ok:false,json:async () => ({error:'问卷生成失败'})} : {ok:true,json:async () => questionnaire};
+  });
+  app.run("status = {mode:'ai'}; planner()");
+  const values = {goal:'我想学 Python',level:'零基础',daily:'25',days:'14'};
+  await app.submit('plan-form', values);
+  assert.equal(app.run('plannerDraft.goal'), values.goal);
+  assert.equal(app.run('plannerDraft.step'), 'goal');
+  failQuestionnaire = false;
+  await app.submit('plan-form', values);
+  app.node('#clarification-form').values = {q1:'o1',q2:'unsure'};
+  await app.run("action('planner-back',{dataset:{}})");
+  await app.submit('plan-form', values);
+  assert.equal(calls, 2, 'unchanged inputs reuse the same questionnaire and answers');
+  assert.equal(app.run('plannerDraft.answers[1].optionIds[0]'), 'unsure');
+  await app.run("action('planner-back',{dataset:{}})");
+  await app.submit('plan-form', {...values,goal:'我想学数据分析'});
+  assert.equal(calls, 3);
+  assert.equal(app.run('plannerDraft.answers.length'), 0);
+});
+test('in-flight clarification prevents duplicate requests and closing; model question text cannot inject controls', async () => {
+  let resolveQuestionnaire, calls = 0;
+  const app = harness(null, async url => {
+    if (url === '/api/status') return {ok:true,json:async () => ({mode:'ai'})};
+    calls++;
+    return new Promise(resolve => { resolveQuestionnaire = resolve; });
+  });
+  app.run("status = {mode:'ai'}; planner()");
+  const values = {goal:'想学自动化',level:'零基础',daily:'25',days:'14'};
+  const pending = app.submit('plan-form',values);
+  assert.equal(app.run('plannerBusy'),true);
+  await app.submit('plan-form',values);
+  await app.run("action('close-planner',{dataset:{}})");
+  assert.equal(app.node('#planner').open,true);
+  assert.equal(calls,1);
+  const malicious=structuredClone(questionnaire);
+  malicious.questions[0].question='<button data-action="delete-plan">点击删除</button>';
+  resolveQuestionnaire({ok:true,json:async () => malicious});
+  await pending;
+  assert.equal(app.run('plannerBusy'),false);
+  assert.doesNotMatch(app.node('#planner').innerHTML,/<button data-action="delete-plan">/);
+  assert.match(app.node('#planner').innerHTML,/&lt;button/);
+});
 test('AI course expands from outline to independently generated blocks', async () => {
   const outline = { intro: '循序学习', blocks: [{ type: 'reading', title: '概念', objective: '理解' }, { type: 'quiz', title: '练习', objective: '检验' }] };
   const calls = [], payloads = [];
@@ -77,6 +163,7 @@ test('AI course expands from outline to independently generated blocks', async (
     return { ok: true, json: async () => url.endsWith('lesson-outline') ? outline : { text: '这一块的正文' } };
   });
   app.run("state.plans[0].source = 'ai'; state.plans[0].lessons[0].id = 'custom-1'; state.lessons = {}; activeLesson = 'custom-1'; page = 'study'; render()");
+  app.run(`state.plans[0].learningBrief = ${JSON.stringify(learningBriefFrom(clarification))}`);
   await app.run("action('generate-lesson', {dataset:{id:'custom-1'}})");
   assert.equal(app.run('state.blockCourses["custom-1"].blocks.length'), 2);
   assert.match(app.node('#app').innerHTML, /生成这一块/);
@@ -88,6 +175,8 @@ test('AI course expands from outline to independently generated blocks', async (
   assert.equal(payloads[0].lessonPosition, 1);
   assert.equal(payloads[1].sequence.position, 1);
   assert.equal(payloads[1].outline.length, 2);
+  assert.deepEqual(payloads[0].learningBrief,learningBriefFrom(clarification));
+  assert.deepEqual(payloads[1].learningBrief,payloads[0].learningBrief);
   assert.match(app.node('#app').innerHTML, /这一块的正文/);
 });
 
@@ -157,6 +246,8 @@ test('teaching units pair adjacent examples and regenerate only the requested bl
   await app.run("action('request-revision', {dataset:{id:'p1',block:'reading-1'}})");
   assert.equal(app.node('#revise-block-dialog').open, true);
   assert.match(app.node('#revise-block-dialog').innerHTML, /你的具体要求/);
+  assert.match(app.node('#revise-block-dialog').innerHTML, /普通表格/);
+  assert.doesNotMatch(app.node('#revise-block-dialog').innerHTML, /流程图|架构图|数据图|柱状图/);
   await app.run("action('markdown-revision-preset', {dataset:{}})");
   assert.match(app.node('#revision-request').value, /请仅优化.*Markdown/);
   await app.submit('revision-form', { request: '请用收支表一步步解释' }, 'p1', 'reading-1');

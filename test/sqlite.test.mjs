@@ -6,6 +6,8 @@ import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { createSqliteStore } from '../desktop/sqlite-store.mjs';
 import { demoPlan, demoLessons } from '../public/demo.js';
+import { learningBriefFrom } from '../public/planning.js';
+import { clarification } from '../test-support/planning.mjs';
 
 async function temporary(t) {
   const directory = await mkdtemp(path.join(tmpdir(), 'learnflow-sqlite-test-'));
@@ -53,6 +55,31 @@ test('legacy JSON migrates without modifying its bytes; lessons load individuall
   const reopened = await createSqliteStore(directory);
   try { assert.equal(reopened.getLesson('p1').lesson.intro, '只更新这一门课'); }
   finally { reopened.close(); }
+});
+test('confirmed learning requirements survive save, reopen, export, import and deletion without a schema upgrade', async t => {
+  const directory = await temporary(t);
+  let store = await createSqliteStore(directory);
+  const plan = {...structuredClone(demoPlan),id:'tailored-route',source:'ai',learningBrief:learningBriefFrom(clarification),lessons:demoPlan.lessons.map((lesson,index) => ({...lesson,id:`tailored-${index}`}))};
+  try { store.savePlan(plan); assert.deepEqual(store.overview().plans.at(-1).learningBrief,plan.learningBrief); }
+  finally { store.close(); }
+  store = await createSqliteStore(directory);
+  try {
+    const exported = store.exportState();
+    assert.deepEqual(exported.plans.at(-1).learningBrief,plan.learningBrief);
+    const invalid = structuredClone(exported); invalid.plans.at(-1).learningBrief.answers = [];
+    assert.throws(() => store.replaceState(invalid),/格式不正确/);
+    store.replaceState(exported);
+    assert.deepEqual(store.overview().plans.at(-1).learningBrief,plan.learningBrief);
+    const deleted = await store.deletePlan(plan.id);
+    assert.equal(deleted.state.plans.length,1);
+    const backup = JSON.parse(await readFile(deleted.backupPath,'utf8'));
+    assert.deepEqual(backup.plans.at(-1).learningBrief,plan.learningBrief);
+    store.replaceState(backup);
+    assert.deepEqual(store.overview().plans.at(-1).learningBrief,plan.learningBrief);
+  } finally { store.close(); }
+  const database = new DatabaseSync(path.join(directory,'learning.sqlite'),{readOnly:true});
+  try { assert.equal(database.prepare('PRAGMA user_version').get().user_version,2); }
+  finally { database.close(); }
 });
 
 test('v1 SQLite upgrades with a verified snapshot and keeps existing course content', async t => {
