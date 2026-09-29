@@ -53,6 +53,82 @@ let connectionResult = '';
 let revisionBusy = false;
 let imageSettings = null, imageConnectionResult = '', illustrationBusy = false, illustrationDraft = null;
 let speechSettings = null, speechConnectionResult = '', speechBusy = false, speechDraft = null, speechPlaylist = [];
+// Unsaved configuration stays in memory only, including newly typed keys.
+const modelFormDrafts = new Map();
+const modelFormIds = ['desktop-settings-form', 'image-settings-form', 'speech-settings-form'];
+let modelSettingsSaving = false;
+function rememberModelDrafts(changedId) {
+  if (!desktop || page !== 'settings') return;
+  for (const id of modelFormIds) {
+    if (id !== changedId && !modelFormDrafts.has(id)) continue;
+    const form = $('#' + id);
+    if (!form?.elements) continue;
+    const fields = Array.from(form.elements).filter(field => field.name).map(field => ({ name: field.name, value: field.value, checked: field.checked }));
+    modelFormDrafts.set(id, { fields, advancedOpen: !!form.querySelector('.model-advanced')?.open });
+  }
+}
+function restoreModelDrafts() {
+  if (!desktop || page !== 'settings') return;
+  for (const [id, draft] of modelFormDrafts) {
+    const form = $('#' + id);
+    if (!form?.elements) continue;
+    for (const field of draft.fields) {
+      const input = form.elements.namedItem(field.name);
+      if (!input) continue;
+      input.value = field.value;
+      if (input.type === 'checkbox') input.checked = field.checked;
+    }
+    const advanced = form.querySelector('.model-advanced');
+    if (advanced) advanced.open = draft.advancedOpen;
+    syncModelKey(form);
+    if (id === 'image-settings-form') updateImageProtocolHints();
+    const check = form.parentElement.querySelector('[data-action$="connection"]');
+    if (check) check.disabled = true;
+  }
+}
+function modelKeyField(inputId, actionId, cfg) {
+  return `<label for="${inputId}">API Key <small>可选</small></label><div class="api-key-control"><input type="hidden" id="${actionId}" name="keyAction" value="keep"><input id="${inputId}" name="apiKey" type="password" autocomplete="new-password" maxlength="4096" placeholder="${cfg.hasApiKey ? '已保存 · 留空保留，填写替换' : '有就填写，没有可留空'}">${cfg.hasApiKey ? `<button type="button" class="key-clear-button" data-action="clear-model-key" data-input="${inputId}" data-key-action="${actionId}" aria-label="清除本模型已保存的 API Key">清除</button>` : ''}</div><p class="field-hint key-hint">${cfg.hasApiKey ? '旧密钥不回显；清除需点击“清除”后保存。' : '无需选择密钥操作，填写后直接保存。'}</p>`;
+}
+function modelKeyValues(values) {
+  const apiKey = values.get('apiKey') || '';
+  return { apiKey, keyAction: apiKey.trim() ? 'replace' : values.get('keyAction') === 'clear' ? 'clear' : 'keep' };
+}
+function syncModelKey(form) {
+  if (!form?.elements) return;
+  const mode = form.elements.namedItem('keyAction'), input = form.elements.namedItem('apiKey');
+  if (input.value.trim()) mode.value = 'replace';
+  else if (mode.value === 'replace') mode.value = 'keep';
+  const clearing = mode.value === 'clear';
+  const clear = form.querySelector('[data-action="clear-model-key"]');
+  if (clear) clear.textContent = clearing ? '取消清除' : '清除';
+  input.placeholder = clearing ? '保存后清除密钥；填写可替换' : clear ? '已保存 · 留空保留，填写替换' : '有就填写，没有可留空';
+  const hint = form.querySelector('.key-hint');
+  if (hint) hint.textContent = clearing ? '密钥待清除，保存后生效。云端服务可能需要先关闭启用开关。' : clear ? '旧密钥不回显；清除需点击“清除”后保存。' : '无需选择密钥操作，填写后直接保存。';
+}
+function dirtyModelForm(form) {
+  if (!desktop || !modelFormIds.includes(form?.id)) return;
+  const speech = form.id === 'speech-settings-form', image = form.id === 'image-settings-form';
+  const prefix = speech ? 'speech-' : image ? 'image-' : '';
+  $('#' + (prefix ? prefix + 'settings-error' : 'settings-error')).textContent = '';
+  if (!prefix) $('#remote-permission').hidden = true;
+  const message = '配置尚未保存，请保存后再检查连接。';
+  if (speech) speechConnectionResult = message;
+  else if (image) imageConnectionResult = message;
+  else connectionResult = message;
+  $('#' + prefix + 'connection-result').textContent = message;
+  $('[data-action="' + (prefix ? 'check-' + prefix + 'connection' : 'test-connection') + '"]').disabled = true;
+  syncModelKey(form);
+  rememberModelDrafts(form.id);
+}
+function updateImageProtocolHints(protocol = $('#image-protocol').value) {
+  const native = protocol === 'dashscope', hints = imageProtocolHints(protocol);
+  $('#image-protocol-hint').textContent = hints.service;
+  $('#image-size-hint').textContent = hints.size;
+  $('#image-download-hint').textContent = hints.downloads;
+  $('#image-model-url').placeholder = hints.url;
+  $('#image-response-format').disabled = native;
+  if (native) $('#image-response-format').value = 'auto';
+}
 let plannerDraft = { step: 'goal', goal: '', level: '零基础', daily: 25, days: 14, questionnaire: null, answers: [], notes: '' };
 let plannerBusy = false, plannerError = '';
 const plan = () => state.plans.find(p => p.id === state.active) || state.plans[0];
@@ -122,6 +198,7 @@ function switchLessonTab(target, focusQuestion = false) {
   }
 }
 function render() {
+  rememberModelDrafts();
   const titles = { home: '学习概览', routes: '我的学习路线', study: '学习工作台', practice: '练习与巩固', wiki: '我的知识库', settings: '设置与数据' };
   $('#app').innerHTML = `<aside class="sidebar">
     <a class="brand" href="#" data-page="home"><img src="/favicon.svg" alt="" width="38" height="38"><span>知行 <small>Learnflow</small></span></a>
@@ -132,6 +209,7 @@ function render() {
   </aside>
   <div class="workspace"><header class="topbar"><div class="breadcrumb">我的空间 <span>/</span> <strong>${titles[page]}</strong></div><div class="topbar-right"><span class="mode"><i class="${status.mode === 'ai' ? 'live' : ''}"></i>${status.mode === 'ai' ? escape((status.providerLabel || 'AI') + ' 已配置') : status.mode === 'loading' ? '正在连接' : status.mode === 'offline' ? '服务未连接' : status.mode === 'error' ? '模型配置需检查' : '示例体验模式'}</span><button class="icon-button" data-page="wiki" aria-label="搜索知识库">${icon('search')}</button><div class="avatar small">知</div></div></header>
   <main id="main">${storageWarning ? `<div class="notice error">${escape(storageWarning)}</div>` : ''}${({ home, routes, study, practice, wiki, settings }[page])()}</main><footer>知行 Learnflow <span>从知道，到做到。</span></footer></div>`;
+  restoreModelDrafts();
 }
 function home() {
   const p = plan(), next = nextLesson();
@@ -263,30 +341,29 @@ function settings() {
 function desktopSettingsPage() {
   const cfg = desktopSettings || { provider: 'ollama', model: '', baseUrl: '', jsonMode: 'auto', timeoutMs: 120000, maxTokens: 8192, localOnly: true };
   const providers = [['ollama', 'Ollama · 本地'], ['lmstudio', 'LM Studio · 本地'], ['vllm', 'vLLM · 自部署'], ['deepseek', 'DeepSeek · 云端'], ['qwen', '通义千问 · 云端'], ['compatible', '自定义兼容接口']];
-  return `<section class="page-intro"><div><div class="eyebrow">YOUR LOCAL LEARNING SPACE</div><h1>你的空间，保存在你的电脑。</h1><p>在这里配置模型，保存后立即生效，无需编辑文件或重启应用。</p></div>${pill('桌面版 · 本地存储', 'success')}</section>
-  <div class="settings-grid"><section class="panel"><h2>模型设置</h2>${pill(status.mode === 'ai' ? (status.providerLabel || 'AI') + ' · ' + status.model : '尚未配置可用模型', 'purple')}
+  return `<section class="page-intro"><div><div class="eyebrow">YOUR LOCAL LEARNING SPACE</div><h1>模型与数据设置</h1><p>文字、图片、语音在同一页配置，各自保存后立即生效，无需重启。</p></div>${pill('桌面版 · 本地存储', 'success')}</section>
+  <p class="settings-key-note">API Key 有就填写，没有可留空。已保存的密钥不回显，留空保留；三种模型独立保存密钥，不自动互相沿用。密钥加密保存在本机，不写入学习备份。</p>
+  <div class="model-settings-grid"><section class="panel model-settings-card"><div class="model-card-heading">${icon('brain')}<h2>LLM 文字模型</h2></div><p class="model-card-description">规划课程、讲解知识和 AI 答疑。</p>${pill(status.mode === 'ai' ? (status.providerLabel || 'AI') + ' · ' + status.model : '尚未配置可用模型', 'purple')}
   ${cfg.error ? `<div class="notice error">${escape(cfg.error)}</div>` : ''}
   <form id="desktop-settings-form" class="desktop-form">
     <label for="model-provider">模型服务</label><select id="model-provider" name="provider">${providers.map(([id, label]) => `<option value="${id}" ${cfg.provider === id ? 'selected' : ''}>${label}</option>`).join('')}</select>
     <label for="model-name">模型名称</label><input id="model-name" name="model" maxlength="200" value="${escape(cfg.model)}" placeholder="本地已安装的模型名，或服务商的模型 ID">
     <label for="model-url">接口根地址 <small>留空使用服务预设</small></label><input id="model-url" name="baseUrl" maxlength="2000" value="${escape(cfg.baseUrl)}" placeholder="例如 http://127.0.0.1:11434">
-    <label class="check-label"><input type="checkbox" name="localOnly" ${cfg.localOnly ? 'checked' : ''}>仅使用本机模型（禁止云端与局域网地址）</label>
-    <p class="field-hint">开启时只允许本机地址。模型需先在 Ollama、LM Studio 等服务中安装并启动。关闭后，课程与笔记可能发送到配置的远端服务。</p>
-    <label for="key-action">API Key</label><select id="key-action" name="keyAction"><option value="keep">${cfg.hasApiKey ? '保留已保存的密钥' : '不填写密钥（本地服务）'}</option><option value="replace">设置 / 更换密钥</option><option value="clear">清除已保存的密钥</option></select>
-    <input id="model-key" name="apiKey" type="password" autocomplete="new-password" maxlength="4096" aria-label="新的 API Key" placeholder="仅在设置 / 更换密钥时填写，不回显旧密钥">
-    <p class="field-hint">密钥通过系统安全存储加密保存在本机，不写入学习备份。更换服务或地址时不会自动沿用旧密钥。</p>
+    <label class="check-label"><input type="checkbox" name="localOnly" ${cfg.localOnly ? 'checked' : ''}>仅使用本机模型</label>
+    <p class="field-hint">云端或局域网模型请关闭此项。</p>
+    ${modelKeyField('model-key', 'key-action', cfg)}
+    <details class="model-advanced"><summary>高级设置</summary><div class="model-advanced-content">
     <div class="form-row"><div><label for="json-mode">JSON 模式</label><select id="json-mode" name="jsonMode">${[['auto','自动'],['on','开启'],['off','仅提示词']].map(([v,l]) => `<option value="${v}" ${cfg.jsonMode === v ? 'selected' : ''}>${l}</option>`).join('')}</select></div><div><label for="model-timeout">超时（秒）</label><input id="model-timeout" type="number" name="timeout" min="1" max="600" required value="${cfg.timeoutMs / 1000}"></div><div><label for="model-tokens">输出上限</label><input id="model-tokens" type="number" name="maxTokens" min="128" max="32768" required value="${cfg.maxTokens}"></div></div>
+    <p class="field-hint">仅本机模式只允许 localhost、127.0.0.1 或 ::1；模型需先在本机安装并启动。关闭后，相关课程与笔记可能发送到远端服务。更换服务或地址不会自动沿用旧密钥。</p></div></details>
     <p id="settings-error" class="inline-error" role="alert"></p><div id="remote-permission" hidden class="notice"><p>此操作会关闭“仅使用本机模型”。配置仍保存在本机；使用 AI 时，相关内容将发送到你配置的远端服务。</p><button type="button" class="btn secondary full" data-action="allow-remote-save">允许远端连接并保存</button></div><button type="submit" class="btn primary full" ${cfg.error ? 'disabled' : ''}>保存模型配置 ${icon('check')}</button>
   </form>
   ${button('测试已保存的模型连接', 'test-connection', 'secondary full', status.mode === 'ai' ? '' : 'disabled', 'bolt')}
   <div id="connection-result" class="notice" role="status">${escape(connectionResult || '保存后可测试连接；“已配置”不代表模型已启动。')}</div><p class="field-hint">连接测试只发送固定短提示。使用云端服务时会按服务商规则计费。</p>
-  </section><section class="panel"><span class="float-icon green">${icon('brain')}</span><h2>本地学习数据</h2><p>学习路线、课程、练习成绩与 Wiki 自动保存到本机文件。关闭应用后，下次打开会继续加载。</p>
-  <label>数据目录</label><pre class="config-example">${escape(dataDirectory)}</pre>${button('打开本地数据目录', 'open-data', 'secondary full', '', 'book')}
+  </section>${imageSettingsPanel()}${speechSettingsPanel()}</div><section class="panel settings-data-panel"><h2>本地学习数据</h2><p>学习路线、课程、练习成绩与 Wiki 自动保存到本机。关闭应用后，下次打开会继续加载。</p>
+  <label>数据目录</label><pre class="config-example">${escape(dataDirectory)}</pre>
   <div class="data-counts"><strong>${state.plans.length}<span>条路线</span></strong><strong>${state.notes.length}<span>张卡片</span></strong></div>
-  ${button('导出完整 JSON 备份', 'export-data', 'secondary full', '', 'export')}
-  ${button('导入学习备份', 'import-data', 'secondary full', '', 'plus')}
-  ${button('导出 Wiki Markdown', 'export-wiki', 'secondary full', state.notes.length ? '' : 'disabled', 'export')}
-  <p class="field-hint">完整备份包含课程配图和历史版本。导入前会确认替换并创建 SQLite 快照。学习备份不包含模型配置或密钥。朗读音频为独立本地缓存；如需保留，请在应用关闭后备份整个数据目录。</p></section>${imageSettingsPanel()}${speechSettingsPanel()}</div>`;
+  <div class="settings-data-actions">${button('打开数据目录', 'open-data', 'secondary', '', 'book')}${button('导出完整 JSON 备份', 'export-data', 'secondary', '', 'export')}${button('导入学习备份', 'import-data', 'secondary', '', 'plus')}${button('导出 Wiki Markdown', 'export-wiki', 'secondary', state.notes.length ? '' : 'disabled', 'export')}</div>
+  <p class="field-hint">完整备份包含课程配图和历史版本。导入前会确认替换并创建 SQLite 快照。学习备份不包含模型配置或密钥。朗读音频为独立本地缓存；如需保留，请在应用关闭后备份整个数据目录。</p></section>`;
 }
 
 function imageProtocolHints(protocol) {
@@ -305,31 +382,33 @@ function imageProtocolHints(protocol) {
 function imageSettingsPanel() {
   const cfg = imageSettings || { enabled: false, protocol: 'compatible', model: '', baseUrl: '', size: '1024x1024', responseFormat: 'auto', timeoutMs: 180000, localOnly: true, downloadHosts: '' };
   const native = cfg.protocol === 'dashscope', hints = imageProtocolHints(cfg.protocol);
-  return `<section class="panel image-settings-panel"><h2>课程图片模型</h2><p>独立接入通用兼容服务或百炼原生同步接口。AI 按需要建议教学配图，确认提示词后才生成一张图片；不会自动扣费或自动重试。</p>${cfg.error ? `<div class="notice error">${escape(cfg.error)}</div>` : ''}<form id="image-settings-form" class="desktop-form">
+  return `<section class="panel image-settings-panel model-settings-card"><div class="model-card-heading">${icon('spark')}<h2>图片生成模型</h2></div><p class="model-card-description">生成教学配图，确认后才生成。</p>${cfg.error ? `<div class="notice error">${escape(cfg.error)}</div>` : ''}<form id="image-settings-form" class="desktop-form">
   <label class="check-label"><input type="checkbox" name="enabled" ${cfg.enabled ? 'checked' : ''}>启用课程配图</label>
-  <label for="image-protocol">图片接口协议</label><select id="image-protocol" name="protocol"><option value="compatible" ${!native ? 'selected' : ''}>通用兼容接口（/images/generations）</option><option value="dashscope" ${native ? 'selected' : ''}>阿里百炼原生接口（万相 2.7 / 千问图片 3.0）</option></select><p id="image-protocol-hint" class="field-hint">${escape(hints.service)}</p>
+  <label for="image-protocol">图片接口协议</label><select id="image-protocol" name="protocol"><option value="compatible" ${!native ? 'selected' : ''}>通用兼容接口</option><option value="dashscope" ${native ? 'selected' : ''}>阿里百炼原生接口</option></select>
   <label for="image-model-name">图片模型名称</label><input id="image-model-name" name="model" maxlength="200" value="${escape(cfg.model)}" placeholder="服务实际提供的文生图模型 ID，不能填聊天模型">
   <label for="image-model-url">接口根地址</label><input id="image-model-url" name="baseUrl" maxlength="2000" value="${escape(cfg.baseUrl)}" placeholder="${escape(hints.url)}">
-  <label class="check-label"><input type="checkbox" name="localOnly" ${cfg.localOnly ? 'checked' : ''}>仅本机图片服务</label><p class="field-hint">云端须关闭此选项并使用 HTTPS。图片提示词会发送到该服务；AI 配图分析会将当前模块正文发送到已配置的文字模型。</p>
-  <label for="image-key-action">独立 API Key</label><select id="image-key-action" name="keyAction"><option value="keep">${cfg.hasApiKey ? '保留已保存的图片密钥' : '不填写密钥（本地服务）'}</option><option value="replace">设置 / 更换密钥</option><option value="clear">清除密钥</option></select><input id="image-model-key" name="apiKey" type="password" autocomplete="new-password" maxlength="4096" aria-label="新的图片模型 API Key" placeholder="不沿用聊天模型密钥；不回显旧密钥">
+  <label class="check-label"><input type="checkbox" name="localOnly" ${cfg.localOnly ? 'checked' : ''}>仅本机图片服务</label><p class="field-hint">云端请关闭此项，使用 HTTPS 地址。</p>
+  ${modelKeyField('image-model-key', 'image-key-action', cfg)}
+  <details class="model-advanced"><summary>高级设置 · 尺寸与下载</summary><div class="model-advanced-content"><p id="image-protocol-hint" class="field-hint">${escape(hints.service)}</p>
   <div class="form-row"><div><label for="image-size">尺寸（宽x高）</label><input id="image-size" name="size" value="${escape(cfg.size)}" maxlength="20" required></div><div><label for="image-response-format">返回格式</label><select id="image-response-format" name="responseFormat" ${native ? 'disabled' : ''}>${[['auto','自动（不传参数）'],['b64_json','Base64'],['url','图片 URL']].map(([v,l]) => `<option value="${v}" ${(native ? v === 'auto' : cfg.responseFormat === v) ? 'selected' : ''}>${l}</option>`).join('')}</select></div><div><label for="image-timeout">超时（秒）</label><input id="image-timeout" name="timeout" type="number" min="1" max="600" value="${cfg.timeoutMs / 1000}" required></div></div><p id="image-size-hint" class="field-hint">${escape(hints.size)}</p>
-  <label for="image-download-hosts">额外允许的图片下载域名（可选）</label><input id="image-download-hosts" name="downloadHosts" maxlength="2000" value="${escape(cfg.downloadHosts)}" placeholder="例如 images.vendor.example，多域名用英文逗号分隔"><p id="image-download-hint" class="field-hint">${escape(hints.downloads)}</p>
+  <label for="image-download-hosts">额外允许的图片下载域名（可选）</label><input id="image-download-hosts" name="downloadHosts" maxlength="2000" value="${escape(cfg.downloadHosts)}" placeholder="可信精确域名，用英文逗号分隔"><p id="image-download-hint" class="field-hint">${escape(hints.downloads)}</p><p class="field-hint">图片提示词会发送到图片服务；配图分析会将当前模块正文发送到文字模型。不会自动生成或自动重试；云端生成可能计费。图片保存在本机，随完整学习备份导出。</p></div></details>
   <p id="image-settings-error" class="inline-error" role="alert"></p><button type="submit" class="btn primary full" ${cfg.error ? 'disabled' : ''}>保存图片模型配置 ${icon('check')}</button></form>
-  ${button('检查已保存的服务（不生成图片）', 'check-image-connection', 'secondary full', cfg.enabled && !cfg.error ? '' : 'disabled', 'bolt')}<div id="image-connection-result" class="notice" role="status">${escape(imageConnectionResult || '仅检查 /models；不是生成能力验证，也不请求付费生成。')}</div><p class="field-hint">图片保存在本机 images 目录，自动随完整学习备份导出。普通 Markdown 不加载外部图片。支持内容块课程的讲解、案例与动手实践；不自动修改已有课程。</p></section>`;
+  ${button('检查连接（不生成图片）', 'check-image-connection', 'secondary full', cfg.enabled && !cfg.error ? '' : 'disabled', 'bolt')}<div id="image-connection-result" class="notice" role="status">${escape(imageConnectionResult || '仅检查 /models，不请求付费生成。')}</div></section>`;
 }
 function speechSettingsPanel() {
   if (!desktop) return '';
   const cfg = { ...speechDefaults, ...speechSettings };
-  return `<section class="panel speech-settings-panel"><h2>AI 朗读模型</h2><p>独立使用 qwen-audio-3.0-tts-plus。仅在确认后合成听力原文，音频保存本地，重复播放不再调用模型。</p><form id="speech-settings-form" class="desktop-form">
-  <label class="checkbox-field"><input type="checkbox" name="enabled" ${cfg.enabled ? 'checked' : ''}>启用 AI 朗读</label>
+  return `<section class="panel speech-settings-panel model-settings-card"><div class="model-card-heading">${icon('bolt')}<h2>语音生成模型</h2></div><p class="model-card-description">合成听力材料，本地缓存反复播放。</p><form id="speech-settings-form" class="desktop-form">
+  <label class="check-label"><input type="checkbox" name="enabled" ${cfg.enabled ? 'checked' : ''}>启用 AI 朗读</label>
   <label for="speech-model">语音模型</label><input id="speech-model" name="model" required value="${escape(cfg.model)}" maxlength="200">
-  <label for="speech-url">接口根地址</label><input id="speech-url" name="baseUrl" required value="${escape(cfg.baseUrl)}" maxlength="2000"><p class="field-hint">可填写你提供的 Token Plan /compatible-mode/v1，保存时调整为同域名 /api/v1；实际调用 /services/audio/tts/SpeechSynthesizer。不切换服务或密钥。</p>
-  <label class="checkbox-field"><input type="checkbox" name="localOnly" ${cfg.localOnly ? 'checked' : ''}>仅本机语音服务</label><p class="field-hint">使用云端请关闭此项。确认后的材料将发送到该语音服务；不会发送整门课程、笔记或聊天记录。</p>
-  <label for="speech-key-action">独立 API Key</label><select id="speech-key-action" name="keyAction"><option value="keep">${cfg.hasApiKey ? '保留已保存的语音密钥' : '不填写密钥'}</option><option value="replace">设置 / 更换密钥</option><option value="clear">清除密钥</option></select><input id="speech-key" name="apiKey" type="password" autocomplete="new-password" maxlength="4096" placeholder="独立填写套餐密钥；不沿用文字或图片密钥"><p class="field-hint">密钥由系统安全存储加密保存在本机，不回显，不写入学习备份。套餐是否允许本应用调用，请核对服务商使用范围；此提醒不阻止保存。</p>
+  <label for="speech-url">接口根地址</label><input id="speech-url" name="baseUrl" required value="${escape(cfg.baseUrl)}" maxlength="2000">
+  <label class="check-label"><input type="checkbox" name="localOnly" ${cfg.localOnly ? 'checked' : ''}>仅本机语音服务</label><p class="field-hint">云端请关闭此项，使用 HTTPS 地址。</p>
+  ${modelKeyField('speech-key', 'speech-key-action', cfg)}
+  <details class="model-advanced"><summary>高级设置 · 音色与语速</summary><div class="model-advanced-content"><p class="field-hint">独立使用 qwen-audio-3.0-tts-plus。可填 Token Plan /compatible-mode/v1，保存会调整为同域名 /api/v1；调用 /services/audio/tts/SpeechSynthesizer，不切换服务或密钥。套餐使用范围须向服务商确认。</p>
   <div class="form-row"><div><label for="speech-voice">默认音色 ID</label><input id="speech-voice" name="voice" required value="${escape(cfg.voice)}" list="speech-voices" maxlength="200"></div><div><label for="speech-other-voice">第二角色音色 ID</label><input id="speech-other-voice" name="otherVoice" required value="${escape(cfg.otherVoice)}" list="speech-voices" maxlength="200"></div></div><datalist id="speech-voices">${speechVoices.map(([id, label]) => `<option value="${id}">${escape(label)}</option>`).join('')}</datalist><p class="field-hint">使用该模型支持的系统、基础或自建音色 ID。默认两种中英音色不保证特定口音；英式 / 美式效果须试听确认。Jennifer、Aiden 属于其他模型，不可混用。三个以上角色可在生成预览中分别填音色 ID。</p>
   <div class="form-row three"><div><label for="speech-language">材料语言</label><select id="speech-language" name="language"><option value="en" ${cfg.language === 'en' ? 'selected' : ''}>英语</option><option value="zh" ${cfg.language === 'zh' ? 'selected' : ''}>中文</option></select></div><div><label for="speech-rate">合成语速</label><input id="speech-rate" type="number" min="0.5" max="2" step="0.1" name="rate" value="${cfg.rate}" required></div><div><label for="speech-timeout">每阶段超时（秒）</label><input id="speech-timeout" type="number" min="1" max="600" name="timeout" value="${cfg.timeoutMs / 1000}" required></div></div>
   <label for="speech-download-hosts">额外允许的音频下载域名</label><input id="speech-download-hosts" name="downloadHosts" value="${escape(cfg.downloadHosts)}" maxlength="2000" placeholder="可信的精确域名，用英文逗号分隔"><p class="field-hint">百炼官方来源内置已核实的地域 / 加速结果域名；未知域名不会访问。可信域名的 HTTP 签名链接只升级为 HTTPS，不回退 HTTP，不携带密钥或 Cookie，不跟随重定向。</p>
-  <p id="speech-settings-error" class="inline-error" role="alert">${escape(cfg.error || '')}</p><button type="submit" class="btn primary full" ${cfg.error ? 'disabled' : ''}>保存语音配置 ${icon('check')}</button></form>${button('检查已保存的语音服务（不合成）', 'check-speech-connection', 'secondary full', cfg.enabled ? '' : 'disabled', 'bolt')}<p id="speech-connection-result" class="notice" role="status">${escape(speechConnectionResult || '填写独立密钥并保存后可检查服务；检查不会生成试听音频。')}</p></section>`;
+  <p class="field-hint">仅在确认后合成，可能按服务商规则计费。发送所选材料，不发送整门课程、笔记或聊天记录。重复播放本地缓存不调用模型。</p></div></details><p id="speech-settings-error" class="inline-error" role="alert">${escape(cfg.error || '')}</p><button type="submit" class="btn primary full" ${cfg.error ? 'disabled' : ''}>保存语音配置 ${icon('check')}</button></form>${button('检查连接（不合成语音）', 'check-speech-connection', 'secondary full', cfg.enabled && !cfg.error ? '' : 'disabled', 'bolt')}<p id="speech-connection-result" class="notice" role="status">${escape(speechConnectionResult || '保存后可检查服务，不生成试听音频。')}</p></section>`;
 }
 function stopSpeechPlayback() {
   const player = $('#speech-player'); player?.pause?.(); if (player) { player.onended = null; player.currentTime = 0; }
@@ -475,6 +554,13 @@ async function download(name, content, type) {
 }
 function markdown(n) { return `# ${n.title}\n\n${n.summary.split('\n').map(line => '> ' + line).join('\n')}\n\n标签：${n.tags.join('、')}\n\n来源课程：${n.courseTitle}\n\n${n.content}\n`; }
 async function action(name, element) {
+  if (name === 'clear-model-key' && desktop) {
+    const input = $('#' + element.dataset.input), mode = $('#' + element.dataset.keyAction);
+    mode.value = mode.value === 'clear' ? 'keep' : 'clear';
+    input.value = '';
+    dirtyModelForm(input.closest('form'));
+    return;
+  }
   const id = element.dataset.id;
   if (name === 'open-speech') return openSpeech(id, element.dataset.block);
   if (name === 'close-speech') { if (!speechBusy) { stopSpeechPlayback(); $('#speech-dialog').close(); } return; }
@@ -684,25 +770,11 @@ document.addEventListener('cancel', event => {
   if (event.target.id === 'illustration-dialog' && illustrationBusy) event.preventDefault();
 }, true);
 document.addEventListener('input', event => {
-  if (desktop && event.target.closest?.('#image-settings-form')) {
-    $('#image-settings-error').textContent = '';
-    if (event.target.id === 'image-model-key' && event.target.value.trim()) $('#image-key-action').value = 'replace';
-    imageConnectionResult = '图片配置尚未保存，请保存后再检查。';
-    $('#image-connection-result').textContent = imageConnectionResult;
-    $('[data-action="check-image-connection"]').disabled = true;
-  }
+  dirtyModelForm(event.target.closest?.('form'));
   if (!plannerBusy && event.target.closest?.('#planner')) {
     if (event.target.id === 'goal') plannerDraft.goal = event.target.value;
     if (event.target.id === 'planner-notes') plannerDraft.notes = event.target.value;
     if (event.target.id.startsWith('detail-')) plannerDraft.answers = collectPlannerAnswers(new FormData($('#clarification-form')));
-  }
-  if (desktop && event.target.closest?.('#desktop-settings-form')) {
-    $('#settings-error').textContent = '';
-    $('#remote-permission').hidden = true;
-    if (event.target.id === 'model-key' && event.target.value.trim()) $('#key-action').value = 'replace';
-    connectionResult = '配置尚未保存，请保存后再测试连接。';
-    if ($('#connection-result')) $('#connection-result').textContent = connectionResult;
-    const test = $('[data-action="test-connection"]'); if (test) test.disabled = true;
   }
   if (event.target.dataset.reflection) { state.reflections[event.target.dataset.reflection] = event.target.value; persist('saveReflection', event.target.dataset.reflection, event.target.value); if ($('#reflection-preview')) $('#reflection-preview').innerHTML = reflectionPreview(event.target.value); }
   if (event.target.id === 'wiki-search') { query = event.target.value; $('#note-results').innerHTML = noteList(state.notes.filter(n => `${n.title} ${n.content} ${n.tags.join(' ')}`.toLowerCase().includes(query.toLowerCase()))); }
@@ -727,15 +799,8 @@ document.addEventListener('change', event => {
     $('#connection-result').textContent = '已切换服务，请填写模型名称并保存。';
     $('[data-action="test-connection"]').disabled = true;
   }
-  if (desktop && event.target.id === 'key-action' && event.target.value !== 'replace') $('#model-key').value = '';
-  if (desktop && event.target.id === 'image-key-action' && event.target.value !== 'replace') $('#image-model-key').value = '';
   if (desktop && event.target.id === 'image-protocol') {
-    const hints = imageProtocolHints(event.target.value);
-    $('#image-protocol-hint').textContent = hints.service;
-    $('#image-size-hint').textContent = hints.size;
-    $('#image-download-hint').textContent = hints.downloads;
-    $('#image-model-url').placeholder = hints.url;
-    $('#image-response-format').disabled = event.target.value === 'dashscope';
+    updateImageProtocolHints(event.target.value);
     $('#image-response-format').value = 'auto';
     $('#image-model-key').value = '';
     $('#image-key-action').value = $('#image-settings-form [name=localOnly]').checked ? 'clear' : 'replace';
@@ -744,18 +809,26 @@ document.addEventListener('change', event => {
     $('#image-connection-result').textContent = imageConnectionResult;
     $('[data-action="check-image-connection"]').disabled = true;
   }
+  dirtyModelForm(event.target.closest?.('form'));
 });
 document.addEventListener('submit', async event => {
   event.preventDefault(); const form = event.target; const values = new FormData(form);
   if (form.id === 'illustration-form' && illustrationBusy) return;
   if (['speech-preview-form', 'speech-generate-form'].includes(form.id) && speechBusy) return;
   if (['plan-form', 'clarification-form', 'plan-confirm-form'].includes(form.id)) return submitPlanner(form.id, values);
+  if (modelFormIds.includes(form.id)) {
+    if (modelSettingsSaving) return;
+    // Capture all pending drafts before any save re-renders the shared page.
+    dirtyModelForm(form);
+    modelSettingsSaving = true;
+  }
   const submit = form.querySelector('button[type="submit"]');
   const label = submit.innerHTML; submit.disabled = true;
   try {
     if (form.id === 'speech-settings-form' && desktop) {
       $('#speech-settings-error').textContent = '';
-      speechSettings = await desktop.saveSpeechSettings({ enabled: values.get('enabled') === 'on', model: values.get('model'), baseUrl: values.get('baseUrl'), voice: values.get('voice'), otherVoice: values.get('otherVoice'), language: values.get('language'), rate: Number(values.get('rate')), timeoutMs: Number(values.get('timeout')) * 1000, localOnly: values.get('localOnly') === 'on', downloadHosts: values.get('downloadHosts'), keyAction: values.get('keyAction'), apiKey: values.get('apiKey') });
+      speechSettings = await desktop.saveSpeechSettings({ enabled: values.get('enabled') === 'on', model: values.get('model'), baseUrl: values.get('baseUrl'), voice: values.get('voice'), otherVoice: values.get('otherVoice'), language: values.get('language'), rate: Number(values.get('rate')), timeoutMs: Number(values.get('timeout')) * 1000, localOnly: values.get('localOnly') === 'on', downloadHosts: values.get('downloadHosts'), ...modelKeyValues(values) });
+      modelFormDrafts.delete(form.id);
       speechConnectionResult = '语音配置已保存。根地址为同域名 /api/v1；未更换服务商或密钥。保存不会合成音频。'; render(); toast('语音配置已保存在本机，密钥已加密。');
     } else if (form.id === 'speech-preview-form' && desktop) {
       const assignments = { ...speechDraft.assignments };
@@ -773,7 +846,8 @@ document.addEventListener('submit', async event => {
     } else if (form.id === 'image-settings-form' && desktop) {
       $('#image-settings-error').textContent = '';
       submit.innerHTML = '<span class="spinner"></span>正在保存到本机…';
-      imageSettings = await desktop.saveImageSettings({ enabled: values.get('enabled') === 'on', protocol: values.get('protocol') || 'compatible', model: values.get('model'), baseUrl: values.get('baseUrl'), localOnly: values.get('localOnly') === 'on', keyAction: values.get('keyAction'), apiKey: values.get('apiKey'), size: values.get('size'), responseFormat: values.get('protocol') === 'dashscope' ? 'auto' : values.get('responseFormat'), timeoutMs: Number(values.get('timeout')) * 1000, downloadHosts: values.get('downloadHosts') });
+      imageSettings = await desktop.saveImageSettings({ enabled: values.get('enabled') === 'on', protocol: values.get('protocol') || 'compatible', model: values.get('model'), baseUrl: values.get('baseUrl'), localOnly: values.get('localOnly') === 'on', ...modelKeyValues(values), size: values.get('size'), responseFormat: values.get('protocol') === 'dashscope' ? 'auto' : values.get('responseFormat'), timeoutMs: Number(values.get('timeout')) * 1000, downloadHosts: values.get('downloadHosts') });
+      modelFormDrafts.delete(form.id);
       const rootAdjusted = values.get('baseUrl')?.trim().replace(/\/+$/, '') !== imageSettings.baseUrl;
       imageConnectionResult = rootAdjusted && imageSettings.protocol === 'dashscope' ? '图片配置已保存。已将根地址调整为同域名的 /api/v1，未更换服务商或密钥。保存不调用模型；可检查服务，实际生成仍需手动确认。' : '图片配置已保存。可检查服务，或在讲解、案例与动手实践右上角查看配图建议。'; render(); toast('图片模型配置已保存在本机。');
     } else if (form.id === 'illustration-form' && desktop) {
@@ -801,7 +875,7 @@ document.addEventListener('submit', async event => {
       submit.innerHTML = '<span class="spinner"></span>正在保存到本机…';
       const result = await desktop.saveSettings({
         provider: values.get('provider'), model: values.get('model'), baseUrl: values.get('baseUrl'),
-        keyAction: values.get('keyAction'), apiKey: values.get('apiKey'), localOnly: values.get('localOnly') === 'on',
+        ...modelKeyValues(values), localOnly: values.get('localOnly') === 'on',
         jsonMode: values.get('jsonMode'), timeoutMs: Number(values.get('timeout')) * 1000, maxTokens: Number(values.get('maxTokens'))
       });
       if (result.requiresRemotePermission) {
@@ -813,6 +887,7 @@ document.addEventListener('submit', async event => {
         return;
       }
       desktopSettings = result.settings; status = result.status; connectionResult = '配置已保存并生效，可测试模型连接。';
+      modelFormDrafts.delete(form.id);
       render(); toast('模型配置已保存在本机。');
     } else if (form.id === 'revision-form') {
       $('#revision-error').textContent = '';
@@ -876,7 +951,7 @@ document.addEventListener('submit', async event => {
       $('#image-connection-result').textContent = imageConnectionResult;
       $('[data-action="check-image-connection"]').disabled = true;
     } else if (form.id === 'revision-form' && $('#revision-error')) $('#revision-error').textContent = e.message; else if (form.id === 'desktop-settings-form' && $('#settings-error')) $('#settings-error').textContent = e.message; else if (form.id === 'plan-form' && $('#plan-error')) $('#plan-error').textContent = e.message; else if (form.id === 'lesson-ask-form' && $('#lesson-ask-error')) $('#lesson-ask-error').textContent = e.message; else toast(e.message); }
-  finally { if (form.id === 'illustration-form') { illustrationBusy = false; const fields = form.querySelector('fieldset'); if (fields) fields.disabled = false; } if (form.id === 'revision-form') revisionBusy = false; if (submit.isConnected) { submit.disabled = form.id === 'plan-form' && status.mode !== 'ai'; submit.innerHTML = label; } }
+  finally { if (modelFormIds.includes(form.id)) modelSettingsSaving = false; if (form.id === 'illustration-form') { illustrationBusy = false; const fields = form.querySelector('fieldset'); if (fields) fields.disabled = false; } if (form.id === 'revision-form') revisionBusy = false; if (submit.isConnected) { submit.disabled = form.id === 'plan-form' && status.mode !== 'ai'; submit.innerHTML = label; } }
 });
 document.addEventListener('input', event => {
   if ((event.target.id === 'speech-material' || event.target.id?.startsWith('speech-role-')) && speechDraft && !speechBusy) {

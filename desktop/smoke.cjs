@@ -21,18 +21,42 @@ exports.run = async (window, store, directory) => {
   // Exercise settings through the real form and IPC bridge.
   await evaluate("document.querySelector('[data-page=settings]').click()");
   await wait("document.querySelector('#desktop-settings-form')");
+  assert.equal(await evaluate("document.querySelectorAll('.model-settings-grid > .model-settings-card').length"), 3);
+  assert.equal(await evaluate("document.querySelectorAll('select[name=keyAction]').length"), 0);
+  assert.equal(await evaluate("[...document.querySelectorAll('.model-advanced')].every(item => !item.open)"), true);
+  // Pending fields (including a new secret) stay only in memory when another card saves.
+  await evaluate("document.querySelector('#image-model-name').value='pending-image-model';document.querySelector('#image-model-name').dispatchEvent(new Event('input',{bubbles:true}));document.querySelector('#image-model-key').value='pending-image-key-not-real';document.querySelector('#image-model-key').dispatchEvent(new Event('input',{bubbles:true}));document.querySelector('#image-settings-form .model-advanced').open=true;document.querySelector('#speech-voice').value='pending-voice';document.querySelector('#speech-voice').dispatchEvent(new Event('input',{bubbles:true}))");
   await evaluate("document.querySelector('#model-name').value = 'desktop-smoke-model'; document.querySelector('#desktop-settings-form').requestSubmit()");
   await wait("document.querySelector('#connection-result')?.textContent.includes('配置已保存并生效')");
   const saved = JSON.parse(await readFile(path.join(directory, 'settings.json'), 'utf8'));
   assert.equal(saved.model, 'desktop-smoke-model'); assert.equal(saved.localOnly, true);
+  assert.equal(await evaluate("document.querySelector('#model-name').value"), 'desktop-smoke-model');
+  assert.equal(await evaluate("document.querySelector('#image-model-name').value"), 'pending-image-model');
+  assert.equal(await evaluate("document.querySelector('#image-model-key').value"), 'pending-image-key-not-real');
+  assert.equal(await evaluate("document.querySelector('#image-settings-form .model-advanced').open"), true);
+  assert.equal(await evaluate("document.querySelector('#speech-voice').value"), 'pending-voice');
+  assert.equal(await evaluate("document.querySelector('[data-action=check-speech-connection]').disabled"), true);
+  assert.ok(!(await readFile(path.join(directory, 'image-settings.json'), 'utf8')).includes('pending-image-key-not-real'));
+  assert.ok(!(await readFile(path.join(directory, 'settings.json'), 'utf8')).includes('pending-image-key-not-real'));
   // Save a test-only local key, assert OS encryption, then clear it.
-  await evaluate("document.querySelector('#key-action').value = 'replace'; document.querySelector('#model-key').value = 'smoke-only-not-a-real-key'; document.querySelector('#desktop-settings-form').requestSubmit()");
-  await wait("document.querySelector('#key-action')?.options[0].textContent.includes('保留') && document.querySelector('#model-key')?.value === ''");
+  await evaluate("document.querySelector('#model-key').value = 'smoke-only-not-a-real-key'; document.querySelector('#desktop-settings-form').requestSubmit()");
+  await wait("document.querySelector('#model-key')?.placeholder.includes('留空保留') && document.querySelector('#model-key')?.value === ''");
   const encrypted = await readFile(path.join(directory, 'settings.json'), 'utf8');
   assert.ok(!encrypted.includes('smoke-only-not-a-real-key'));
   assert.ok(JSON.parse(encrypted).encryptedApiKey.length > 0);
-  await evaluate("document.querySelector('#key-action').value = 'clear'; document.querySelector('#desktop-settings-form').requestSubmit()");
-  await wait("document.querySelector('#key-action')?.options[0].textContent.includes('不填写')");
+  await evaluate("document.querySelector('#desktop-settings-form').requestSubmit()");
+  await wait("document.querySelector('#connection-result')?.textContent.includes('配置已保存并生效')");
+  assert.equal(store.getSettings().hasApiKey, true, 'a blank key input must keep the saved key');
+  await evaluate("document.querySelector('#desktop-settings-form [data-action=clear-model-key]').click()");
+  assert.equal(await evaluate("document.querySelector('#key-action').value"), 'clear');
+  await evaluate("document.querySelector('#desktop-settings-form [data-action=clear-model-key]').click()");
+  assert.equal(await evaluate("document.querySelector('#key-action').value"), 'keep');
+  await evaluate("document.querySelector('#desktop-settings-form [data-action=clear-model-key]').click(); document.querySelector('#desktop-settings-form').requestSubmit()");
+  await wait("document.querySelector('#model-key')?.placeholder.includes('有就填写')");
+  assert.equal(store.getSettings().hasApiKey, false);
+  assert.equal(store.getSettings().model, 'desktop-smoke-model');
+  assert.equal(await evaluate("document.querySelector('#model-name').value"), 'desktop-smoke-model');
+  await writeFile(path.join(directory, '..', 'unified-settings-smoke.png'), (await window.webContents.capturePage()).toPNG());
   // Reproduce the reported conflict using a cloud preset, without making cloud requests.
   await evaluate("document.querySelector('#model-provider').value = 'deepseek'; document.querySelector('#model-provider').dispatchEvent(new Event('change', {bubbles:true})); document.querySelector('#model-name').value = 'smoke-cloud-model'; document.querySelector('#model-key').value = 'smoke-cloud-key-not-real'; document.querySelector('#model-key').dispatchEvent(new Event('input', {bubbles:true})); document.querySelector('#desktop-settings-form').requestSubmit()");
   await wait("document.querySelector('#remote-permission')?.hidden === false");
@@ -522,8 +546,10 @@ exports.run = async (window, store, directory) => {
   await new Promise(resolve => window.webContents.once('did-finish-load', resolve));
   await wait("document.querySelector('main h1')");
   await require('./speech-smoke.cjs').run(window, directory);
+  await evaluate("document.querySelector('#speech-dialog').close()");
   await evaluate("document.querySelector('[data-page=settings]').click()");
   await wait("document.querySelector('#desktop-settings-form')");
+  await evaluate("window.scrollTo({top:0,behavior:'instant'})");
   const image = await window.webContents.capturePage();
   await writeFile(path.join(directory, '..', 'settings-smoke.png'), image.toPNG());
   console.log('DESKTOP_SMOKE', JSON.stringify({ passed: true, checks: ['window', 'sandbox', 'settings-save', 'os-encryption', 'cloud-save-confirmation', 'cloud-settings-reload', 'lan-save-confirmation', 'quick-ask-right-dock-and-focus', 'quick-ask-return-position', 'quiz', 'wiki', 'disk-persistence', 'reload', 'lesson-qa', 'adaptive-learning-questionnaire-and-confirmation', 'plan-invalid-count-repair', 'teaching-unit', 'feedback-regeneration', 'markdown-typography', 'legacy-diagram-fences-as-code-reload', 'markdown-revision-preset', 'reflection-markdown-preview', 'note-markdown-read-edit', 'chat-markdown', 'grounded-markdown-citations', 'ai-wiki-markdown-reload', 'revision-failure-preserves-content', 'revision-restore-reload', 'image-settings-os-encryption', 'image-model-check-without-generation', 'image-suggestion-before-confirmation', 'image-generation-failure-no-retry', 'image-local-render-layout-and-reload', 'image-restoration-with-text', 'private-asset-cookie'], screenshot: path.join(directory, '..', 'settings-smoke.png') }));

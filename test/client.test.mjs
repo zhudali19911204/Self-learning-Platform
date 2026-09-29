@@ -16,6 +16,61 @@ import { speechDefaults, speechVoices, listeningText, speechTurns, speechRequest
 const DOMPurify = createDOMPurify(new JSDOM('').window);
 const source = (await readFile(new URL('../public/app.js', import.meta.url), 'utf8')).replace(/^import .* from '\.\/[^']+';$/gm, '');
 
+test('desktop settings keep all three models on one page with direct empty key inputs and folded advanced options', async () => {
+  const app = harness(null, null, { load: async () => ({ settings: { provider: 'ollama', hasApiKey: true }, status: { mode: 'demo' }, imageSettings: { hasApiKey: true }, speechSettings: { hasApiKey: true } }) });
+  await Promise.resolve(); app.run("navigate('settings')");
+  const doc = new JSDOM(app.node('#app').innerHTML).window.document;
+  assert.equal(doc.querySelectorAll('.model-settings-grid > .model-settings-card').length, 3);
+  for (const id of ['desktop-settings-form', 'image-settings-form', 'speech-settings-form']) {
+    const form = doc.getElementById(id);
+    assert.ok(form.closest('.model-settings-grid'));
+    assert.equal(form.querySelector('[name=apiKey]').value, '');
+    assert.match(form.querySelector('[name=apiKey]').placeholder, /留空保留/);
+    assert.equal(form.querySelector('select[name=keyAction]'), null);
+    assert.equal(form.querySelector('[name=keyAction]').type, 'hidden');
+    assert.equal(form.querySelector('.model-advanced').open, false);
+    assert.ok(form.querySelector('[data-action=clear-model-key]'));
+  }
+  assert.ok(doc.querySelector('.settings-data-panel'));
+  assert.equal(doc.querySelector('.model-settings-grid .settings-data-panel'), null);
+});
+
+test('direct API key entry automatically replaces keys for every model; blank preserves and explicit clear deletes', async () => {
+  const saves = [];
+  const safe = input => { saves.push(input); const { apiKey, keyAction, ...cfg } = input; return cfg; };
+  const app = harness(null, null, { load: async () => ({ settings: {}, status: { mode: 'demo' } }),
+    saveSettings: async input => ({ settings: safe(input), status: { mode: 'demo' } }), saveImageSettings: async input => safe(input), saveSpeechSettings: async input => safe(input) });
+  await Promise.resolve();
+  for (const form of ['desktop-settings-form', 'image-settings-form', 'speech-settings-form']) {
+    const fields = { model: 'test', baseUrl: 'http://localhost:8000/v1', timeout: '180', rate: '1', maxTokens: '8192' };
+    await app.submit(form, { ...fields, apiKey: 'local-test-only' });
+    assert.equal(saves.at(-1).keyAction, 'replace');
+    assert.equal(saves.at(-1).apiKey, 'local-test-only');
+    await app.submit(form, { ...fields, apiKey: '' });
+    assert.equal(saves.at(-1).keyAction, 'keep');
+    await app.submit(form, { ...fields, apiKey: '', keyAction: 'clear' });
+    assert.equal(saves.at(-1).keyAction, 'clear');
+    await app.submit(form, { ...fields, apiKey: 'new-test-key', keyAction: 'clear' });
+    assert.equal(saves.at(-1).keyAction, 'replace');
+  }
+  assert.ok(!app.node('#app').innerHTML.includes('local-test-only'));
+  assert.equal(app.storage.size, 0);
+});
+
+test('configuration saves cannot race across the three model cards', async () => {
+  let finish, calls = 0;
+  const app = harness(null, null, { load: async () => ({ settings: {}, status: { mode: 'demo' } }),
+    saveSettings: async () => { calls++; await new Promise(resolve => { finish = resolve; }); return { settings: {}, status: { mode: 'demo' } }; },
+    saveImageSettings: async () => { calls++; return {}; } });
+  await Promise.resolve();
+  const first = app.submit('desktop-settings-form', { apiKey: '', timeout: '120', maxTokens: '8192' });
+  await app.submit('image-settings-form', { apiKey: '', timeout: '180' });
+  assert.equal(calls, 1);
+  finish(); await first;
+  await app.submit('image-settings-form', { apiKey: '', timeout: '180' });
+  assert.equal(calls, 2);
+});
+
 test('AI speech previews do not synthesize; confirmation preserves the course and cached playback never calls a model', async () => {
   let posts = 0, plays = 0, pauses = 0;
   const text = 'Sarah: Hello, Mark.\nMark: Good morning.';
@@ -238,7 +293,7 @@ function harness(saved, fetchImpl, desktopBridge) {
     node('#' + id).value = value;
     for (const listener of listeners.get('input')) listener({ target: { id, value, dataset } });
   };
-  const change = (id,value) => { for (const listener of listeners.get('change')) listener({target:{id,value}}); };
+  const change = (id,value) => { node('#' + id).value = value; for (const listener of listeners.get('change')) listener({target:{id,value}}); };
   return { run, submit, input, change, node, storage };
 }
 test('learning loop: incorrect answers, retry, completion, Wiki creation, edit and persistence', async () => {
