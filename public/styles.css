@@ -217,3 +217,60 @@
 .settings-data-actions { display: flex; flex-wrap: wrap; gap: 12px; margin: 20px 0; }
 @media (max-width: 1100px) { .model-settings-grid { grid-template-columns: 1fr; } .model-settings-grid .model-settings-card { padding: 24px; } .model-settings-card .form-row { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 @media (max-width: 560px) { .model-settings-card .form-row { grid-template-columns: 1fr; } .settings-data-actions .btn { width: 100%; } }
+
+/* Home illustration: quiet, staggered motion that never shifts the layout. */
+.hero-art .float-card { will-change: transform; }
+.hero-art .float-top { animation: hero-float-top 6.2s ease-in-out -1.4s infinite; }
+.hero-art .float-left { animation: hero-float-left 7.1s ease-in-out -3.1s infinite; }
+.hero-art .float-bottom { animation: hero-float-bottom 6.7s ease-in-out -4.5s infinite; }
+.hero-art .orb-center { animation: hero-orb-breathe 7s ease-in-out infinite; }
+.hero-art .orbit-two { animation: hero-orbit-turn 70s linear infinite; }
+.hero-art .star { animation: hero-star-glow 5s ease-in-out infinite; }
+.hero-art .star-two { animation-delay: -2.4s; }
+
+@keyframes hero-float-top {
+  0%, 100% { transform: translate3d(0, 0, 0) rotate(-5deg); }
+  50% { transform: translate3d(3px, -8px, 0) rotate(-3deg); }
+}
+@keyframes hero-float-left {
+  0%, 100% { transform: translate3d(0, 0, 0) rotate(4deg); }
+  50% { transform: translate3d(-3px, -7px, 0) rotate(2deg); }
+}
+@keyframes hero-float-bottom {
+  0%, 100% { transform: translate3d(0, 0, 0) rotate(-3deg); }
+  50% { transform: translate3d(4px, -9px, 0) rotate(-1deg); }
+}
+@keyframes hero-orb-breathe {
+  0%, 100% { transform: translate(-50%, -50%) rotate(-9deg) scale(1); }
+  50% { transform: translate(-50%, -51%) rotate(-7deg) scale(1.025); }
+}
+@keyframes hero-orbit-turn {
+  from { transform: translate(-50%, -50%) rotate(20deg); }
+  to { transform: translate(-50%, -50%) rotate(380deg); }
+}
+@keyframes hero-star-glow {
+  0%, 100% { opacity: .55; }
+  50% { opacity: 1; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .hero-art .float-card, .hero-art .orb-center, .hero-art .orbit-two, .hero-art .star {
+    animation: none;
+    will-change: auto;
+  }
+}
+
+/* Keep the two home dashboard panels aligned even when course text grows. */
+.dashboard-columns > section {
+  display: grid;
+  grid-template-rows: auto 1fr;
+  min-width: 0;
+}
+.dashboard-columns > section > .section-heading {
+  min-height: 28px;
+  align-items: center;
+}
+.dashboard-columns > section > .course-card,
+.dashboard-columns > section > .knowledge-preview {
+  height: 100%;
+}

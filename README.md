@@ -4,7 +4,7 @@
 
 ## Windows 桌面版
 
-当前源码版本为 `1.1.3`，对应 Git 标签 `V-1.1.3`。打包后运行 `release/Learnflow-Setup-1.1.3.exe` 安装。也可直接运行 `release/win-unpacked/Learnflow.exe`（需保留同目录的其他文件，不能只拷贝 exe）。安装后从桌面“知行 Learnflow”快捷方式打开，无需安装 Node.js，也不用手动启动 Web 服务。旧版 `0.1.0` 安装包不包含新增的 SQLite 存储；请重新打包或用开发测试版体验最新功能。
+当前源码版本为 `1.1.4`，对应 Git 标签 `V-1.1.4`。打包后运行 `release/Learnflow-Setup-1.1.4.exe` 安装。也可直接运行 `release/win-unpacked/Learnflow.exe`（需保留同目录的其他文件，不能只拷贝 exe）。安装后从桌面“知行 Learnflow”快捷方式打开，无需安装 Node.js，也不用手动启动 Web 服务。旧版 `0.1.0` 安装包不包含新增的 SQLite 存储；请重新打包或用开发测试版体验最新功能。
 
 源码启动及打包：
 
