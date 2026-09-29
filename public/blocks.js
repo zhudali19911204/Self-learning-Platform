@@ -1,5 +1,6 @@
 import { validImageProposal, validIllustration } from './illustrations.js';
 export const blockTypes = ['reading', 'example', 'practice', 'quiz', 'summary'];
+export const assistedBlockTypes = Object.freeze(['reading', 'example', 'practice']);
 const str = (value, max) => typeof value === 'string' && value.trim().length > 0 && value.length <= max;
 const safeId = value => typeof value === 'string' && /^[a-zA-Z0-9_-]{1,160}$/.test(value) && !['__proto__', 'constructor', 'prototype'].includes(value);
 export const validBlockSpec = block => !!block && blockTypes.includes(block.type) && str(block.title, 160) && str(block.objective, 1000);
@@ -11,12 +12,12 @@ export const validBlockContent = (type, content) => type === 'quiz'
   ? !!content && Array.isArray(content.questions) && content.questions.length >= 1 && content.questions.length <= 5 && content.questions.every(validQuestion)
   : blockTypes.includes(type) && !!content && str(content.text, 12000) && validRevisions(content) && validImages(content);
 export function revisedContent(type, previous, next, updated = Date.now()) {
-  if (!['reading', 'example'].includes(type) || !validBlockContent(type, previous) || !validBlockContent(type, next)) throw new Error('只能重新生成已保存的讲解或案例。');
+  if (!assistedBlockTypes.includes(type) || !validBlockContent(type, previous) || !validBlockContent(type, next)) throw new Error('只能重新生成已保存的讲解、案例或实践任务。');
   const images = value => ({ ...(value.imageProposal ? { imageProposal: value.imageProposal } : {}), ...(value.illustration ? { illustration: value.illustration } : {}) });
   return { text: next.text, ...images(next), revisions: [...(previous.revisions || []), { text: previous.text, updated, ...images(previous) }].slice(-10) };
 }
 export function restoredContent(type, content) {
-  if (!['reading', 'example'].includes(type) || !validBlockContent(type, content) || !content.revisions?.length) throw new Error('没有可恢复的上一版内容。');
+  if (!assistedBlockTypes.includes(type) || !validBlockContent(type, content) || !content.revisions?.length) throw new Error('没有可恢复的上一版内容。');
   const revisions = content.revisions.slice(0, -1);
   const previous = content.revisions.at(-1);
   return { text: previous.text, ...(previous.imageProposal ? { imageProposal: previous.imageProposal } : {}), ...(previous.illustration ? { illustration: previous.illustration } : {}), revisions };

@@ -1,10 +1,11 @@
 import { demoPlan, demoLessons } from './demo.js';
-import { lessonFromBlocks, validOutline, validBlockContent, validBlockSpec, blockGenerationContext, revisedContent, restoredContent } from './blocks.js';
+import { lessonFromBlocks, validOutline, validBlockContent, validBlockSpec, blockGenerationContext, revisedContent, restoredContent, assistedBlockTypes } from './blocks.js';
 import { Marked } from './vendor/marked.js';
 import DOMPurify from './vendor/purify.js';
 import { createMarkdownRenderer } from './markdown.js';
 import { validQuestionnaire, validClarification, learningBriefFrom } from './planning.js';
 import { validIllustration, validImageProposal } from './illustrations.js';
+import { speechDefaults, speechVoices, listeningText, speechTurns, speechRequest, validAudioId } from './speech.js';
 
 const renderMarkdown = createMarkdownRenderer(Marked, DOMPurify);
 
@@ -51,6 +52,7 @@ let status = { mode: 'loading' };
 let connectionResult = '';
 let revisionBusy = false;
 let imageSettings = null, imageConnectionResult = '', illustrationBusy = false, illustrationDraft = null;
+let speechSettings = null, speechConnectionResult = '', speechBusy = false, speechDraft = null, speechPlaylist = [];
 let plannerDraft = { step: 'goal', goal: '', level: '零基础', daily: 25, days: 14, questionnaire: null, answers: [], notes: '' };
 let plannerBusy = false, plannerError = '';
 const plan = () => state.plans.find(p => p.id === state.active) || state.plans[0];
@@ -104,6 +106,7 @@ const pill = (text, cls = '') => `<span class="pill ${cls}">${escape(text)}</spa
 const button = (text, action, cls = 'primary', attrs = '', symbol = 'arrow') => `<button class="btn ${cls}" data-action="${action}" ${attrs}>${escape(text)}${symbol ? icon(symbol) : ''}</button>`;
 const date = timestamp => new Date(timestamp).toLocaleDateString('zh-CN', { month: 'short', day: 'numeric' });
 const quickAskButton = (available = true) => available ? `<div class="quick-ask-dock"><button type="button" class="quick-ask-button ${lessonTab === 'chat' ? 'active' : ''}" data-action="quick-ask" aria-label="打开当前课程的 AI 答疑" title="打开当前课程的 AI 答疑">${icon('spark')}<span>AI<br>答疑</span></button></div>` : '';
+const speechButton = (id, block = '') => desktop ? button('AI 朗读', 'open-speech', 'secondary speech-entry', `data-id="${escape(id)}" data-block="${escape(block)}"`, 'spark') : '';
 function navigate(target) { page = target; answer = null; render(); window.scrollTo({ top: 0, behavior: 'smooth' }); }
 function switchLessonTab(target, focusQuestion = false) {
   if (page === 'study' && lessonTab === 'read' && target !== 'read') {
@@ -155,7 +158,7 @@ function study() {
   const p = plan(); const meta = p.lessons.find(l => l.id === activeLesson) || nextLesson(); activeLesson = meta.id;
   const lesson = contentFor(meta.id), record = progress(meta.id);
   if (state.blockCourses?.[meta.id]) return studyBlocks(meta, p, record);
-  return `<div class="study-top"><button class="text-button" data-page="routes">${icon('back')}返回学习路线</button>${pill(p.source === 'demo' ? '示例课程' : 'AI 生成 · 请核验重要知识', 'purple')}</div>
+  return `<div class="study-top"><button class="text-button" data-page="routes">${icon('back')}返回学习路线</button>${lesson && lessonTab === 'read' ? speechButton(meta.id) : ''}${pill(p.source === 'demo' ? '示例课程' : 'AI 生成 · 请核验重要知识', 'purple')}</div>
   <div class="study-layout"><aside class="syllabus"><div class="syllabus-heading">课程目录 <span>${completed()}/${p.lessons.length}</span></div>${p.lessons.map((l, i) => `<button class="syllabus-item ${l.id === meta.id ? 'selected' : ''}" data-action="open-lesson" data-id="${l.id}"><span>${progress(l.id).completed ? icon('check') : String(i + 1).padStart(2, '0')}</span><strong>${escape(l.title)}</strong></button>`).join('')}<div class="syllabus-bottom">${icon('leaf')} 慢慢来，也是在前进。</div></aside>${quickAskButton(!!lesson)}
   <section class="lesson-content"><div class="eyebrow">LESSON ${String(p.lessons.indexOf(meta) + 1).padStart(2, '0')}</div><h1>${escape(meta.title)}</h1><p class="lesson-objective">${escape(meta.objective)}</p><div class="metadata">${icon('clock')}${meta.minutes} 分钟 <span>·</span>${escape(meta.tags.join(' / '))}</div>
   <div class="tabs" role="tablist" aria-label="课程内容">${[['read', 'book', '学习内容'], ['quiz', 'bolt', `随堂练习${record.completed ? ' ✓' : ''}`], ['chat', 'spark', 'AI 答疑'], ['notes', 'brain', '学习笔记']].map(([tab, symbol, label]) => `<button role="tab" aria-selected="${lessonTab === tab}" class="${lessonTab === tab ? 'active' : ''}" data-action="lesson-tab" data-tab="${tab}">${icon(symbol)}${label}</button>`).join('')}</div>
@@ -164,9 +167,9 @@ function study() {
 function blockPart(block, index, lessonId, teaching = false) {
   const labels = { reading: '知识讲解', example: '配套案例', practice: '动手实践', quiz: '随堂练习', summary: '知识总结' };
   const attrs = `data-id="${escape(lessonId)}" data-block="${escape(block.id)}"`;
-  const editable = ['reading', 'example'].includes(block.type) && block.content;
-  const imageAction = editable && desktop && imageSettings?.enabled ? button(block.content.illustration ? '调整配图' : block.content.imageProposal ? '查看建议配图' : 'AI 配图建议', 'request-illustration', 'secondary', attrs, 'spark') : '';
-  const actions = editable ? `<div class="revision-actions">${imageAction}${button(block.type === 'reading' ? '换个讲法' : '换个例子', 'request-revision', 'secondary', attrs, '')}${block.content.revisions?.length ? button('恢复上一版', 'restore-block', 'secondary', attrs, 'back') : ''}</div>` : '';
+  const editable = assistedBlockTypes.includes(block.type) && block.content;
+  const imageAction = (editable ? speechButton(lessonId, block.id) : '') + (editable && desktop && imageSettings?.enabled ? button(block.content.illustration ? '调整配图' : block.content.imageProposal ? '查看建议配图' : 'AI 配图建议', 'request-illustration', 'secondary', attrs, 'spark') : '');
+  const actions = editable ? `<div class="revision-actions">${imageAction}${button(block.type === 'reading' ? '换个讲法' : block.type === 'practice' ? '换个任务' : '换个例子', 'request-revision', 'secondary', attrs, '')}${block.content.revisions?.length ? button('恢复上一版', 'restore-block', 'secondary', attrs, 'back') : ''}</div>` : '';
   const figure = desktop && validIllustration(block.content?.illustration) ? `<figure class="course-illustration"><img src="/course-images/${block.content.illustration.id}" alt="${escape(block.content.illustration.caption)}" loading="lazy"><figcaption>${escape(block.content.illustration.caption)}<small>AI 生成教学示意 · 请结合正文核验，勿用于精确测量或数据判断</small></figcaption></figure>` : '';
   return `<section class="${teaching ? `teaching-part teaching-${block.type}` : 'reading-section content-block'}" data-block-id="${escape(block.id)}"><div class="teaching-part-heading"><span class="pill purple">${String(index + 1).padStart(2, '0')} · ${labels[block.type]}</span>${actions}</div><h2 class="block-title">${escape(block.title)}</h2><p class="block-objective">${escape(block.objective)}</p>${block.content ? block.type === 'quiz' ? `<p>已生成 ${block.content.questions.length} 道练习题。${button('去练习', 'quiz', 'secondary')}</p>` : `<div class="block-text markdown-content">${renderMarkdown(block.content.text)}</div>${figure}` : `<div class="block-pending"><span>此模块尚未生成，可以按需展开。</span>${button('生成这一块', 'generate-block', 'secondary', attrs, 'spark')}</div>`}</section>`;
 }
@@ -283,7 +286,7 @@ function desktopSettingsPage() {
   ${button('导出完整 JSON 备份', 'export-data', 'secondary full', '', 'export')}
   ${button('导入学习备份', 'import-data', 'secondary full', '', 'plus')}
   ${button('导出 Wiki Markdown', 'export-wiki', 'secondary full', state.notes.length ? '' : 'disabled', 'export')}
-  <p class="field-hint">完整备份包含课程配图和历史版本。导入前会确认替换并创建 SQLite 快照。学习备份不包含模型配置或密钥。</p></section>${imageSettingsPanel()}</div>`;
+  <p class="field-hint">完整备份包含课程配图和历史版本。导入前会确认替换并创建 SQLite 快照。学习备份不包含模型配置或密钥。朗读音频为独立本地缓存；如需保留，请在应用关闭后备份整个数据目录。</p></section>${imageSettingsPanel()}${speechSettingsPanel()}</div>`;
 }
 
 function imageProtocolHints(protocol) {
@@ -312,7 +315,65 @@ function imageSettingsPanel() {
   <div class="form-row"><div><label for="image-size">尺寸（宽x高）</label><input id="image-size" name="size" value="${escape(cfg.size)}" maxlength="20" required></div><div><label for="image-response-format">返回格式</label><select id="image-response-format" name="responseFormat" ${native ? 'disabled' : ''}>${[['auto','自动（不传参数）'],['b64_json','Base64'],['url','图片 URL']].map(([v,l]) => `<option value="${v}" ${(native ? v === 'auto' : cfg.responseFormat === v) ? 'selected' : ''}>${l}</option>`).join('')}</select></div><div><label for="image-timeout">超时（秒）</label><input id="image-timeout" name="timeout" type="number" min="1" max="600" value="${cfg.timeoutMs / 1000}" required></div></div><p id="image-size-hint" class="field-hint">${escape(hints.size)}</p>
   <label for="image-download-hosts">额外允许的图片下载域名（可选）</label><input id="image-download-hosts" name="downloadHosts" maxlength="2000" value="${escape(cfg.downloadHosts)}" placeholder="例如 images.vendor.example，多域名用英文逗号分隔"><p id="image-download-hint" class="field-hint">${escape(hints.downloads)}</p>
   <p id="image-settings-error" class="inline-error" role="alert"></p><button type="submit" class="btn primary full" ${cfg.error ? 'disabled' : ''}>保存图片模型配置 ${icon('check')}</button></form>
-  ${button('检查已保存的服务（不生成图片）', 'check-image-connection', 'secondary full', cfg.enabled && !cfg.error ? '' : 'disabled', 'bolt')}<div id="image-connection-result" class="notice" role="status">${escape(imageConnectionResult || '仅检查 /models；不是生成能力验证，也不请求付费生成。')}</div><p class="field-hint">图片保存在本机 images 目录，自动随完整学习备份导出。普通 Markdown 不加载外部图片。第一版支持内容块课程的讲解与案例；不自动修改已有课程。</p></section>`;
+  ${button('检查已保存的服务（不生成图片）', 'check-image-connection', 'secondary full', cfg.enabled && !cfg.error ? '' : 'disabled', 'bolt')}<div id="image-connection-result" class="notice" role="status">${escape(imageConnectionResult || '仅检查 /models；不是生成能力验证，也不请求付费生成。')}</div><p class="field-hint">图片保存在本机 images 目录，自动随完整学习备份导出。普通 Markdown 不加载外部图片。支持内容块课程的讲解、案例与动手实践；不自动修改已有课程。</p></section>`;
+}
+function speechSettingsPanel() {
+  if (!desktop) return '';
+  const cfg = { ...speechDefaults, ...speechSettings };
+  return `<section class="panel speech-settings-panel"><h2>AI 朗读模型</h2><p>独立使用 qwen-audio-3.0-tts-plus。仅在确认后合成听力原文，音频保存本地，重复播放不再调用模型。</p><form id="speech-settings-form" class="desktop-form">
+  <label class="checkbox-field"><input type="checkbox" name="enabled" ${cfg.enabled ? 'checked' : ''}>启用 AI 朗读</label>
+  <label for="speech-model">语音模型</label><input id="speech-model" name="model" required value="${escape(cfg.model)}" maxlength="200">
+  <label for="speech-url">接口根地址</label><input id="speech-url" name="baseUrl" required value="${escape(cfg.baseUrl)}" maxlength="2000"><p class="field-hint">可填写你提供的 Token Plan /compatible-mode/v1，保存时调整为同域名 /api/v1；实际调用 /services/audio/tts/SpeechSynthesizer。不切换服务或密钥。</p>
+  <label class="checkbox-field"><input type="checkbox" name="localOnly" ${cfg.localOnly ? 'checked' : ''}>仅本机语音服务</label><p class="field-hint">使用云端请关闭此项。确认后的材料将发送到该语音服务；不会发送整门课程、笔记或聊天记录。</p>
+  <label for="speech-key-action">独立 API Key</label><select id="speech-key-action" name="keyAction"><option value="keep">${cfg.hasApiKey ? '保留已保存的语音密钥' : '不填写密钥'}</option><option value="replace">设置 / 更换密钥</option><option value="clear">清除密钥</option></select><input id="speech-key" name="apiKey" type="password" autocomplete="new-password" maxlength="4096" placeholder="独立填写套餐密钥；不沿用文字或图片密钥"><p class="field-hint">密钥由系统安全存储加密保存在本机，不回显，不写入学习备份。套餐是否允许本应用调用，请核对服务商使用范围；此提醒不阻止保存。</p>
+  <div class="form-row"><div><label for="speech-voice">默认音色 ID</label><input id="speech-voice" name="voice" required value="${escape(cfg.voice)}" list="speech-voices" maxlength="200"></div><div><label for="speech-other-voice">第二角色音色 ID</label><input id="speech-other-voice" name="otherVoice" required value="${escape(cfg.otherVoice)}" list="speech-voices" maxlength="200"></div></div><datalist id="speech-voices">${speechVoices.map(([id, label]) => `<option value="${id}">${escape(label)}</option>`).join('')}</datalist><p class="field-hint">使用该模型支持的系统、基础或自建音色 ID。默认两种中英音色不保证特定口音；英式 / 美式效果须试听确认。Jennifer、Aiden 属于其他模型，不可混用。三个以上角色可在生成预览中分别填音色 ID。</p>
+  <div class="form-row three"><div><label for="speech-language">材料语言</label><select id="speech-language" name="language"><option value="en" ${cfg.language === 'en' ? 'selected' : ''}>英语</option><option value="zh" ${cfg.language === 'zh' ? 'selected' : ''}>中文</option></select></div><div><label for="speech-rate">合成语速</label><input id="speech-rate" type="number" min="0.5" max="2" step="0.1" name="rate" value="${cfg.rate}" required></div><div><label for="speech-timeout">每阶段超时（秒）</label><input id="speech-timeout" type="number" min="1" max="600" name="timeout" value="${cfg.timeoutMs / 1000}" required></div></div>
+  <label for="speech-download-hosts">额外允许的音频下载域名</label><input id="speech-download-hosts" name="downloadHosts" value="${escape(cfg.downloadHosts)}" maxlength="2000" placeholder="可信的精确域名，用英文逗号分隔"><p class="field-hint">百炼官方来源内置已核实的地域 / 加速结果域名；未知域名不会访问。可信域名的 HTTP 签名链接只升级为 HTTPS，不回退 HTTP，不携带密钥或 Cookie，不跟随重定向。</p>
+  <p id="speech-settings-error" class="inline-error" role="alert">${escape(cfg.error || '')}</p><button type="submit" class="btn primary full" ${cfg.error ? 'disabled' : ''}>保存语音配置 ${icon('check')}</button></form>${button('检查已保存的语音服务（不合成）', 'check-speech-connection', 'secondary full', cfg.enabled ? '' : 'disabled', 'bolt')}<p id="speech-connection-result" class="notice" role="status">${escape(speechConnectionResult || '填写独立密钥并保存后可检查服务；检查不会生成试听音频。')}</p></section>`;
+}
+function stopSpeechPlayback() {
+  const player = $('#speech-player'); player?.pause?.(); if (player) { player.onended = null; player.currentTime = 0; }
+  speechPlaylist = [];
+}
+function renderSpeechDialog() {
+  stopSpeechPlayback();
+  const draft = speechDraft, cfg = { ...speechDefaults, ...speechSettings };
+  let speakers = []; try { speakers = [...new Set(speechTurns(draft.text).map(turn => turn.speaker))]; } catch {}
+  const preview = draft.plan;
+  $('#speech-dialog').innerHTML = `<div class="modal-heading"><h2 id="speech-title">AI 听力朗读</h2><button class="icon-button" data-action="close-speech" aria-label="关闭" ${speechBusy ? 'disabled' : ''}>${icon('close')}</button></div><p>选择课程原文或在下方粘贴听力材料。自动提取仅供预览，请核对原文；姓名用于分配音色，不会被朗读。不改写课程。</p>${!cfg.enabled ? '<p class="notice">尚未启用语音模型，请到“设置与数据 → AI 朗读模型”填写独立密钥并保存。</p>' : ''}
+  <form id="speech-preview-form"><fieldset id="speech-preview-fields" ${speechBusy ? 'disabled' : ''}><label for="speech-material">待朗读材料（可修改，最多 8000 字）</label><textarea id="speech-material" name="text" rows="8" required maxlength="8000" placeholder="Sarah: Alright, let's get started.&#10;Mark: I've finished the login page.">${escape(draft.text)}</textarea><div class="speech-roles">${speakers.map((speaker, index) => `<div><label for="speech-role-${index}">${escape(speaker || '旁白')} · 音色 ID</label><input id="speech-role-${index}" name="voice-${index}" value="${escape(Object.hasOwn(draft.assignments, speaker) ? draft.assignments[speaker] : index % 2 ? cfg.otherVoice : cfg.voice)}" maxlength="200"></div>`).join('')}</div><button type="submit" class="btn secondary full">预览角色与缓存（不生成、不计费）</button></fieldset></form><p id="speech-error" class="inline-error" role="alert">${escape(draft.error || '')}</p>
+  <div id="speech-preview-body">${preview ? `<p class="notice">共 ${preview.turns.length} 段，已缓存 ${preview.cachedCount} 段，待下载 ${preview.pendingCount} 段；新合成 ${preview.newCount} 段 / ${preview.characters} 字符。只发送确认的片段；按服务商规则计费，不自动重试。</p><ol class="speech-turns">${preview.turns.map((turn, index) => `<li id="speech-turn-${index}"><div><strong>${escape(turn.speaker || '旁白')}</strong><small>${escape(turn.voice)} · ${turn.id ? '本地音频' : turn.pending ? '已生成，待下载' : '尚未生成'}</small></div><p>${escape(turn.text)}</p>${turn.id && validAudioId(turn.id) ? button('重听此段', 'play-speech-turn', 'secondary', `data-index="${index}"`, '') : ''}${turn.pending ? `<small>下载域名：${escape(turn.host)}</small>` : ''}</li>`).join('')}</ol><form id="speech-generate-form"><button type="submit" class="btn primary full" ${speechBusy || !cfg.enabled || (!preview.newCount && !preview.pendingCount) ? 'disabled' : ''}>${speechBusy ? '正在合成 / 下载，请勿重复提交…' : preview.pendingCount ? '仅重试下载（不合成新片段）' : preview.newCount ? `确认生成 ${preview.newCount} 段 AI 朗读（可能计费）` : '全部已缓存，不需要重新生成'}</button></form>${preview.cachedCount ? `<div class="speech-player-tools">${button('播放已缓存片段', 'play-speech-all', 'secondary', '', '')}${button('停止', 'stop-speech', 'secondary', '', '')}<label>播放速度<select id="speech-play-rate"><option value="0.75">0.75×</option><option value="1" selected>1×</option><option value="1.25">1.25×</option><option value="1.5">1.5×</option></select></label></div><audio id="speech-player" controls preload="none"></audio><p id="speech-playing" role="status">AI 合成示意语音 · 点击播放；不是原始录音。</p>` : ''}` : ''}</div><p class="field-hint">下载失败的链接仅在本次运行中保留 30 分钟，关闭应用后失效。已保存的音频可离线播放，修改文本、音色或合成参数会使用新缓存，不覆盖课程和旧音频。</p>`;
+}
+async function openSpeech(lessonId, blockId) {
+  if (!desktop || speechBusy) return;
+  const selected = window.getSelection?.()?.toString() || '';
+  const block = state.blockCourses?.[lessonId]?.blocks.find(item => item.id === blockId);
+  const lesson = contentFor(lessonId);
+  const raw = block?.content?.text || lesson?.example || '';
+  speechDraft = { text: selected.trim().slice(0, 8000) || listeningText(raw), assignments: {}, plan: null, error: '' };
+  speechBusy = !!speechDraft.text;
+  renderSpeechDialog(); $('#speech-dialog').showModal();
+  // Local cache lookup is non-generating, even when the text was auto-extracted.
+  if (speechDraft.text) {
+    try { speechDraft.plan = await desktop.prepareSpeech({ text: speechDraft.text, assignments: {} }); }
+    catch (error) { speechDraft.error = error.message; }
+    finally { speechBusy = false; }
+    renderSpeechDialog();
+  }
+}
+async function playSpeech(indices) {
+  stopSpeechPlayback(); speechPlaylist = indices.filter(index => validAudioId(speechDraft?.plan?.turns[index]?.id));
+  if (!speechPlaylist.length) return;
+  const playNext = async () => {
+    if (!speechPlaylist.length) return;
+    const index = speechPlaylist.shift(), turn = speechDraft.plan.turns[index], player = $('#speech-player');
+    player.src = `/course-audio/${turn.id}`; player.playbackRate = Number($('#speech-play-rate')?.value || 1); player.preservesPitch = true;
+    player.onended = () => { playNext().catch(error => { $('#speech-error').textContent = error.message; }); };
+    player.onerror = () => { speechPlaylist = []; $('#speech-error').textContent = '本地音频无法播放，请检查缓存文件；不会重新生成或计费。'; };
+    $('#speech-playing').textContent = `第 ${index + 1} 段 · ${turn.speaker || '旁白'} · AI 合成语音`;
+    await player.play();
+  };
+  await playNext();
 }
 function renderIllustrationDialog() {
   const draft = illustrationDraft;
@@ -415,6 +476,18 @@ async function download(name, content, type) {
 function markdown(n) { return `# ${n.title}\n\n${n.summary.split('\n').map(line => '> ' + line).join('\n')}\n\n标签：${n.tags.join('、')}\n\n来源课程：${n.courseTitle}\n\n${n.content}\n`; }
 async function action(name, element) {
   const id = element.dataset.id;
+  if (name === 'open-speech') return openSpeech(id, element.dataset.block);
+  if (name === 'close-speech') { if (!speechBusy) { stopSpeechPlayback(); $('#speech-dialog').close(); } return; }
+  if (name === 'stop-speech') return stopSpeechPlayback();
+  if (name === 'play-speech-turn') return playSpeech([Number(element.dataset.index)]);
+  if (name === 'play-speech-all') return playSpeech(speechDraft.plan.turns.map((_turn, index) => index));
+  if (name === 'check-speech-connection' && desktop) {
+    element.disabled = true;
+    try { speechConnectionResult = (await desktop.checkSpeechConnection()).message; }
+    catch (error) { speechConnectionResult = error.message; }
+    finally { element.disabled = false; $('#speech-connection-result').textContent = speechConnectionResult; }
+    return;
+  }
   if (name === 'allow-remote-save' && desktop) {
     const form = $('#desktop-settings-form');
     if (!form || $('#remote-permission').hidden) return;
@@ -532,7 +605,7 @@ async function action(name, element) {
     if (!desktop || !imageSettings?.enabled) throw new Error('请在设置中启用图片模型。');
     if (illustrationBusy) throw new Error('正在处理配图，请稍候。');
     const id = element.dataset.id, block = state.blockCourses?.[id]?.blocks.find(item => item.id === element.dataset.block);
-    if (!block?.content || !['reading', 'example'].includes(block.type)) throw new Error('请先生成讲解或案例。');
+    if (!block?.content || !assistedBlockTypes.includes(block.type)) throw new Error('请先生成讲解、案例或实践任务。');
     const proposal = block.content.illustration || block.content.imageProposal;
     let pending;
     illustrationBusy = true;
@@ -556,10 +629,12 @@ async function action(name, element) {
   }
   if (name === 'request-revision') {
     const block = state.blockCourses?.[id]?.blocks.find(item => item.id === element.dataset.block);
-    if (!block?.content || !['reading', 'example'].includes(block.type)) throw new Error('请先生成讲解或案例。');
+    if (!block?.content || !assistedBlockTypes.includes(block.type)) throw new Error('请先生成讲解、案例或实践任务。');
     if (status.mode !== 'ai') throw new Error('请先在设置中连接 AI 模型。');
-    const title = block.type === 'reading' ? '按你的需求重新讲解' : '按你的需求更换案例';
-    $('#revise-block-dialog').innerHTML = `<div class="modal-heading"><h2 id="revise-block-title">${title}</h2><button class="icon-button" data-action="close-revision" aria-label="关闭">${icon('close')}</button></div><p>当前模块：${escape(block.title)}。告诉 AI 哪里没讲清楚，以及你希望怎样解释。</p><form id="revision-form" data-id="${escape(id)}" data-block="${escape(block.id)}"><div class="revision-request-heading"><label for="revision-request">你的具体要求</label><button type="button" class="text-button" data-action="markdown-revision-preset">仅优化排版</button></div><textarea id="revision-request" name="request" required maxlength="1000" placeholder="例如：术语太多，请从基础概念开始，用编号步骤和一个具体案例解释；数据比较请用普通表格。"></textarea><p class="field-hint">新内容支持 Markdown 标题、重点、列表、普通表格和程序代码。只替换当前模块，其他内容和学习进度不变。保留最近 10 个旧版本；已保存的 Wiki 不会自动改写。</p><p id="revision-error" class="inline-error" role="alert"></p><div class="revision-dialog-actions"><button type="button" class="btn secondary" data-action="close-revision">取消</button><button type="submit" class="btn primary">按要求重新生成 ${icon('spark')}</button></div></form>`;
+    const title = block.type === 'reading' ? '按你的需求重新讲解' : block.type === 'practice' ? '按你的需求调整实践任务' : '按你的需求更换案例';
+    const description = block.type === 'practice' ? '告诉 AI 希望调整的场景、材料、步骤或难度，保持本模块的学习目标。' : '告诉 AI 哪里没讲清楚，以及你希望怎样解释。';
+    const placeholder = block.type === 'practice' ? '例如：改成日常会议听力，提供可朗读的英文原文；降低难度，列出操作步骤和完成标准，不直接给出完整答案。' : '例如：术语太多，请从基础概念开始，用编号步骤和一个具体案例解释；数据比较请用普通表格。';
+    $('#revise-block-dialog').innerHTML = `<div class="modal-heading"><h2 id="revise-block-title">${title}</h2><button class="icon-button" data-action="close-revision" aria-label="关闭">${icon('close')}</button></div><p>当前模块：${escape(block.title)}。${description}</p><form id="revision-form" data-id="${escape(id)}" data-block="${escape(block.id)}"><div class="revision-request-heading"><label for="revision-request">你的具体要求</label><button type="button" class="text-button" data-action="markdown-revision-preset">仅优化排版</button></div><textarea id="revision-request" name="request" required maxlength="1000" placeholder="${placeholder}"></textarea><p class="field-hint">新内容支持 Markdown 标题、重点、列表、普通表格和程序代码。只替换当前模块，其他内容和学习进度不变。保留最近 10 个旧版本；已保存的 Wiki 不会自动改写。</p><p id="revision-error" class="inline-error" role="alert"></p><div class="revision-dialog-actions"><button type="button" class="btn secondary" data-action="close-revision">取消</button><button type="submit" class="btn primary">按要求重新生成 ${icon('spark')}</button></div></form>`;
     $('#revise-block-dialog').showModal(); return;
   }
   if (name === 'markdown-revision-preset') {
@@ -673,16 +748,34 @@ document.addEventListener('change', event => {
 document.addEventListener('submit', async event => {
   event.preventDefault(); const form = event.target; const values = new FormData(form);
   if (form.id === 'illustration-form' && illustrationBusy) return;
+  if (['speech-preview-form', 'speech-generate-form'].includes(form.id) && speechBusy) return;
   if (['plan-form', 'clarification-form', 'plan-confirm-form'].includes(form.id)) return submitPlanner(form.id, values);
   const submit = form.querySelector('button[type="submit"]');
   const label = submit.innerHTML; submit.disabled = true;
   try {
-    if (form.id === 'image-settings-form' && desktop) {
+    if (form.id === 'speech-settings-form' && desktop) {
+      $('#speech-settings-error').textContent = '';
+      speechSettings = await desktop.saveSpeechSettings({ enabled: values.get('enabled') === 'on', model: values.get('model'), baseUrl: values.get('baseUrl'), voice: values.get('voice'), otherVoice: values.get('otherVoice'), language: values.get('language'), rate: Number(values.get('rate')), timeoutMs: Number(values.get('timeout')) * 1000, localOnly: values.get('localOnly') === 'on', downloadHosts: values.get('downloadHosts'), keyAction: values.get('keyAction'), apiKey: values.get('apiKey') });
+      speechConnectionResult = '语音配置已保存。根地址为同域名 /api/v1；未更换服务商或密钥。保存不会合成音频。'; render(); toast('语音配置已保存在本机，密钥已加密。');
+    } else if (form.id === 'speech-preview-form' && desktop) {
+      const assignments = { ...speechDraft.assignments };
+      let previousSpeakers = []; try { previousSpeakers = [...new Set(speechTurns(speechDraft.text).map(turn => turn.speaker))]; } catch {}
+      previousSpeakers.forEach((speaker, index) => { const voice = values.get(`voice-${index}`); if (voice !== null) Object.defineProperty(assignments, speaker, { value: voice.trim(), enumerable: true, configurable: true, writable: true }); });
+      speechDraft.text = values.get('text')?.trim() || ''; speechDraft.assignments = assignments; speechDraft.error = ''; speechDraft.plan = null;
+      speechBusy = true; $('#speech-preview-fields').disabled = true;
+      speechDraft.plan = await desktop.prepareSpeech({ text: speechDraft.text, assignments });
+      speechBusy = false; renderSpeechDialog();
+    } else if (form.id === 'speech-generate-form' && desktop) {
+      if (!speechDraft?.plan || ($('#speech-material').value ?? speechDraft.text) !== speechDraft.text) throw new Error('材料已修改，请重新预览后再确认生成。');
+      speechBusy = true; $('#speech-preview-fields').disabled = true; $('#speech-error').textContent = ''; submit.innerHTML = '正在合成 / 下载，请勿重复提交…';
+      const result = await desktop.generateSpeech({ text: speechDraft.text, assignments: speechDraft.assignments, confirmed: true, mode: speechDraft.plan.pendingCount ? 'download-only' : 'generate' });
+      speechDraft.plan = result; speechDraft.error = result.error || ''; speechBusy = false; renderSpeechDialog();
+    } else if (form.id === 'image-settings-form' && desktop) {
       $('#image-settings-error').textContent = '';
       submit.innerHTML = '<span class="spinner"></span>正在保存到本机…';
       imageSettings = await desktop.saveImageSettings({ enabled: values.get('enabled') === 'on', protocol: values.get('protocol') || 'compatible', model: values.get('model'), baseUrl: values.get('baseUrl'), localOnly: values.get('localOnly') === 'on', keyAction: values.get('keyAction'), apiKey: values.get('apiKey'), size: values.get('size'), responseFormat: values.get('protocol') === 'dashscope' ? 'auto' : values.get('responseFormat'), timeoutMs: Number(values.get('timeout')) * 1000, downloadHosts: values.get('downloadHosts') });
       const rootAdjusted = values.get('baseUrl')?.trim().replace(/\/+$/, '') !== imageSettings.baseUrl;
-      imageConnectionResult = rootAdjusted && imageSettings.protocol === 'dashscope' ? '图片配置已保存。已将根地址调整为同域名的 /api/v1，未更换服务商或密钥。保存不调用模型；可检查服务，实际生成仍需手动确认。' : '图片配置已保存。可检查服务，或在讲解与案例右上角查看配图建议。'; render(); toast('图片模型配置已保存在本机。');
+      imageConnectionResult = rootAdjusted && imageSettings.protocol === 'dashscope' ? '图片配置已保存。已将根地址调整为同域名的 /api/v1，未更换服务商或密钥。保存不调用模型；可检查服务，实际生成仍需手动确认。' : '图片配置已保存。可检查服务，或在讲解、案例与动手实践右上角查看配图建议。'; render(); toast('图片模型配置已保存在本机。');
     } else if (form.id === 'illustration-form' && desktop) {
       if (illustrationBusy) throw new Error('正在生成配图，请勿重复提交。');
       $('#illustration-error').textContent = '';
@@ -725,7 +818,7 @@ document.addEventListener('submit', async event => {
       $('#revision-error').textContent = '';
       const id = form.dataset.id, block = state.blockCourses?.[id]?.blocks.find(item => item.id === form.dataset.block);
       const request = values.get('request')?.trim();
-      if (status.mode !== 'ai' || !block?.content || !['reading', 'example'].includes(block.type) || !request || request.length > 1000) throw new Error('请连接 AI 模型，并填写具体的讲解要求。');
+      if (status.mode !== 'ai' || !block?.content || !assistedBlockTypes.includes(block.type) || !request || request.length > 1000) throw new Error('请连接 AI 模型，并填写具体的调整要求。');
       if (revisionBusy) throw new Error('正在重新生成，请稍候。');
       revisionBusy = true;
       submit.innerHTML = '<span class="spinner"></span>正在按你的要求重新生成…';
@@ -774,7 +867,9 @@ document.addEventListener('submit', async event => {
       }
       if ($('#wiki-answer')) $('#wiki-answer').innerHTML = answerHTML();
     }
-  } catch (e) { if (form.id === 'illustration-form' && $('#illustration-error')) $('#illustration-error').textContent = e.message;
+  } catch (e) { if (['speech-preview-form', 'speech-generate-form'].includes(form.id)) { speechDraft.error = e.message; speechBusy = false; renderSpeechDialog(); }
+    else if (form.id === 'speech-settings-form') { $('#speech-settings-error').textContent = e.message; speechConnectionResult = `语音配置保存失败：${e.message}`; $('#speech-connection-result').textContent = speechConnectionResult; }
+    else if (form.id === 'illustration-form' && $('#illustration-error')) $('#illustration-error').textContent = e.message;
     else if (form.id === 'image-settings-form' && $('#image-settings-error')) {
       $('#image-settings-error').textContent = e.message;
       imageConnectionResult = `图片配置保存失败：${e.message}`;
@@ -783,11 +878,21 @@ document.addEventListener('submit', async event => {
     } else if (form.id === 'revision-form' && $('#revision-error')) $('#revision-error').textContent = e.message; else if (form.id === 'desktop-settings-form' && $('#settings-error')) $('#settings-error').textContent = e.message; else if (form.id === 'plan-form' && $('#plan-error')) $('#plan-error').textContent = e.message; else if (form.id === 'lesson-ask-form' && $('#lesson-ask-error')) $('#lesson-ask-error').textContent = e.message; else toast(e.message); }
   finally { if (form.id === 'illustration-form') { illustrationBusy = false; const fields = form.querySelector('fieldset'); if (fields) fields.disabled = false; } if (form.id === 'revision-form') revisionBusy = false; if (submit.isConnected) { submit.disabled = form.id === 'plan-form' && status.mode !== 'ai'; submit.innerHTML = label; } }
 });
+document.addEventListener('input', event => {
+  if ((event.target.id === 'speech-material' || event.target.id?.startsWith('speech-role-')) && speechDraft && !speechBusy) {
+    speechDraft.plan = null; stopSpeechPlayback();
+    $('#speech-preview-body').innerHTML = ''; $('#speech-error').textContent = '材料或音色已修改，请先重新预览；尚未生成音频。';
+  }
+});
+document.addEventListener('change', event => {
+  if (event.target.id === 'speech-play-rate' && $('#speech-player')) $('#speech-player').playbackRate = Number(event.target.value);
+});
+$('#speech-dialog')?.addEventListener?.('cancel', event => { if (speechBusy) event.preventDefault(); else stopSpeechPlayback(); });
 if (desktop) {
   $('#app').innerHTML = '<div class="empty-state"><h2>正在读取本地数据…</h2></div>';
   desktop.load().then(result => {
     if (result.state) state = result.state;
-    desktopSettings = result.settings; imageSettings = result.imageSettings || null; dataDirectory = result.dataDirectory; status = result.status;
+    desktopSettings = result.settings; imageSettings = result.imageSettings || null; speechSettings = result.speechSettings || null; dataDirectory = result.dataDirectory; status = result.status;
     if (result.startPage === 'settings') page = 'settings';
     storageWarning = result.stateError || ''; render();
   }).catch(error => {

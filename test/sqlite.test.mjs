@@ -166,6 +166,33 @@ test('block revisions persist per block, guard stale writes and preserve unrelat
   } finally { store.close(); }
 });
 
+test('practice images and revision history persist, export and restore without changing grades or other blocks', async t => {
+  const directory = await temporary(t); let store = await createSqliteStore(directory);
+  try {
+    const course = store.saveOutline('p1', { intro: '任务', blocks: [
+      { type: 'reading', title: '讲解', objective: '理解' }, { type: 'practice', title: '会议听力', objective: '记录进度' }, { type: 'quiz', title: '测验', objective: '检验' }
+    ] });
+    const [reading, practice, quiz] = course.blocks;
+    store.saveBlock('p1', reading.id, { text: '原讲解' }); store.saveBlock('p1', practice.id, { text: '原任务' });
+    store.saveBlock('p1', quiz.id, { questions: demoLessons.p1.questions }); store.saveProgress('p1', legacy().progress.p1);
+    store.saveReflection('p1', '原心得'); store.saveNote(legacy().notes[0]);
+    const image = { id: 'a'.repeat(64), prompt: '会议', caption: '听力任务场景', model: 'image-test', created: 1 };
+    const withImage = store.attachIllustration('p1', practice.id, image, JSON.stringify({ text: '原任务' }));
+    assert.equal(withImage.illustration.id, image.id);
+    const revised = store.reviseBlock('p1', practice.id, { text: '降低难度的新任务' }, '原任务');
+    assert.equal(revised.illustration, undefined); assert.deepEqual(revised.revisions[0].illustration, image);
+    assert.throws(() => store.reviseBlock('p1', practice.id, { text: '过期任务' }, '原任务'), /内容已更新/);
+    const exported = store.exportState(); store.replaceState(exported);
+    store.close(); store = await createSqliteStore(directory);
+    assert.deepEqual(store.getLesson('p1').blockCourse.blocks[1].content, revised);
+    const restored = store.restoreBlock('p1', practice.id, revised.text);
+    assert.equal(restored.text, '原任务'); assert.deepEqual(restored.illustration, image);
+    const result = store.exportState(); assert.equal(result.blockCourses.p1.blocks[0].content.text, '原讲解');
+    assert.deepEqual(result.progress.p1, legacy().progress.p1); assert.equal(result.reflections.p1, '原心得'); assert.equal(result.notes[0].content, legacy().notes[0].content);
+    assert.throws(() => store.attachIllustration('p1', quiz.id, image, JSON.stringify({ questions: demoLessons.p1.questions })), /只能为已保存/);
+  } finally { store.close(); }
+});
+
 test('deleting a route creates an importable backup and removes only its related records', async t => {
   const directory = await temporary(t), store = await createSqliteStore(directory);
   try {

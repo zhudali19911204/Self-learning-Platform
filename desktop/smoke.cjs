@@ -10,6 +10,8 @@ exports.run = async (window, store, directory) => {
   await wait("document.querySelector('main h1')");
   const localSettings = { provider: 'ollama', model: '', baseUrl: '', keyAction: 'clear', apiKey: '', localOnly: true, jsonMode: 'auto', timeoutMs: 120000, maxTokens: 8192 };
   const { imageDefaults } = await import('../image-model.mjs');
+  const { speechDefaults } = await import('../public/speech.js');
+  await evaluate(`window.learnflowDesktop.saveSpeechSettings(${JSON.stringify({...speechDefaults,keyAction:'clear',apiKey:''})})`);
   await evaluate(`window.learnflowDesktop.saveImageSettings(${JSON.stringify({...imageDefaults,keyAction:'clear',apiKey:''})})`);
   await evaluate(`window.learnflowDesktop.saveSettings(${JSON.stringify(localSettings)})`);
   window.webContents.reload();
@@ -450,6 +452,54 @@ exports.run = async (window, store, directory) => {
     assert.equal((await store.loadState()).blockCourses[lessonId].blocks.find(block=>block.id===retryBlock.id).content.text,'下载重试新正文');
     console.log('IMAGE_DOWNLOAD_SMOKE',JSON.stringify({passed:true,checks:['download-failure-preserves-old-image','pending-token-no-signed-url','download-only-retry-no-paid-post','dialog-close-reopen-reuses-result','source-change-and-stale-content-blocked']}));
     console.log('BAILIAN_NATIVE_SMOKE',JSON.stringify({passed:true,checks:['protocol-ui-save-reload-encryption','native-model-list-no-generation','native-error-no-retry-no-key-leak','native-payload-url-download-no-key','native-image-local-persistence-no-fallback']}));
+    // Practice has the same three assistance actions, without changing quizzes.
+    const practiceBlock = await evaluate(`window.learnflowDesktop.appendBlock(${JSON.stringify(lessonId)}, {type:'practice',title:'会议听力任务',objective:'独立记录会议进度'})`);
+    const practiceText = "## 实践任务\n\n听两遍模拟会议材料，记录每个人的进度。\n\n```text\nSarah: Alright, let's get started.\nMark: I've finished the login page.\nLisa: I'll wrap it up tomorrow.\n```";
+    await evaluate(`window.learnflowDesktop.saveBlock(${JSON.stringify(lessonId)}, ${JSON.stringify(practiceBlock.id)}, {text:${JSON.stringify(practiceText)}})`);
+    window.webContents.reload(); await new Promise(resolve => window.webContents.once('did-finish-load', resolve));
+    await wait("document.querySelector('main h1')");
+    await evaluate(`document.querySelector('[data-page=routes]').click(); document.querySelector('[data-action=open-lesson][data-id="${lessonId}"]').click()`);
+    await wait(`document.querySelector('[data-block-id="${practiceBlock.id}"] [data-action=request-revision]')`);
+    const practiceActions = await evaluate(`Array.from(document.querySelectorAll('[data-block-id="${practiceBlock.id}"] .revision-actions button')).map(button=>({action:button.dataset.action,text:button.textContent}))`);
+    assert.deepEqual(practiceActions.map(button=>button.action),['open-speech','request-illustration','request-revision']);
+    assert.equal(practiceActions[2].text,'换个任务');
+    await evaluate(`document.querySelector('[data-action=open-speech][data-block="${practiceBlock.id}"]').click()`);
+    await wait("document.querySelector('#speech-dialog').open && !document.querySelector('#speech-preview-fields').disabled");
+    assert.match(await evaluate("document.querySelector('#speech-material').value"),/^Sarah: Alright/);
+    assert.equal(await evaluate("document.querySelector('#speech-material').value.includes('实践任务')"),false);
+    await evaluate("document.querySelector('[data-action=close-speech]').click()");
+    const practicePostsBefore = nativeRequests.length;
+    await evaluate(`document.querySelector('[data-action=request-illustration][data-block="${practiceBlock.id}"]').click()`);
+    await wait("document.querySelector('#illustration-prompt')?.value.includes('日常消费') && !document.querySelector('#illustration-form fieldset').disabled");
+    assert.equal(nativeRequests.length,practicePostsBefore,'practice image suggestions do not generate an image');
+    await evaluate("document.querySelector('#illustration-form').requestSubmit()");
+    await wait(`!document.querySelector('#illustration-dialog').open && document.querySelector('[data-block-id="${practiceBlock.id}"] .course-illustration img')?.complete`);
+    assert.equal(nativeRequests.length,practicePostsBefore+1);
+    const practiceImage = (await store.loadState()).blockCourses[lessonId].blocks.find(block=>block.id===practiceBlock.id).content.illustration;
+    assert.equal(practiceImage.model,'wan2.7-image-pro');
+    await evaluate(`document.querySelector('[data-action=request-revision][data-block="${practiceBlock.id}"]').click()`);
+    assert.equal(await evaluate("document.querySelector('#revise-block-title').textContent"),'按你的需求调整实践任务');
+    await evaluate("document.querySelector('#revision-request').value='降低听力任务难度，并提供明确的完成标准'; document.querySelector('#revision-form').requestSubmit()");
+    await wait("!document.querySelector('#revise-block-dialog').open");
+    const practiceRevised=(await store.loadState()).blockCourses[lessonId].blocks.find(block=>block.id===practiceBlock.id).content;
+    assert.equal(practiceRevised.illustration,undefined);
+    assert.equal(practiceRevised.revisions[0].text,practiceText);
+    assert.equal(practiceRevised.revisions[0].illustration.id,practiceImage.id);
+    const practiceRequest=JSON.parse(requests.at(-1).payload.messages[1].content);
+    assert.equal(practiceRequest.block.type,'practice');assert.equal(practiceRequest.block.objective,'独立记录会议进度');
+    // Supply the test user's explicit confirmation without opening a blocking
+    // native confirm dialog in this hidden automated test window.
+    await evaluate(`(() => { const previousConfirm=window.confirm; try { window.confirm=()=>true; document.querySelector('[data-action=restore-block][data-block="${practiceBlock.id}"]').click(); } finally { window.confirm=previousConfirm; } })()`);
+    await wait(`document.querySelector('[data-block-id="${practiceBlock.id}"] .block-text')?.textContent.includes('模拟会议材料')`);
+    assert.equal((await store.loadState()).progress[lessonId].completed,true);
+    assert.equal((await store.loadState()).blockCourses[lessonId].blocks.find(block=>block.id===practiceBlock.id).content.illustration.id,practiceImage.id);
+    await evaluate(`document.querySelector('[data-block-id="${practiceBlock.id}"]').scrollIntoView({block:'start'}); new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))`);
+    await writeFile(path.join(directory,'..','practice-actions-smoke.png'),(await window.webContents.capturePage()).toPNG());
+    window.webContents.reload();await new Promise(resolve=>window.webContents.once('did-finish-load',resolve));await wait("document.querySelector('main h1')");
+    await evaluate(`document.querySelector('[data-page=routes]').click();document.querySelector('[data-action=open-lesson][data-id="${lessonId}"]').click()`);
+    await wait(`document.querySelector('[data-block-id="${practiceBlock.id}"] .course-illustration img')?.complete`);
+    assert.equal((await store.loadState()).blockCourses[lessonId].blocks.find(block=>block.id===practiceBlock.id).content.text,practiceText);
+    console.log('PRACTICE_ACTIONS_SMOKE',JSON.stringify({passed:true,checks:['three-action-buttons','practice-transcript-preview','image-confirmation-and-IPC-save','task-feedback-and-history','restore-task-and-image','quiz-progress-preserved','sqlite-reload']}));
     // Generate an AI Wiki card and verify that source Markdown survives a renderer reload.
     await evaluate("document.querySelector('[data-tab=notes]').click(); document.querySelector('[data-action=create-note]').click()");
     await wait("document.querySelector('#note-preview-content h3')?.textContent === '核心概念'");
@@ -471,6 +521,7 @@ exports.run = async (window, store, directory) => {
   window.webContents.reload();
   await new Promise(resolve => window.webContents.once('did-finish-load', resolve));
   await wait("document.querySelector('main h1')");
+  await require('./speech-smoke.cjs').run(window, directory);
   await evaluate("document.querySelector('[data-page=settings]').click()");
   await wait("document.querySelector('#desktop-settings-form')");
   const image = await window.webContents.capturePage();

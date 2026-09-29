@@ -150,3 +150,18 @@
 .course-illustration figcaption { margin-top: 14px; line-height: 1.8; }
 .course-illustration figcaption small { display: block; margin-top: 6px; color: #8b80a6; font-size: 12px; }
 #illustration-dialog { width: min(720px, calc(100vw - 34px)); max-height: calc(100vh - 50px); overflow-y: auto; }
+.speech-settings-panel { grid-column: 1 / -1; }
+.speech-settings-panel .desktop-form { max-width: 760px; }
+.speech-settings-panel .field-hint, #speech-error { overflow-wrap: anywhere; }
+#speech-dialog { width: min(780px, calc(100vw - 34px)); max-height: calc(100vh - 50px); overflow-y: auto; }
+#speech-dialog textarea { font-family: inherit; line-height: 1.7; }
+.speech-roles { display: grid; grid-template-columns: repeat(auto-fit,minmax(180px,1fr)); gap: 12px; margin-bottom: 16px; }
+.speech-turns { list-style: none; padding: 0; }
+.speech-turns li { padding: 16px; margin: 12px 0; border: 1px solid var(--line); border-radius: 12px; background: #fcfbff; }
+.speech-turns li > div { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 10px; }
+.speech-turns small { color: var(--muted); overflow-wrap: anywhere; }
+.speech-turns p { white-space: pre-wrap; line-height: 1.8; margin: 12px 0; }
+.speech-player-tools { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin: 18px 0; }
+.speech-player-tools label { display: flex; gap: 8px; align-items: center; }
+.speech-player-tools select { width: auto; }
+#speech-player { width: 100%; margin-top: 10px; }

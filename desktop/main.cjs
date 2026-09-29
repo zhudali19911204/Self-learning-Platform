@@ -9,7 +9,7 @@ const smoke = process.argv.includes('--smoke-test');
 const development = process.argv.includes('--dev-profile');
 if (smoke) app.setPath('userData', path.resolve('.desktop-test'));
 else if (development) app.setPath('userData', path.resolve('.desktop-dev'));
-let window, server, store, imageStore, learning, base, shuttingDown = false;
+let window, server, store, imageStore, speechStore, learning, base, shuttingDown = false;
 const token = randomBytes(32).toString('hex');
 if (!app.requestSingleInstanceLock()) app.quit();
 else {
@@ -31,6 +31,10 @@ async function start() {
   const { createSqliteStore } = await import(pathToFileURL(path.join(__dirname, 'sqlite-store.mjs')));
   const { createImageStore } = await import(pathToFileURL(path.join(__dirname, 'image-store.mjs')));
   const { createImageModel } = await import(pathToFileURL(path.join(__dirname, '..', 'image-model.mjs')));
+  const { createSpeechStore } = await import(pathToFileURL(path.join(__dirname, 'speech-store.mjs')));
+  const { createSpeechService } = await import(pathToFileURL(path.join(__dirname, 'speech-service.mjs')));
+  const { createSpeechModel } = await import(pathToFileURL(path.join(__dirname, '..', 'speech-model.mjs')));
+  const { assistedBlockTypes } = await import(pathToFileURL(path.join(__dirname, '..', 'public', 'blocks.js')));
   const { validImageSuggestion, validImageProposal } = await import(pathToFileURL(path.join(__dirname, '..', 'public', 'illustrations.js')));
   const dataDirectory = path.join(app.getPath('userData'), 'data');
   await mkdir(dataDirectory, { recursive: true });
@@ -46,6 +50,8 @@ async function start() {
     if (decoded.isEmpty() || width < 1 || height < 1 || width > 4096 || height > 4096) throw new Error('图片无法解码或尺寸超过 4096，请调整图片模型尺寸。');
   });
   await imageStore.initialize();
+  speechStore = createSpeechStore(dataDirectory, secrets);
+  await speechStore.initialize();
   learning = await createSqliteStore(dataDirectory, { withAssets: state => imageStore.withAssets(state) });
   // A separate in-memory session keeps model traffic outside the renderer's
   // localhost-only webRequest policy and uses Chromium's OS trust/proxy setup.
@@ -53,6 +59,7 @@ async function start() {
   modelSession.setPermissionRequestHandler((_, __, callback) => callback(false));
   modelSession.setPermissionCheckHandler(() => false);
   const modelFetch = (url, options) => modelSession.fetch(url, { ...options, credentials: 'omit' });
+  const speechService = createSpeechService(speechStore, modelFetch);
   let llm = createLLM({ ...store.getModelConfig(), fetchImpl: modelFetch });
   if (process.argv.includes('--verify-model')) {
     try {
@@ -66,14 +73,18 @@ async function start() {
   }
   server = createApp({ getLLM: () => llm, apiToken: token, getImageSettings: () => imageStore.getSettings(), getImageAsset: async id => {
     try { return await imageStore.readAsset(id); } catch { return null; }
-  } });
+  }, getAudioAsset: async id => { try { return await speechStore.readAsset(id); } catch { return null; } } });
   await new Promise((resolve, reject) => { server.once('error', reject); server.listen(0, '127.0.0.1', resolve); });
   base = `http://127.0.0.1:${server.address().port}`;
   handle('learnflow:load', async () => {
     let state = null, stateError = '';
     try { state = learning.overview(); } catch (error) { stateError = error.message; }
-    return { settings: store.getSettings(), imageSettings: imageStore.getSettings(), state, stateError, status: llm.status(), dataDirectory, startPage: process.argv.includes('--settings') ? 'settings' : 'home' };
+    return { settings: store.getSettings(), imageSettings: imageStore.getSettings(), speechSettings: speechStore.getSettings(), state, stateError, status: llm.status(), dataDirectory, startPage: process.argv.includes('--settings') ? 'settings' : 'home' };
   });
+  handle('learnflow:save-speech-settings', value => speechStore.saveSettings(value));
+  handle('learnflow:check-speech-connection', () => createSpeechModel(speechStore.getConfig(), modelFetch).check());
+  handle('learnflow:prepare-speech', value => speechService.prepare(value));
+  handle('learnflow:generate-speech', value => speechService.generate(value));
   handle('learnflow:get-lesson', id => learning.getLesson(id));
   handle('learnflow:save-plan', value => learning.savePlan(value));
   handle('learnflow:set-active-plan', id => learning.setActivePlan(id));
@@ -101,7 +112,7 @@ async function start() {
   const pendingImages = createPendingImageDownloads();
   function illustrationBlock(lessonId, blockId) {
     const block = learning.getLesson(lessonId).blockCourse?.blocks.find(item => item.id === blockId);
-    if (!block?.content || !['reading', 'example'].includes(block.type)) throw new Error('只能为已保存的讲解或案例配图。');
+    if (!block?.content || !assistedBlockTypes.includes(block.type)) throw new Error('只能为已保存的讲解、案例或实践任务配图。');
     return block;
   }
   function pendingIllustration(lessonId, blockId, pendingId) {
@@ -246,12 +257,12 @@ async function start() {
   if (development) { window.setTitle('知行 Learnflow · 开发测试版'); console.log('DESKTOP_DEV_READY'); }
   if (smoke) {
     await require('./smoke.cjs').run(window, { ...store, loadState: async () => learning.exportState() }, dataDirectory);
-    await store.flush(); await imageStore.flush(); app.quit();
+    await store.flush(); await imageStore.flush(); await speechStore.flush(); app.quit();
   }
 }
 app.on('window-all-closed', () => app.quit());
 app.on('before-quit', event => {
   if (shuttingDown) return;
   event.preventDefault(); shuttingDown = true;
-  Promise.all([store?.flush(), imageStore?.flush()]).finally(() => { learning?.close(); server?.closeAllConnections(); server?.close(); app.quit(); });
+  Promise.all([store?.flush(), imageStore?.flush(), speechStore?.flush()]).finally(() => { learning?.close(); speechStore?.close(); server?.closeAllConnections(); server?.close(); app.quit(); });
 });

@@ -6,7 +6,7 @@ import path from 'node:path';
 import { demoPlan, demoLessons } from '../public/demo.js';
 import { validLesson } from '../server.mjs';
 import { validState } from './local-store.mjs';
-import { validOutline, validBlockSpec, validBlockContent, revisedContent, restoredContent } from '../public/blocks.js';
+import { validOutline, validBlockSpec, validBlockContent, revisedContent, restoredContent, assistedBlockTypes } from '../public/blocks.js';
 
 const exists = async file => { try { await stat(file); return true; } catch (error) { if (error.code === 'ENOENT') return false; throw error; } };
 const id = value => typeof value === 'string' && /^[a-zA-Z0-9_-]{1,160}$/.test(value) && !['__proto__', 'constructor', 'prototype'].includes(value);
@@ -255,7 +255,7 @@ export async function createSqliteStore(directory, options = {}) {
       if (!id(blockId)) throw new Error('内容块不存在。');
       return transaction(db, () => {
         const block = db.prepare('SELECT type, content_json FROM lesson_blocks WHERE lesson_id = ? AND id = ?').get(lessonId, blockId);
-        if (!block?.content_json || !['reading', 'example'].includes(block.type)) throw new Error('只能为已保存的讲解或案例配图。');
+        if (!block?.content_json || !assistedBlockTypes.includes(block.type)) throw new Error('只能为已保存的讲解、案例或实践任务配图。');
         if (block.content_json !== expectedContent) throw new Error('内容已更新，图片未覆盖当前内容；图片文件已保留在本地。');
         const next = { ...fromJSON(block.content_json), illustration };
         if (!validBlockContent(block.type, next)) throw new Error('配图信息无效。');

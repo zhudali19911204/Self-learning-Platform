@@ -31,7 +31,9 @@ test('image proposals are opt-in, bounded and cannot let text models attach arbi
   enabled=true;proposal={prompt:'x'.repeat(4001),caption:'图注'};
   assert.deepEqual(await (await app.post('/api/lesson-block',request)).json(),{text:'## 教学正文'},'a malformed optional proposal must not lose otherwise valid course text');
   proposal={prompt:'图',caption:'图注'};
-  assert.deepEqual(await (await app.post('/api/lesson-block',{...request,block:{...request.block,type:'practice'}})).json(),{text:'## 教学正文'});
+  assert.deepEqual(await (await app.post('/api/lesson-block',{...request,block:{...request.block,type:'practice'}})).json(),{text:'## 教学正文',imageProposal:proposal});
+  assert.match(instructions, /不要直接交出完整答案/);
+  assert.deepEqual(await (await app.post('/api/lesson-block',{...request,block:{...request.block,type:'summary'}})).json(),{text:'## 教学正文'});
 });
 test('cached images require the desktop asset cookie and never accept arbitrary path traversal', async t => {
   const id='a'.repeat(64);let reads=0;
@@ -42,6 +44,23 @@ test('cached images require the desktop asset cookie and never accept arbitrary 
   assert.equal(authorized.headers.get('cache-control'),'no-store');assert.equal(reads,1);
   assert.equal((await app.get('/course-images/settings.json')).status,404);
   assert.equal((await fetch(`${app.base}/course-images/${id}`,{headers:{Cookie:'learnflow-assets=asset-test-token',Origin:'https://untrusted.example'}})).status,403);
+});
+
+test('private cached audio supports bounded byte ranges, HEAD and playback without exposing files or bypassing the desktop cookie', async t => {
+  const id = 'b'.repeat(64), bytes = Buffer.from('0123456789'); let reads = 0;
+  const app = await serve(t, { apiToken: 'audio-cookie', getAudioAsset: async () => { reads++; return { bytes, mime: 'audio/wav' }; } });
+  assert.equal((await app.get(`/course-audio/${id}`)).status, 403); assert.equal(reads, 0);
+  const headers = { Cookie: 'learnflow-assets=audio-cookie' };
+  const range = await fetch(`${app.base}/course-audio/${id}`, { headers: { ...headers, Range: 'bytes=2-5' } });
+  assert.equal(range.status, 206); assert.equal(range.headers.get('content-range'), 'bytes 2-5/10'); assert.equal(await range.text(), '2345');
+  const suffix = await fetch(`${app.base}/course-audio/${id}`, { headers: { ...headers, Range: 'bytes=-3' } }); assert.equal(await suffix.text(), '789');
+  const bad = await fetch(`${app.base}/course-audio/${id}`, { headers: { ...headers, Range: 'bytes=50-' } }); assert.equal(bad.status, 416);
+  const multi = await fetch(`${app.base}/course-audio/${id}`, { headers: { ...headers, Range: 'bytes=0-1,3-4' } }); assert.equal(multi.status, 416);
+  const head = await fetch(`${app.base}/course-audio/${id}`, { method: 'HEAD', headers }); assert.equal(head.status, 200); assert.equal(head.headers.get('content-length'), '10'); assert.equal(await head.text(), '');
+  const whole = await fetch(`${app.base}/course-audio/${id}`, { headers }); assert.equal(whole.headers.get('content-type'), 'audio/wav'); assert.equal(whole.headers.get('cache-control'), 'no-store');
+  assert.equal((await app.get('/course-audio/speech-settings.json')).status, 404);
+  assert.equal((await fetch(`${app.base}/course-audio/${id}`, { headers: { ...headers, Origin: 'https://untrusted.example' } })).status, 403);
+  assert.equal((await app.get('/speech.js')).status, 200);
 });
 
 test('AI clarification is topic-specific, bounded, repaired once, and uses application-owned identifiers', async t => {
@@ -173,6 +192,14 @@ test('regeneration uses user clarity requirements and original text, but cannot 
   assert.equal((await app.post('/api/lesson-block', {...request,block:{...request.block,type:'example'}})).status, 200);
   assert.match(sent.messages[0].content, /操作步骤使用编号列表/);
   assert.match(sent.messages[0].content, /若反馈仅要求优化排版，保留原有事实/);
+  const practiceRequest = { ...request, block: { type: 'practice', title: '会议听力', objective: '独立记录进度' }, revisionRequest: '降低难度并提供可朗读的英文材料', currentExcerpt: '原听力任务' };
+  assert.equal((await app.post('/api/lesson-block', practiceRequest)).status, 200);
+  assert.equal(JSON.parse(sent.messages[1].content).block.type, 'practice');
+  assert.match(sent.messages[0].content, /保持 block.objective/);
+  assert.match(sent.messages[0].content, /完成标准和自查提示/);
+  assert.match(sent.messages[0].content, /不直接给出完整答案/);
+  assert.match(sent.messages[0].content, /不声称存在未提供的真实录音/);
+  assert.equal((await app.post('/api/lesson-block', { ...practiceRequest, block: { ...practiceRequest.block, type: 'summary' } })).status, 400);
 });
 test('demo mode refuses arbitrary AI generation instead of returning fabricated results', async t => {
   const app = await serve(t);

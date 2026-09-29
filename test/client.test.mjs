@@ -4,7 +4,7 @@ import vm from 'node:vm';
 import { readFile } from 'node:fs/promises';
 import { webcrypto } from 'node:crypto';
 import { demoPlan, demoLessons } from '../public/demo.js';
-import { lessonFromBlocks, validOutline, validBlockContent, validBlockSpec, blockGenerationContext, revisedContent, restoredContent } from '../public/blocks.js';
+import { lessonFromBlocks, validOutline, validBlockContent, validBlockSpec, blockGenerationContext, revisedContent, restoredContent, assistedBlockTypes } from '../public/blocks.js';
 import { Marked } from 'marked';
 import createDOMPurify from 'dompurify';
 import { JSDOM } from 'jsdom';
@@ -12,8 +12,58 @@ import { createMarkdownRenderer } from '../public/markdown.js';
 import { validQuestionnaire, validClarification, learningBriefFrom } from '../public/planning.js';
 import { questionnaire, clarification } from '../test-support/planning.mjs';
 import { validIllustration, validImageProposal } from '../public/illustrations.js';
+import { speechDefaults, speechVoices, listeningText, speechTurns, speechRequest, validAudioId } from '../public/speech.js';
 const DOMPurify = createDOMPurify(new JSDOM('').window);
 const source = (await readFile(new URL('../public/app.js', import.meta.url), 'utf8')).replace(/^import .* from '\.\/[^']+';$/gm, '');
+
+test('AI speech previews do not synthesize; confirmation preserves the course and cached playback never calls a model', async () => {
+  let posts = 0, plays = 0, pauses = 0;
+  const text = 'Sarah: Hello, Mark.\nMark: Good morning.';
+  const preview = { turns: [{ speaker: 'Sarah', text: 'Hello, Mark.', voice: 'longanlingxin', id: null }, { speaker: 'Mark', text: 'Good morning.', voice: 'longanlufeng', id: null }], newCount: 2, cachedCount: 0, pendingCount: 0, characters: 26 };
+  const app = harness(null, null, { load: async () => ({ status: { mode: 'demo' }, settings: {}, speechSettings: { ...speechDefaults, enabled: true } }),
+    prepareSpeech: async () => preview, generateSpeech: async value => { posts++; assert.equal(value.confirmed, true); assert.equal(value.mode, 'generate'); return { ...preview, newCount: 0, cachedCount: 2, turns: preview.turns.map(turn => ({ ...turn, id: 'a'.repeat(64) })) }; } });
+  await Promise.resolve();
+  app.run(`state.blockCourses={p1:{blocks:[{id:'b1',type:'reading',title:'听力',objective:'练习',content:{text:${JSON.stringify('中文讲解\n```text\n' + text + '\n```')}}}]}}; activeLesson='p1';page='study';render()`);
+  await app.run("action('open-speech',{dataset:{id:'p1',block:'b1'}})");
+  assert.equal(posts, 0); assert.equal(app.run('speechDraft.text'), text); assert.equal(app.node('#speech-dialog').open, true);
+  assert.match(app.node('#speech-dialog').innerHTML, /确认生成 2 段/);
+  app.node('#speech-material').value = text;
+  await app.submit('speech-generate-form', {});
+  assert.equal(posts, 1); assert.ok(app.run('state.blockCourses.p1.blocks[0].content.text').includes('中文讲解'));
+  app.node('#speech-player').play = async () => { plays++; }; app.node('#speech-player').pause = () => { pauses++; };
+  app.node('#speech-play-rate').value = '0.75';
+  await app.run("action('play-speech-all',{dataset:{}})");
+  assert.equal(plays, 1); assert.equal(app.node('#speech-player').src, '/course-audio/' + 'a'.repeat(64)); assert.equal(app.node('#speech-player').playbackRate, 0.75);
+  await app.node('#speech-player').onended(); await Promise.resolve(); assert.equal(plays, 2); assert.equal(posts, 1);
+  app.change('speech-play-rate', '1.25'); assert.equal(app.node('#speech-player').playbackRate, 1.25);
+  await app.run("action('close-speech',{dataset:{}})"); assert.ok(pauses); assert.equal(app.node('#speech-dialog').open, false);
+});
+test('speech confirmation is single-flight; edits invalidate previews and failures keep partial cached segments', async () => {
+  let posts = 0, finish;
+  const preview = { turns: [{ speaker: '', text: 'Hello.', voice: 'longanlingxin', id: null }], newCount: 1, cachedCount: 0, pendingCount: 0, characters: 6 };
+  const app = harness(null, null, { load: async () => ({ status: { mode: 'demo' }, settings: {}, speechSettings: { ...speechDefaults, enabled: true } }),
+    prepareSpeech: async () => preview, generateSpeech: async () => { posts++; await new Promise(resolve => { finish = resolve; }); return { ...preview, pendingCount: 1, newCount: 0, error: '<script>下载失败</script>', turns: preview.turns.map(turn => ({ ...turn, pending: true, host: 'cdn.example' })) }; } });
+  await Promise.resolve();
+  await app.run("speechDraft={text:'Hello.',assignments:{},plan:null};renderSpeechDialog();document.querySelector('#speech-dialog').showModal()");
+  await app.submit('speech-preview-form', { text: 'Hello.' }); app.node('#speech-material').value = 'Hello.';
+  const first = app.submit('speech-generate-form', {}); await app.submit('speech-generate-form', {});
+  await app.run("action('close-speech',{dataset:{}})"); assert.equal(app.node('#speech-dialog').open, true); assert.equal(posts, 1);
+  finish(); await first;
+  assert.match(app.node('#speech-dialog').innerHTML, /仅重试下载（不合成新片段）/); assert.ok(!app.node('#speech-dialog').innerHTML.includes('<script>'));
+  app.input('speech-material', 'Changed.'); assert.equal(app.run('speechDraft.plan'), null);
+  await app.submit('speech-generate-form', {}); assert.equal(posts, 1); assert.match(app.node('#speech-dialog').innerHTML, /重新预览/);
+});
+test('speech settings submit a separate key and keep save failures visible without replacing the prior configuration', async () => {
+  const saves = [], old = { ...speechDefaults, enabled: false };
+  const app = harness(null, null, { load: async () => ({ settings: {}, status: { mode: 'demo' }, speechSettings: old }), saveSpeechSettings: async value => { saves.push(value); if (saves.length === 1) throw new Error('仅本机冲突'); const { apiKey, keyAction, ...safe } = value; return { ...safe, hasApiKey: true, baseUrl: speechDefaults.baseUrl }; } });
+  await Promise.resolve();
+  const values = { enabled: 'on', model: speechDefaults.model, baseUrl: 'https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1', voice: 'longanlingxin', otherVoice: 'longanlufeng', language: 'en', rate: '1', timeout: '180', downloadHosts: '', keyAction: 'replace', apiKey: 'speech-secret' };
+  await app.submit('speech-settings-form', { ...values, localOnly: 'on' });
+  assert.match(app.node('#speech-settings-error').textContent, /仅本机冲突/); assert.equal(app.run('speechSettings.enabled'), false);
+  await app.submit('speech-settings-form', values);
+  assert.equal(saves[1].apiKey, 'speech-secret'); assert.equal(saves[1].model, 'qwen-audio-3.0-tts-plus');
+  assert.ok(!app.run('speechSettingsPanel()').includes('speech-secret')); assert.match(app.run('speechConnectionResult'), /同域名/);
+});
 
 test('desktop image suggestions never generate without confirmation; failed generation keeps text, prompt and current image', async () => {
   let generationCalls = 0;
@@ -171,8 +221,8 @@ function harness(saved, fetchImpl, desktopBridge) {
     return nodes.get(selector);
   };
   const context = vm.createContext({
-    demoPlan, demoLessons, lessonFromBlocks, validOutline, validBlockContent, validBlockSpec, blockGenerationContext, revisedContent, restoredContent, Marked, DOMPurify, createMarkdownRenderer, validQuestionnaire, validClarification, learningBriefFrom, validIllustration, validImageProposal, structuredClone, crypto: webcrypto, AbortSignal,
-    document: { querySelector: node, addEventListener(name, listener) { listeners.set(name, listener); } },
+    demoPlan, demoLessons, lessonFromBlocks, validOutline, validBlockContent, validBlockSpec, blockGenerationContext, revisedContent, restoredContent, assistedBlockTypes, Marked, DOMPurify, createMarkdownRenderer, validQuestionnaire, validClarification, learningBriefFrom, validIllustration, validImageProposal, speechDefaults, speechVoices, listeningText, speechTurns, speechRequest, validAudioId, structuredClone, crypto: webcrypto, AbortSignal,
+    document: { querySelector: node, addEventListener(name, listener) { const group = listeners.get(name) || []; group.push(listener); listeners.set(name, group); } },
     localStorage: { get length() { return storage.size; }, key: index => [...storage.keys()][index] ?? null, getItem: key => storage.get(key) ?? null, setItem: (key, value) => storage.set(key, value), removeItem: key => storage.delete(key) },
     window: { learnflowDesktop: desktopBridge, scrollY: 0, scrollTo({ top }) { this.scrollY = top; }, confirm: () => true }, setTimeout: () => 1, clearTimeout() {},
     fetch: fetchImpl || (async () => ({ ok: true, json: async () => ({ mode: 'demo', model: null }) })),
@@ -182,13 +232,13 @@ function harness(saved, fetchImpl, desktopBridge) {
   const run = code => vm.runInContext(code, context);
   async function submit(id, values, lessonId, blockId) {
     const button = { innerHTML: 'Submit', disabled: false, isConnected: false };
-    await listeners.get('submit')({ preventDefault() {}, target: { id, values, dataset: { id: lessonId, block: blockId }, querySelector: () => button } });
+    for (const listener of listeners.get('submit')) await listener({ preventDefault() {}, target: { id, values, dataset: { id: lessonId, block: blockId }, querySelector: () => button } });
   }
   const input = (id, value, dataset = {}) => {
     node('#' + id).value = value;
-    listeners.get('input')({ target: { id, value, dataset } });
+    for (const listener of listeners.get('input')) listener({ target: { id, value, dataset } });
   };
-  const change = (id,value) => listeners.get('change')({target:{id,value}});
+  const change = (id,value) => { for (const listener of listeners.get('change')) listener({target:{id,value}}); };
   return { run, submit, input, change, node, storage };
 }
 test('learning loop: incorrect answers, retry, completion, Wiki creation, edit and persistence', async () => {
@@ -422,6 +472,50 @@ test('teaching units pair adjacent examples and regenerate only the requested bl
   assert.equal(app.run('revisionBusy'), false);
 });
 
+test('practice exposes speech, image suggestions and task revision with failure-safe history and restoration', async () => {
+  let app, generationCalls = 0, speechCalls = 0, failed = true;
+  const payloads = [], text = 'Sarah: Hello, Mark.\nMark: Good morning.';
+  const original = '## 听力任务\n\n```text\n' + text + '\n```\n\n1. 听两遍并记录进度。';
+  const image = { id: 'c'.repeat(64), prompt: '会议场景', caption: '示意记录进度', model: 'image-test', created: 1 };
+  const bridge = {
+    load: async () => ({ settings: {}, status: { mode: 'ai' }, imageSettings: { enabled: true }, speechSettings: { ...speechDefaults, enabled: true } }),
+    request: async (_path, value) => { payloads.push(value); if (failed) throw new Error('任务生成失败'); return { text: '## 新任务\n\n1. 记录一个进度。' }; },
+    prepareSpeech: async value => { speechCalls++; assert.equal(value.text, text); return { turns: [], newCount: 0, cachedCount: 0, pendingCount: 0, characters: 0 }; },
+    suggestIllustration: async (_id, blockId) => { assert.equal(blockId, 'practice-1'); return { needed: true, reason: '会议情景有助理解任务', prompt: image.prompt, caption: image.caption }; },
+    generateIllustration: async value => { generationCalls++; return { ...app.run('state.blockCourses.p1.blocks[1].content'), illustration: image }; },
+    reviseBlock: async (_id, _blockId, content, expected) => { const previous = app.run('state.blockCourses.p1.blocks[1].content'); assert.equal(expected, previous.text); return revisedContent('practice', previous, content); },
+    restoreBlock: async () => restoredContent('practice', app.run('state.blockCourses.p1.blocks[1].content'))
+  };
+  app = harness(null, null, bridge);
+  await Promise.resolve();
+  app.run(`state.blockCourses={p1:{intro:'课程',blocks:[{id:'reading-1',type:'reading',title:'讲解',objective:'理解',content:{text:'原讲解'}},{id:'practice-1',type:'practice',title:'会议听力',objective:'记录进度',content:{text:${JSON.stringify(original)}}},{id:'quiz-1',type:'quiz',title:'测验',objective:'检验',content:null}]}};state.progress.p1={completed:true};state.notes=[{id:'n1',lessonId:'p1',title:'卡片',content:'原Wiki',tags:[]}];state.reflections.p1='原心得';page='study';activeLesson='p1';render()`);
+  const html = app.run("blockPart(state.blockCourses.p1.blocks[1],1,'p1')");
+  for (const action of ['open-speech', 'request-illustration', 'request-revision']) assert.match(html, new RegExp(`data-action="${action}"[^>]*data-block="practice-1"`));
+  assert.match(html, /换个任务/);
+  for (const type of ['summary', 'quiz']) assert.doesNotMatch(app.run(`blockPart({id:'x',type:'${type}',title:'模块',objective:'目标',content:${type === 'quiz' ? '{questions:[]}' : "{text:'正文'}"}},2,'p1')`), /data-action="(?:open-speech|request-illustration|request-revision)"/);
+  assert.doesNotMatch(app.run("blockPart({id:'x',type:'practice',title:'未生成任务',objective:'目标',content:null},2,'p1')"), /换个任务|AI 朗读|AI 配图建议/);
+  await app.run("action('open-speech',{dataset:{id:'p1',block:'practice-1'}})");
+  assert.equal(speechCalls, 1); assert.equal(app.run('speechDraft.text'), text); assert.equal(generationCalls, 0);
+  await app.run("action('close-speech',{dataset:{}})");
+  await app.run("action('request-illustration',{dataset:{id:'p1',block:'practice-1'}})");
+  assert.equal(generationCalls, 0); assert.equal(app.node('#illustration-dialog').open, true);
+  await app.submit('illustration-form', { prompt: image.prompt, caption: image.caption });
+  assert.equal(generationCalls, 1); assert.equal(app.run('state.blockCourses.p1.blocks[1].content.illustration.id'), image.id);
+  await app.run("action('request-revision',{dataset:{id:'p1',block:'practice-1'}})");
+  assert.match(app.node('#revise-block-dialog').innerHTML, /调整实践任务/); assert.match(app.node('#revise-block-dialog').innerHTML, /场景、材料、步骤或难度/);
+  await app.submit('revision-form', { request: '降低难度，保留任务目标' }, 'p1', 'practice-1');
+  assert.match(app.node('#revision-error').textContent, /任务生成失败/); assert.equal(app.run('state.blockCourses.p1.blocks[1].content.text'), original);
+  failed = false;
+  await app.submit('revision-form', { request: '降低难度，保留任务目标' }, 'p1', 'practice-1');
+  assert.equal(payloads.at(-1).block.type, 'practice'); assert.equal(payloads.at(-1).block.objective, '记录进度'); assert.equal(payloads.at(-1).currentExcerpt, original);
+  assert.equal(app.run('state.blockCourses.p1.blocks[1].content.illustration'), undefined);
+  assert.equal(app.run('state.blockCourses.p1.blocks[1].content.revisions[0].illustration.id'), image.id);
+  await app.run("action('restore-block',{dataset:{id:'p1',block:'practice-1'}})");
+  assert.equal(app.run('state.blockCourses.p1.blocks[1].content.text'), original); assert.equal(app.run('state.blockCourses.p1.blocks[1].content.illustration.id'), image.id);
+  assert.equal(app.run('state.blockCourses.p1.blocks[0].content.text'), '原讲解'); assert.equal(app.run('state.progress.p1.completed'), true);
+  assert.equal(app.run('state.reflections.p1'), '原心得'); assert.equal(app.run('state.notes[0].content'), '原Wiki');
+});
+
 test('revision history is bounded, validated and restored in order', () => {
   let content = { text: '初始正文' };
   for (let index = 1; index <= 12; index++) content = revisedContent('reading', content, { text: `第 ${index} 版` }, index);
@@ -433,7 +527,9 @@ test('revision history is bounded, validated and restored in order', () => {
   assert.equal(restoredContent('reading', content).text, '第 10 版');
   assert.equal(validBlockContent('reading', { text: '正文', revisions: [{ text: '', updated: 1 }] }), false);
   assert.equal(validBlockContent('reading', { text: '正文', revisions: Array(11).fill({text:'旧版',updated:1}) }), false);
-  assert.throws(() => revisedContent('practice', {text:'任务'}, {text:'新任务'}), /只能重新生成/);
+  const practice = revisedContent('practice', {text:'任务'}, {text:'新任务'});
+  assert.equal(restoredContent('practice', practice).text, '任务');
+  assert.throws(() => revisedContent('summary', {text:'总结'}, {text:'新总结'}), /只能重新生成/);
   assert.throws(() => restoredContent('reading', {text:'正文'}), /没有可恢复/);
 });
 test('existing routes are categorized locally; deletion removes only the selected route and can be restored', async () => {

@@ -1,6 +1,6 @@
 {
   "name": "learnflow",
-  "version": "1.0.7",
+  "version": "1.0.8",
   "main": "desktop/main.cjs",
   "private": true,
   "type": "module",
@@ -34,6 +34,7 @@
       "server.mjs",
       "llm.mjs",
       "image-model.mjs",
+      "speech-model.mjs",
       "package.json"
     ],
     "asar": true,
