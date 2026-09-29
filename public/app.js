@@ -52,10 +52,11 @@ let status = { mode: 'loading' };
 let connectionResult = '';
 let revisionBusy = false;
 let imageSettings = null, imageConnectionResult = '', illustrationBusy = false, illustrationDraft = null;
+let webSearchSettings = null, webSearchSaveResult = '';
 let speechSettings = null, speechConnectionResult = '', speechBusy = false, speechDraft = null, speechPlaylist = [];
 // Unsaved configuration stays in memory only, including newly typed keys.
 const modelFormDrafts = new Map();
-const modelFormIds = ['desktop-settings-form', 'image-settings-form', 'speech-settings-form'];
+const modelFormIds = ['desktop-settings-form', 'image-settings-form', 'speech-settings-form', 'web-search-settings-form'];
 let modelSettingsSaving = false;
 function rememberModelDrafts(changedId) {
   if (!desktop || page !== 'settings') return;
@@ -96,6 +97,7 @@ function modelKeyValues(values) {
 function syncModelKey(form) {
   if (!form?.elements) return;
   const mode = form.elements.namedItem('keyAction'), input = form.elements.namedItem('apiKey');
+  if (!mode || !input) return;
   if (input.value.trim()) mode.value = 'replace';
   else if (mode.value === 'replace') mode.value = 'keep';
   const clearing = mode.value === 'clear';
@@ -107,6 +109,13 @@ function syncModelKey(form) {
 }
 function dirtyModelForm(form) {
   if (!desktop || !modelFormIds.includes(form?.id)) return;
+  if (form.id === 'web-search-settings-form') {
+    $('#web-search-settings-error').textContent = '';
+    webSearchSaveResult = '设置尚未保存，请点击“保存网页搜图设置”。';
+    $('#web-search-settings-result').textContent = webSearchSaveResult;
+    rememberModelDrafts(form.id);
+    return;
+  }
   const speech = form.id === 'speech-settings-form', image = form.id === 'image-settings-form';
   const prefix = speech ? 'speech-' : image ? 'image-' : '';
   $('#' + (prefix ? prefix + 'settings-error' : 'settings-error')).textContent = '';
@@ -246,9 +255,9 @@ function blockPart(block, index, lessonId, teaching = false) {
   const labels = { reading: '知识讲解', example: '配套案例', practice: '动手实践', quiz: '随堂练习', summary: '知识总结' };
   const attrs = `data-id="${escape(lessonId)}" data-block="${escape(block.id)}"`;
   const editable = assistedBlockTypes.includes(block.type) && block.content;
-  const imageAction = (editable ? speechButton(lessonId, block.id) : '') + (editable && desktop && imageSettings?.enabled ? button(block.content.illustration ? '调整配图' : block.content.imageProposal ? '查看建议配图' : 'AI 配图建议', 'request-illustration', 'secondary', attrs, 'spark') : '');
+  const imageAction = (editable ? speechButton(lessonId, block.id) : '') + (editable && desktop ? button(block.content.illustration ? '调整配图' : block.content.imageProposal ? '查看建议配图' : 'AI 配图建议', 'request-illustration', 'secondary', attrs, 'spark') : '');
   const actions = editable ? `<div class="revision-actions">${imageAction}${button(block.type === 'reading' ? '换个讲法' : block.type === 'practice' ? '换个任务' : '换个例子', 'request-revision', 'secondary', attrs, '')}${block.content.revisions?.length ? button('恢复上一版', 'restore-block', 'secondary', attrs, 'back') : ''}</div>` : '';
-  const figure = desktop && validIllustration(block.content?.illustration) ? `<figure class="course-illustration"><img src="/course-images/${block.content.illustration.id}" alt="${escape(block.content.illustration.caption)}" loading="lazy"><figcaption>${escape(block.content.illustration.caption)}<small>AI 生成教学示意 · 请结合正文核验，勿用于精确测量或数据判断</small></figcaption></figure>` : '';
+  const figure = desktop && validIllustration(block.content?.illustration) ? `<figure class="course-illustration"><img src="/course-images/${block.content.illustration.id}" alt="${escape(block.content.illustration.caption)}" loading="lazy"><figcaption>${escape(block.content.illustration.caption)}<small>${['commons', 'web'].includes(block.content.illustration.source) ? `网络资料 · ${block.content.illustration.source === 'commons' ? 'Wikimedia Commons' : '百炼网页搜图'} · ${escape(block.content.illustration.author)} · ${escape(block.content.illustration.license)} <button type="button" class="text-button" data-action="${block.content.illustration.source === 'commons' ? 'open-commons-source' : 'open-image-source'}" data-url="${escape(block.content.illustration.sourceUrl)}">查看来源与许可</button>` : 'AI 生成教学示意 · 请结合正文核验，勿用于精确测量或数据判断'}</small></figcaption></figure>` : '';
   return `<section class="${teaching ? `teaching-part teaching-${block.type}` : 'reading-section content-block'}" data-block-id="${escape(block.id)}"><div class="teaching-part-heading"><span class="pill purple">${String(index + 1).padStart(2, '0')} · ${labels[block.type]}</span>${actions}</div><h2 class="block-title">${escape(block.title)}</h2><p class="block-objective">${escape(block.objective)}</p>${block.content ? block.type === 'quiz' ? `<p>已生成 ${block.content.questions.length} 道练习题。${button('去练习', 'quiz', 'secondary')}</p>` : `<div class="block-text markdown-content">${renderMarkdown(block.content.text)}</div>${figure}` : `<div class="block-pending"><span>此模块尚未生成，可以按需展开。</span>${button('生成这一块', 'generate-block', 'secondary', attrs, 'spark')}</div>`}</section>`;
 }
 function teachingSequence(course, lessonId) {
@@ -359,13 +368,22 @@ function desktopSettingsPage() {
   </form>
   ${button('测试已保存的模型连接', 'test-connection', 'secondary full', status.mode === 'ai' ? '' : 'disabled', 'bolt')}
   <div id="connection-result" class="notice" role="status">${escape(connectionResult || '保存后可测试连接；“已配置”不代表模型已启动。')}</div><p class="field-hint">连接测试只发送固定短提示。使用云端服务时会按服务商规则计费。</p>
-  </section>${imageSettingsPanel()}${speechSettingsPanel()}</div><section class="panel settings-data-panel"><h2>本地学习数据</h2><p>学习路线、课程、练习成绩与 Wiki 自动保存到本机。关闭应用后，下次打开会继续加载。</p>
+  </section>${imageSettingsPanel()}${speechSettingsPanel()}</div>${webSearchSettingsPanel()}<section class="panel settings-data-panel"><h2>本地学习数据</h2><p>学习路线、课程、练习成绩与 Wiki 自动保存到本机。关闭应用后，下次打开会继续加载。</p>
   <label>数据目录</label><pre class="config-example">${escape(dataDirectory)}</pre>
   <div class="data-counts"><strong>${state.plans.length}<span>条路线</span></strong><strong>${state.notes.length}<span>张卡片</span></strong></div>
   <div class="settings-data-actions">${button('打开数据目录', 'open-data', 'secondary', '', 'book')}${button('导出完整 JSON 备份', 'export-data', 'secondary', '', 'export')}${button('导入学习备份', 'import-data', 'secondary', '', 'plus')}${button('导出 Wiki Markdown', 'export-wiki', 'secondary', state.notes.length ? '' : 'disabled', 'export')}</div>
   <p class="field-hint">完整备份包含课程配图和历史版本。导入前会确认替换并创建 SQLite 快照。学习备份不包含模型配置或密钥。朗读音频为独立本地缓存；如需保留，请在应用关闭后备份整个数据目录。</p></section>`;
 }
 
+function webSearchSettingsPanel() {
+  const cfg = webSearchSettings || { enabled: false };
+  return `<section class="panel web-search-settings-panel"><h2>网页图片搜索 · 百炼文搜图</h2><p>使用当前文字模型的地址、模型和密钥，通过 Responses 的 web_search_image 工具查找互联网图片，不需要另一套搜索 Key。</p><form id="web-search-settings-form" class="desktop-form">
+  <label class="check-label"><input type="checkbox" name="enabled" ${cfg.enabled ? 'checked' : ''}>启用百炼网页搜图（允许联网并使用当前文字模型账号）</label>
+  <p class="field-hint">需使用支持文搜图的百炼模型，如 qwen3.8-max；不会自动更换模型、地址或计费账号。搜索可能消耗模型与工具额度。只有点击搜索才发送关键词或模块摘要；预览会访问图片来源网站，不附带密钥和 Cookie。返回结果不代表使用授权。</p>
+  <p class="field-hint">Token Plan 个人版官方限制其用于编程／智能体工具的交互式使用，不允许自定义应用后端；请确认你的账号与接入方式适用，或使用允许应用后端调用的百炼服务。</p>
+  <p id="web-search-settings-error" class="inline-error" role="alert">${escape(cfg.error || '')}</p><button type="submit" class="btn primary" ${cfg.error ? 'disabled' : ''}>保存网页搜图设置</button>
+  <p id="web-search-settings-result" class="field-hint" role="status">${escape(webSearchSaveResult || (cfg.enabled ? '已保存：网页搜图已启用；只有点击搜索才联网。' : '网页搜图未启用；勾选后请点击保存。'))}</p></form></section>`;
+}
 function imageProtocolHints(protocol) {
   return protocol === 'dashscope' ? {
     url: '例如 https://dashscope.aliyuncs.com/api/v1',
@@ -457,7 +475,14 @@ async function playSpeech(indices) {
 function renderIllustrationDialog() {
   const draft = illustrationDraft;
   const pending = draft.pendingDownload;
-  $('#illustration-dialog').innerHTML = `<div class="modal-heading"><h2 id="illustration-title">教学配图</h2><button class="icon-button" data-action="close-illustration" aria-label="关闭" ${illustrationBusy ? 'disabled' : ''}>${icon('close')}</button></div><p>${escape(draft.reason)}</p><form id="illustration-form"><fieldset class="planner-fields" ${illustrationBusy ? 'disabled' : ''}><label for="illustration-prompt">图片生成提示词${pending ? '（已生成结果，不再修改）' : '（可以修改）'}</label><textarea id="illustration-prompt" name="prompt" maxlength="4000" rows="6" required ${pending ? 'readonly' : ''}>${escape(draft.prompt)}</textarea><label for="illustration-caption">图注：帮助读者理解什么</label><textarea id="illustration-caption" name="caption" maxlength="500" rows="3" required ${pending ? 'readonly' : ''}>${escape(draft.caption)}</textarea><p class="field-hint">只生成一张；云端按服务商规则计费。生成错误不自动重试。图片可能包含错误，应以正文为准。重新生成成功后替换当前配图；讲解旧版本保留其原配图。</p>${pending ? `<p id="illustration-download-notice" class="notice">服务已返回图片地址，可能已计费。下载域名：${escape(pending.host)}。仅重试下载不会重新生成；链接只在本次运行中保留最多 30 分钟，关闭应用后失效。域名未知时先核对服务商信息，再到设置添加精确域名。</p>` : ''}<p id="illustration-error" class="inline-error" role="alert">${escape(draft.error || '')}</p><button type="submit" class="btn primary full">${illustrationBusy ? '<span class="spinner"></span>AI 正在分析是否需要配图…' : pending ? '仅重试下载（不重新生成）' : '确认生成图片（可能计费）'}</button>${pending ? '<button type="button" class="btn secondary full" data-action="illustration-download-settings">打开图片设置</button><button type="button" class="btn secondary full" data-action="discard-illustration-download">放弃此结果，重新生成（可能计费）</button>' : ''}</fieldset></form>`;
+  const warning = draft.mode === 'search' && draft.warning ? `<p class="notice">${escape(draft.warning)}</p>` : '';
+  const tabs = `<div class="illustration-tabs" role="tablist" aria-label="配图来源"><button type="button" role="tab" aria-selected="${draft.mode === 'generate'}" class="${draft.mode === 'generate' ? 'active' : ''}" data-action="illustration-mode" data-mode="generate" ${illustrationBusy ? 'disabled' : ''}>AI 提示词生成</button><button type="button" role="tab" aria-selected="${draft.mode === 'search'}" class="${draft.mode === 'search' ? 'active' : ''}" data-action="illustration-mode" data-mode="search" ${illustrationBusy ? 'disabled' : ''}>在线找图</button></div>`;
+  const generate = `<form id="illustration-form"><fieldset class="planner-fields" ${illustrationBusy || !imageSettings?.enabled ? 'disabled' : ''}><label for="illustration-prompt">图片生成提示词${pending ? '（已生成结果，不再修改）' : '（可以修改）'}</label><textarea id="illustration-prompt" name="prompt" maxlength="4000" rows="6" required ${pending ? 'readonly' : ''}>${escape(draft.prompt)}</textarea><label for="illustration-caption">图注：帮助读者理解什么</label><textarea id="illustration-caption" name="caption" maxlength="500" rows="3" required ${pending ? 'readonly' : ''}>${escape(draft.caption)}</textarea><p class="field-hint">只生成一张；云端按服务商规则计费。图片可能包含错误，应以正文为准。</p>${pending ? `<p id="illustration-download-notice" class="notice">服务已返回图片地址，可能已计费。下载域名：${escape(pending.host)}。仅重试下载不会重新生成；链接只在本次运行中保留最多 30 分钟。</p>` : ''}<p id="illustration-error" class="inline-error" role="alert">${escape(draft.error || '')}</p><button type="submit" class="btn primary full">${illustrationBusy ? '<span class="spinner"></span>正在处理…' : pending ? '仅重试下载（不重新生成）' : '确认生成图片（可能计费）'}</button>${pending ? '<button type="button" class="btn secondary full" data-action="illustration-download-settings">打开图片设置</button><button type="button" class="btn secondary full" data-action="discard-illustration-download">放弃此结果，重新生成（可能计费）</button>' : ''}</fieldset></form>${!imageSettings?.enabled ? '<p class="notice">图片模型未启用。可以切换到“在线找图”，或先在设置中启用图片模型。</p>' : ''}`;
+  const web = draft.searchProvider !== 'commons';
+  const provider = `<div class="commons-search-actions"><button type="button" class="btn ${web ? 'primary' : 'secondary'}" data-action="image-search-provider" data-provider="web" ${illustrationBusy ? 'disabled' : ''}>全网图片 · 百炼</button><button type="button" class="btn ${!web ? 'primary' : 'secondary'}" data-action="image-search-provider" data-provider="commons" ${illustrationBusy ? 'disabled' : ''}>Commons 图库</button></div>`;
+  const results = draft.results?.length ? `<form id="commons-select-form"><fieldset class="planner-fields" ${illustrationBusy ? 'disabled' : ''}><div class="commons-results">${draft.results.map(item => `<label class="commons-result"><input type="radio" name="pageId" value="${escape(item.candidateId || item.pageId)}" required ${String(draft.selectedPageId) === String(item.candidateId || item.pageId) ? 'checked' : ''}>${item.preview ? `<img src="${escape(item.preview)}" alt="${escape(item.title)}">` : `<div class="commons-no-preview">${escape(item.previewError || '无法预览')}</div>`}<strong>${escape(item.title)}</strong><small>${escape(item.author || item.provider)} · ${escape(item.license)}</small><button type="button" class="text-button" data-action="${web ? 'open-image-source' : 'open-commons-source'}" data-url="${escape(item.sourceUrl || item.pageUrl || item.imageUrl)}">${web && !item.sourceUrl ? '查看原图（来源页面未提供）' : '查看原始来源与许可'}</button></label>`).join('')}</div><label for="commons-caption">课程图注</label><textarea id="commons-caption" name="caption" maxlength="500" rows="2" required>${escape(draft.webCaption || draft.caption)}</textarea><label class="commons-confirm"><input type="checkbox" name="rightsConfirmed" required> 我已核对图片来源并确认具有当前用途所需的使用权限</label><button type="submit" class="btn primary full">确认下载选中图片并保存到本机</button></fieldset></form>` : draft.searched ? '<p class="notice">没有找到可用候选图，请修改搜索需求。模型未调用文搜图时不会使用其自行写出的图片链接。</p>' : '';
+  const search = `${provider}<p class="field-hint">${web ? '全网图片使用百炼 Responses 文搜图。手动搜索发送下方需求；AI 自动找图发送当前模块摘要。可能消耗套餐 Credits 或模型与工具费用；只有点击才联网，不自动重试。图片预览会访问来源网站，不携带模型密钥或 Cookie。搜索结果不等于使用授权。' : 'Commons 搜索只发送关键词；AI 自动找图先将模块摘要交给文字模型提取关键词。图库许可仍需核对。'}</p>${web && !webSearchSettings?.enabled ? '<div class="notice">请先在设置中启用“百炼网页搜图”，沿用当前文字模型账号。<button type="button" class="text-button" data-action="web-search-settings">打开搜图设置</button></div>' : ''}<form id="commons-search-form"><fieldset class="planner-fields" ${illustrationBusy || (web && !webSearchSettings?.enabled) ? 'disabled' : ''}><label for="commons-query">图片搜索需求</label><input id="commons-query" name="query" minlength="2" maxlength="${web ? '200' : '100'}" required value="${escape(draft.query)}" placeholder="例如：适合初学者理解心房和心室的结构示意图"><div class="commons-search-actions"><button type="submit" class="btn secondary">${illustrationBusy ? '<span class="spinner"></span>正在搜索…' : web ? '搜索互联网图片（可能计费）' : '按关键词搜索'}</button>${status.mode === 'ai' ? '<button type="button" class="btn secondary" data-action="auto-search-commons">AI 自动找图</button>' : ''}</div></fieldset></form><p id="commons-error" class="inline-error" role="alert">${escape(draft.error || '')}</p>${draft.recommendation ? `<section class="planner-summary"><h3>AI 配图推荐说明</h3><div class="markdown-content">${renderMarkdown(draft.recommendation)}</div></section>` : ''}${results}`;
+  $('#illustration-dialog').innerHTML = `<div class="modal-heading"><h2 id="illustration-title">教学配图</h2><button class="icon-button" data-action="close-illustration" aria-label="关闭" ${illustrationBusy ? 'disabled' : ''}>${icon('close')}</button></div>${tabs}<p>${escape(draft.reason)}</p>${warning}${draft.mode === 'search' ? search : generate}`;
 }
 
 function planner() { renderPlanner(); if (!$('#planner').open) $('#planner').showModal(); }
@@ -682,6 +707,36 @@ async function action(name, element) {
     return;
   }
   if (name === 'close-illustration') { if (!illustrationBusy) $('#illustration-dialog').close(); return; }
+  if (name === 'open-commons-source') { if (!desktop) return; await desktop.openCommonsSource(element.dataset.url); return; }
+  if (name === 'open-image-source') { if (!desktop) return; await desktop.openImageSource(element.dataset.url); return; }
+  if (name === 'web-search-settings') {
+    if (illustrationBusy) return;
+    $('#illustration-dialog').close(); page = 'settings'; render(); $('.web-search-settings-panel').scrollIntoView({ block: 'start' }); return;
+  }
+  if (name === 'image-search-provider') {
+    if (illustrationBusy || !illustrationDraft || !['commons', 'web'].includes(element.dataset.provider)) return;
+    illustrationDraft.searchProvider = element.dataset.provider; illustrationDraft.results = []; illustrationDraft.recommendation = ''; illustrationDraft.warning = ''; illustrationDraft.searched = false; illustrationDraft.error = ''; renderIllustrationDialog(); return;
+  }
+  if (name === 'illustration-mode') {
+    if (illustrationBusy || !illustrationDraft || !['generate', 'search'].includes(element.dataset.mode)) return;
+    if ($('#illustration-prompt')) illustrationDraft.prompt = $('#illustration-prompt').value;
+    if ($('#illustration-caption')) illustrationDraft.caption = $('#illustration-caption').value;
+    if ($('#commons-query')) illustrationDraft.query = $('#commons-query').value;
+    if ($('#commons-caption')) illustrationDraft.webCaption = $('#commons-caption').value;
+    illustrationDraft.mode = element.dataset.mode; illustrationDraft.error = ''; renderIllustrationDialog(); return;
+  }
+  if (name === 'auto-search-commons') {
+    if (!desktop || !illustrationDraft || illustrationBusy) return;
+    illustrationBusy = true; illustrationDraft.error = ''; illustrationDraft.warning = ''; renderIllustrationDialog();
+    try {
+      const result = illustrationDraft.searchProvider === 'commons' ? await desktop.autoSearchCommonsImages(illustrationDraft.lessonId, illustrationDraft.blockId) : await desktop.autoSearchWebImages(illustrationDraft.lessonId, illustrationDraft.blockId);
+      illustrationDraft.query = result.query; illustrationDraft.results = result.results; illustrationDraft.searched = true; illustrationDraft.selectedPageId = null;
+      illustrationDraft.recommendation = result.recommendation || '';
+      illustrationDraft.warning = result.warning || '';
+    } catch (error) { illustrationDraft.error = 'AI 找图失败：' + error.message; }
+    finally { illustrationBusy = false; renderIllustrationDialog(); }
+    return;
+  }
   if (name === 'illustration-download-settings') {
     if (illustrationBusy) return;
     $('#illustration-dialog').close(); page = 'settings'; render(); $('.image-settings-panel').scrollIntoView({ block: 'start' }); return;
@@ -694,21 +749,21 @@ async function action(name, element) {
     delete draft.pendingDownload; delete draft.error; renderIllustrationDialog(); return;
   }
   if (name === 'request-illustration') {
-    if (!desktop || !imageSettings?.enabled) throw new Error('请在设置中启用图片模型。');
+    if (!desktop) throw new Error('配图功能仅在桌面版提供。');
     if (illustrationBusy) throw new Error('正在处理配图，请稍候。');
     const id = element.dataset.id, block = state.blockCourses?.[id]?.blocks.find(item => item.id === element.dataset.block);
     if (!block?.content || !assistedBlockTypes.includes(block.type)) throw new Error('请先生成讲解、案例或实践任务。');
-    const proposal = block.content.illustration || block.content.imageProposal;
+    const proposal = (['commons', 'web'].includes(block.content.illustration?.source) ? null : block.content.illustration) || block.content.imageProposal;
     let pending;
     illustrationBusy = true;
     try { pending = await desktop.getPendingIllustration?.(id, block.id); }
     catch (error) { illustrationBusy = false; throw error; }
-    illustrationDraft = { lessonId: id, blockId: block.id, expectedText: block.content.text, expectedImageId: block.content.illustration?.id || '', prompt: proposal?.prompt || '', caption: proposal?.caption || block.title, reason: proposal ? '根据本模块的教学配图建议，可修改提示词，再确认生成。' : 'AI 正在根据已保存的讲解判断配图是否有帮助…' };
+    illustrationDraft = { lessonId: id, blockId: block.id, expectedText: block.content.text, expectedImageId: block.content.illustration?.id || '', prompt: proposal?.prompt || '', caption: proposal?.caption || block.title, webCaption: block.content.illustration?.caption || block.title, query: block.title.slice(0, 100), mode: imageSettings?.enabled ? 'generate' : 'search', searchProvider: 'web', results: [], searched: false, reason: proposal ? '可修改生成提示词，或切换到在线找图。' : '可以让 AI 生成示意图，或使用百炼文搜图获取互联网图片候选。' };
     if (pending?.pendingDownload) Object.assign(illustrationDraft, { prompt: pending.prompt, caption: pending.caption, pendingDownload: pending.pendingDownload, error: pending.error, reason: '上次图片下载或保存未完成，可以重用已有结果，不需要再次生成。' });
-    illustrationBusy = !pending?.pendingDownload && !proposal && status.mode === 'ai';
+    illustrationBusy = illustrationDraft.mode === 'generate' && !pending?.pendingDownload && !proposal && status.mode === 'ai';
     renderIllustrationDialog(); $('#illustration-dialog').showModal();
     if (!illustrationBusy) {
-      if (!pending?.pendingDownload && !proposal) { illustrationDraft.reason = '文字模型尚未连接，无法自动分析；你也可以自己填写图片提示词。'; renderIllustrationDialog(); }
+      if (illustrationDraft.mode === 'generate' && !pending?.pendingDownload && !proposal) { illustrationDraft.reason = '文字模型尚未连接，无法自动分析；你也可以自己填写图片提示词。'; renderIllustrationDialog(); }
       return;
     }
     try {
@@ -819,7 +874,7 @@ document.addEventListener('change', event => {
 });
 document.addEventListener('submit', async event => {
   event.preventDefault(); const form = event.target; const values = new FormData(form);
-  if (form.id === 'illustration-form' && illustrationBusy) return;
+  if (['illustration-form', 'commons-search-form', 'commons-select-form'].includes(form.id) && illustrationBusy) return;
   if (['speech-preview-form', 'speech-generate-form'].includes(form.id) && speechBusy) return;
   if (['plan-form', 'clarification-form', 'plan-confirm-form'].includes(form.id)) return submitPlanner(form.id, values);
   if (modelFormIds.includes(form.id)) {
@@ -831,7 +886,33 @@ document.addEventListener('submit', async event => {
   const submit = form.querySelector('button[type="submit"]');
   const label = submit.innerHTML; submit.disabled = true;
   try {
-    if (form.id === 'speech-settings-form' && desktop) {
+    if (form.id === 'web-search-settings-form' && desktop) {
+      webSearchSettings = await desktop.saveWebSearchSettings({ enabled: values.get('enabled') === 'on' });
+      webSearchSaveResult = `网页搜图已${webSearchSettings.enabled ? '启用' : '关闭'}并保存；没有发起搜索。`;
+      modelFormDrafts.delete(form.id); render(); toast('百炼网页搜图设置已保存；没有发起搜索。');
+    } else if (form.id === 'commons-search-form' && desktop) {
+      if (illustrationBusy || !illustrationDraft) throw new Error('正在处理配图，请稍候。');
+      illustrationDraft.query = String(values.get('query') || '').trim(); illustrationDraft.error = ''; illustrationDraft.warning = '';
+      illustrationBusy = true; renderIllustrationDialog();
+      if (illustrationDraft.searchProvider === 'commons') illustrationDraft.results = await desktop.searchCommonsImages(illustrationDraft.query);
+      else { const result = await desktop.searchWebImages(illustrationDraft.query); illustrationDraft.results = result.results; illustrationDraft.recommendation = result.recommendation || ''; illustrationDraft.warning = result.warning || ''; }
+      illustrationDraft.searched = true; illustrationDraft.selectedPageId = null;
+      illustrationBusy = false; renderIllustrationDialog();
+    } else if (form.id === 'commons-select-form' && desktop) {
+      if (illustrationBusy || !illustrationDraft) throw new Error('正在处理配图，请稍候。');
+      const selected = illustrationDraft.results.find(item => String(item.candidateId || item.pageId) === String(values.get('pageId')));
+      if (!selected || values.get('rightsConfirmed') !== 'on') throw new Error('请先选择图片并查看其来源与许可。');
+      const caption = String(values.get('caption') || '').trim();
+      if (!caption || caption.length > 500) throw new Error('请填写不超过 500 字的图注。');
+      illustrationDraft.selectedPageId = selected.candidateId || selected.pageId; illustrationDraft.webCaption = caption; illustrationDraft.error = '';
+      illustrationBusy = true; renderIllustrationDialog();
+      const draft = illustrationDraft, scrollTop = window.scrollY;
+      const request = { lessonId: draft.lessonId, blockId: draft.blockId, expectedText: draft.expectedText, expectedImageId: draft.expectedImageId, pageId: selected.pageId, expectedLicense: selected.license, candidateId: selected.candidateId, rightsConfirmed: true, caption };
+      const content = draft.searchProvider === 'commons' ? await desktop.useCommonsImage(request) : await desktop.useWebImage(request);
+      const block = state.blockCourses?.[draft.lessonId]?.blocks.find(item => item.id === draft.blockId);
+      if (block) block.content = content;
+      illustrationBusy = false; $('#illustration-dialog').close(); render(); window.scrollTo({ top: scrollTop, behavior: 'instant' }); toast('网络资料图片已下载并保存到本机。');
+    } else if (form.id === 'speech-settings-form' && desktop) {
       $('#speech-settings-error').textContent = '';
       speechSettings = await desktop.saveSpeechSettings({ enabled: values.get('enabled') === 'on', model: values.get('model'), baseUrl: values.get('baseUrl'), voice: values.get('voice'), otherVoice: values.get('otherVoice'), language: values.get('language'), rate: Number(values.get('rate')), timeoutMs: Number(values.get('timeout')) * 1000, localOnly: values.get('localOnly') === 'on', downloadHosts: values.get('downloadHosts'), ...modelKeyValues(values) });
       modelFormDrafts.delete(form.id);
@@ -948,7 +1029,9 @@ document.addEventListener('submit', async event => {
       }
       if ($('#wiki-answer')) $('#wiki-answer').innerHTML = answerHTML();
     }
-  } catch (e) { if (['speech-preview-form', 'speech-generate-form'].includes(form.id)) { speechDraft.error = e.message; speechBusy = false; renderSpeechDialog(); }
+  } catch (e) { if (['commons-search-form', 'commons-select-form'].includes(form.id) && illustrationDraft) { illustrationDraft.error = e.message; illustrationBusy = false; renderIllustrationDialog(); }
+    else if (form.id === 'web-search-settings-form') $('#web-search-settings-error').textContent = e.message;
+    else if (['speech-preview-form', 'speech-generate-form'].includes(form.id)) { speechDraft.error = e.message; speechBusy = false; renderSpeechDialog(); }
     else if (form.id === 'speech-settings-form') { $('#speech-settings-error').textContent = e.message; speechConnectionResult = `语音配置保存失败：${e.message}`; $('#speech-connection-result').textContent = speechConnectionResult; }
     else if (form.id === 'illustration-form' && $('#illustration-error')) $('#illustration-error').textContent = e.message;
     else if (form.id === 'image-settings-form' && $('#image-settings-error')) {
@@ -973,7 +1056,7 @@ if (desktop) {
   $('#app').innerHTML = '<div class="empty-state"><h2>正在读取本地数据…</h2></div>';
   desktop.load().then(result => {
     if (result.state) state = result.state;
-    desktopSettings = result.settings; imageSettings = result.imageSettings || null; speechSettings = result.speechSettings || null; dataDirectory = result.dataDirectory; status = result.status;
+    desktopSettings = result.settings; imageSettings = result.imageSettings || null; speechSettings = result.speechSettings || null; webSearchSettings = result.webSearchSettings || null; dataDirectory = result.dataDirectory; status = result.status;
     if (result.startPage === 'settings') page = 'settings';
     storageWarning = result.stateError || ''; render();
   }).catch(error => {

@@ -9,7 +9,7 @@ const smoke = process.argv.includes('--smoke-test');
 const development = process.argv.includes('--dev-profile');
 if (smoke) app.setPath('userData', path.resolve('.desktop-test'));
 else if (development) app.setPath('userData', path.resolve('.desktop-dev'));
-let window, server, store, imageStore, speechStore, learning, base, shuttingDown = false;
+let window, server, store, imageStore, speechStore, webSearchStore, learning, base, shuttingDown = false;
 const token = randomBytes(32).toString('hex');
 if (!app.requestSingleInstanceLock()) app.quit();
 else {
@@ -31,6 +31,9 @@ async function start() {
   const { createSqliteStore } = await import(pathToFileURL(path.join(__dirname, 'sqlite-store.mjs')));
   const { createImageStore } = await import(pathToFileURL(path.join(__dirname, 'image-store.mjs')));
   const { createImageModel } = await import(pathToFileURL(path.join(__dirname, '..', 'image-model.mjs')));
+  const { createCommonsImages } = await import(pathToFileURL(path.join(__dirname, '..', 'commons-images.mjs')));
+  const { createWebImageSearch, webImageUrl } = await import(pathToFileURL(path.join(__dirname, '..', 'web-images.mjs')));
+  const { createWebSearchStore } = await import(pathToFileURL(path.join(__dirname, 'web-search-store.mjs')));
   const { createSpeechStore } = await import(pathToFileURL(path.join(__dirname, 'speech-store.mjs')));
   const { createSpeechService } = await import(pathToFileURL(path.join(__dirname, 'speech-service.mjs')));
   const { createSpeechModel } = await import(pathToFileURL(path.join(__dirname, '..', 'speech-model.mjs')));
@@ -50,6 +53,8 @@ async function start() {
     if (decoded.isEmpty() || width < 1 || height < 1 || width > 4096 || height > 4096) throw new Error('图片无法解码或尺寸超过 4096，请调整图片模型尺寸。');
   });
   await imageStore.initialize();
+  webSearchStore = createWebSearchStore(dataDirectory);
+  await webSearchStore.initialize();
   speechStore = createSpeechStore(dataDirectory, secrets);
   await speechStore.initialize();
   learning = await createSqliteStore(dataDirectory, { withAssets: state => imageStore.withAssets(state) });
@@ -79,7 +84,7 @@ async function start() {
   handle('learnflow:load', async () => {
     let state = null, stateError = '';
     try { state = learning.overview(); } catch (error) { stateError = error.message; }
-    return { settings: store.getSettings(), imageSettings: imageStore.getSettings(), speechSettings: speechStore.getSettings(), state, stateError, status: llm.status(), dataDirectory, startPage: process.argv.includes('--settings') ? 'settings' : 'home' };
+    return { settings: store.getSettings(), imageSettings: imageStore.getSettings(), speechSettings: speechStore.getSettings(), webSearchSettings: webSearchStore.getSettings(), state, stateError, status: llm.status(), dataDirectory, startPage: process.argv.includes('--settings') ? 'settings' : 'home' };
   });
   handle('learnflow:save-speech-settings', value => speechStore.saveSettings(value));
   handle('learnflow:check-speech-connection', () => createSpeechModel(speechStore.getConfig(), modelFetch).check());
@@ -108,6 +113,13 @@ async function start() {
   handle('learnflow:append-chat', (id, question, answer) => learning.appendChat(id, question, answer));
   handle('learnflow:save-note', value => learning.saveNote(value));
   const imageRequests = new Set();
+  const commonsImages = createCommonsImages(modelFetch);
+  const webImages = createWebImageSearch({ getConfig: () => ({ ...store.getModelConfig(), ...webSearchStore.getConfig() }), fetchImpl: modelFetch, preview: bytes => {
+    const decoded = nativeImage.createFromBuffer(bytes);
+    if (decoded.isEmpty()) throw new Error('图片无法解码。');
+    return decoded.resize({ width: 320 }).toDataURL();
+  } });
+  let commonsSearchBusy = false;
   const { createPendingImageDownloads } = await import('./pending-images.mjs');
   const pendingImages = createPendingImageDownloads();
   function illustrationBlock(lessonId, blockId) {
@@ -126,6 +138,73 @@ async function start() {
   }
   handle('learnflow:save-image-settings', value => imageStore.saveSettings(value));
   handle('learnflow:check-image-connection', () => createImageModel(imageStore.getConfig(), modelFetch).checkConnection());
+  handle('learnflow:save-web-search-settings', value => webSearchStore.saveSettings(value));
+  handle('learnflow:search-web-images', async query => {
+    if (commonsSearchBusy) throw new Error('正在搜索图片，请等待当前结果。');
+    commonsSearchBusy = true;
+    try { return await webImages.search(query); } finally { commonsSearchBusy = false; }
+  });
+  handle('learnflow:auto-search-web-images', async (lessonId, blockId) => {
+    if (commonsSearchBusy) throw new Error('正在搜索图片，请等待当前结果。');
+    if (!webSearchStore.getConfig().enabled) throw new Error('请先在设置中启用网页图片搜索。');
+    const block = illustrationBlock(lessonId, blockId), expectedText = block.content.text;
+    commonsSearchBusy = true;
+    try {
+      const result = await webImages.search(`课程模块：${block.title.slice(0, 160)}\n目标：${block.objective.slice(0, 400)}\n正文摘要：${expectedText.slice(0, 1000)}`);
+      if (illustrationBlock(lessonId, blockId).content.text !== expectedText) throw new Error('正文已更新，请重新搜索配图。');
+      return { ...result, query: block.title.slice(0, 100) };
+    } finally { commonsSearchBusy = false; }
+  });
+  handle('learnflow:use-web-image', async value => {
+    if (!value || value.rightsConfirmed !== true || typeof value.caption !== 'string' || !value.caption.trim() || value.caption.length > 500) throw new Error('请确认图片来源、使用权限并填写图注。');
+    const block = illustrationBlock(value.lessonId, value.blockId);
+    if (block.content.text !== value.expectedText || (block.content.illustration?.id || '') !== (value.expectedImageId || '')) throw new Error('课程或配图已更新，请重新打开配图面板。');
+    const key = `${value.lessonId}/${value.blockId}`;
+    if (imageRequests.has(key)) throw new Error('这个模块正在保存配图，请稍候。');
+    imageRequests.add(key); const expectedContent = JSON.stringify(block.content);
+    try {
+      const { bytes, metadata } = await webImages.use(value.candidateId);
+      const id = await imageStore.put(bytes);
+      return learning.attachIllustration(value.lessonId, value.blockId, { id, caption: value.caption.trim(), ...metadata, created: Date.now() }, expectedContent);
+    } finally { imageRequests.delete(key); }
+  });
+  handle('learnflow:open-image-source', async value => { await shell.openExternal(webImageUrl(value).href); });
+  handle('learnflow:search-commons-images', async query => {
+    if (commonsSearchBusy) throw new Error('正在搜索图片，请等待当前结果。');
+    commonsSearchBusy = true;
+    try { return await commonsImages.search(query); } finally { commonsSearchBusy = false; }
+  });
+  handle('learnflow:auto-search-commons-images', async (lessonId, blockId) => {
+    if (commonsSearchBusy) throw new Error('正在搜索图片，请等待当前结果。');
+    const block = illustrationBlock(lessonId, blockId), expectedText = block.content.text;
+    commonsSearchBusy = true;
+    try {
+      const value = await llm.generate('你是教学图片检索助手。根据已保存的讲解，返回适合在 Wikimedia Commons 搜索相关、可用于教学的照片或示意图的简洁关键词，优先使用便于检索的英文名词，不要输出 URL、版权判断或生成图提示词。只返回 JSON：{"query":"2–8 个简短关键词"}。', { title: block.title, objective: block.objective, excerpt: expectedText.slice(0, 1200) }, result => typeof result?.query === 'string' && result.query.trim().length >= 2 && result.query.length <= 100);
+      if (illustrationBlock(lessonId, blockId).content.text !== expectedText) throw new Error('正文已更新，请重新搜索配图。');
+      const query = value.query.trim();
+      return { query, results: await commonsImages.search(query) };
+    } finally { commonsSearchBusy = false; }
+  });
+  handle('learnflow:use-commons-image', async value => {
+    if (!value || typeof value !== 'object') throw new Error('请选择有效的图库图片。');
+    if (typeof value.caption !== 'string' || !value.caption.trim() || value.caption.length > 500) throw new Error('请填写 1–500 字的图片图注。');
+    const block = illustrationBlock(value.lessonId, value.blockId);
+    if (block.content.text !== value.expectedText || (block.content.illustration?.id || '') !== (value.expectedImageId || '')) throw new Error('课程或配图已更新，请重新打开配图面板。');
+    const key = `${value.lessonId}/${value.blockId}`;
+    if (imageRequests.has(key)) throw new Error('这个模块正在保存配图，请稍候。');
+    imageRequests.add(key);
+    const expectedContent = JSON.stringify(block.content);
+    try {
+      const { bytes, metadata } = await commonsImages.download(value.pageId, value.expectedLicense);
+      const id = await imageStore.put(bytes);
+      return learning.attachIllustration(value.lessonId, value.blockId, { id, caption: value.caption, ...metadata, created: Date.now() }, expectedContent);
+    } finally { imageRequests.delete(key); }
+  });
+  handle('learnflow:open-commons-source', async value => {
+    let url; try { url = new URL(value); } catch { throw new Error('来源页面地址无效。'); }
+    if (url.protocol !== 'https:' || url.hostname !== 'commons.wikimedia.org' || url.port || url.username || url.password || url.search || url.hash || !url.pathname.startsWith('/wiki/File:')) throw new Error('只能打开 Wikimedia Commons 文件来源页面。');
+    await shell.openExternal(url.href);
+  });
   handle('learnflow:get-pending-illustration', (lessonId, blockId) => {
     const record = pendingIllustration(lessonId, blockId); return record ? pendingImages.public(record) : null;
   });
@@ -257,12 +336,12 @@ async function start() {
   if (development) { window.setTitle('知行 Learnflow · 开发测试版'); console.log('DESKTOP_DEV_READY'); }
   if (smoke) {
     await require('./smoke.cjs').run(window, { ...store, loadState: async () => learning.exportState() }, dataDirectory);
-    await store.flush(); await imageStore.flush(); await speechStore.flush(); app.quit();
+    await store.flush(); await imageStore.flush(); await speechStore.flush(); await webSearchStore.flush(); app.quit();
   }
 }
 app.on('window-all-closed', () => app.quit());
 app.on('before-quit', event => {
   if (shuttingDown) return;
   event.preventDefault(); shuttingDown = true;
-  Promise.all([store?.flush(), imageStore?.flush(), speechStore?.flush()]).finally(() => { learning?.close(); speechStore?.close(); server?.closeAllConnections(); server?.close(); app.quit(); });
+  Promise.all([store?.flush(), imageStore?.flush(), speechStore?.flush(), webSearchStore?.flush()]).finally(() => { learning?.close(); speechStore?.close(); server?.closeAllConnections(); server?.close(); app.quit(); });
 });

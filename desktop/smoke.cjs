@@ -13,6 +13,7 @@ exports.run = async (window, store, directory) => {
   const { speechDefaults } = await import('../public/speech.js');
   await evaluate(`window.learnflowDesktop.saveSpeechSettings(${JSON.stringify({...speechDefaults,keyAction:'clear',apiKey:''})})`);
   await evaluate(`window.learnflowDesktop.saveImageSettings(${JSON.stringify({...imageDefaults,keyAction:'clear',apiKey:''})})`);
+  await evaluate('window.learnflowDesktop.saveWebSearchSettings({enabled:false})');
   await evaluate(`window.learnflowDesktop.saveSettings(${JSON.stringify(localSettings)})`);
   window.webContents.reload();
   await new Promise(resolve => window.webContents.once('did-finish-load', resolve));
@@ -24,6 +25,22 @@ exports.run = async (window, store, directory) => {
   assert.equal(await evaluate("document.querySelectorAll('.model-settings-grid > .model-settings-card').length"), 3);
   assert.equal(await evaluate("document.querySelectorAll('select[name=keyAction]').length"), 0);
   assert.equal(await evaluate("[...document.querySelectorAll('.model-advanced')].every(item => !item.open)"), true);
+  // Exercise the keyless consent form through actual click/change/submit events.
+  const beforeSearchSave = await evaluate("document.querySelector('#connection-result').textContent");
+  await evaluate("document.querySelector('#web-search-settings-form [name=enabled]').click();document.querySelector('#web-search-settings-form').requestSubmit()");
+  await wait("document.querySelector('#web-search-settings-result')?.textContent.includes('已启用并保存')");
+  assert.deepEqual(JSON.parse(await readFile(path.join(directory, 'web-search-settings.json'), 'utf8')), {version:1,enabled:true});
+  assert.equal(await evaluate("document.querySelector('#connection-result').textContent"), beforeSearchSave);
+  window.webContents.reload();
+  await new Promise(resolve => window.webContents.once('did-finish-load', resolve));
+  await wait("document.querySelector('main h1')");
+  await evaluate("document.querySelector('[data-page=settings]').click()");
+  await wait("document.querySelector('#web-search-settings-form')");
+  assert.equal(await evaluate("document.querySelector('#web-search-settings-form [name=enabled]').checked"), true);
+  await evaluate("document.querySelector('#web-search-settings-form [name=enabled]').click();document.querySelector('#web-search-settings-form').requestSubmit()");
+  await wait("document.querySelector('#web-search-settings-result')?.textContent.includes('已关闭并保存')");
+  assert.equal(JSON.parse(await readFile(path.join(directory, 'web-search-settings.json'), 'utf8')).enabled, false);
+  console.log('WEB_SEARCH_SETTINGS_SMOKE', JSON.stringify({passed:true,checks:['keyless-checkbox-events','enable-save-file','reload-consent','disable-save-file','other-model-status-unchanged']}));
   // Pending fields (including a new secret) stay only in memory when another card saves.
   await evaluate("document.querySelector('#image-model-name').value='pending-image-model';document.querySelector('#image-model-name').dispatchEvent(new Event('input',{bubbles:true}));document.querySelector('#image-model-key').value='pending-image-key-not-real';document.querySelector('#image-model-key').dispatchEvent(new Event('input',{bubbles:true}));document.querySelector('#image-settings-form .model-advanced').open=true;document.querySelector('#speech-voice').value='pending-voice';document.querySelector('#speech-voice').dispatchEvent(new Event('input',{bubbles:true}))");
   await evaluate("document.querySelector('#model-name').value = 'desktop-smoke-model'; document.querySelector('#desktop-settings-form').requestSubmit()");

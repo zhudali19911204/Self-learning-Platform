@@ -150,6 +150,25 @@
 .course-illustration figcaption { margin-top: 14px; line-height: 1.8; }
 .course-illustration figcaption small { display: block; margin-top: 6px; color: #8b80a6; font-size: 12px; }
 #illustration-dialog { width: min(720px, calc(100vw - 34px)); max-height: calc(100vh - 50px); overflow-y: auto; }
+.illustration-tabs { display: flex; gap: 8px; margin: -8px 0 20px; }
+.illustration-tabs button { flex: 1; border: 1px solid #e6e0ed; background: #fff; color: #83748e; border-radius: 8px; padding: 11px; font-size: 12px; }
+.illustration-tabs button.active { background: #f0ebfa; border-color: #bca9e9; color: #6146ac; font-weight: 650; }
+.commons-search-actions { display: flex; gap: 10px; flex-wrap: wrap; margin: 10px 0 20px; }
+.commons-search-actions .btn { flex: 1; }
+.commons-results { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin: 14px 0 22px; }
+.commons-result { min-width: 0; border: 1px solid #e5e0ec; border-radius: 10px; padding: 10px; background: #fdfcff; cursor: pointer; }
+.commons-result:has(input:checked) { border-color: #7b5bd3; box-shadow: 0 0 0 2px #7b5bd31c; }
+.commons-result input { width: auto !important; margin: 0 6px 8px 0; }
+.commons-result img { display: block; width: 100%; height: 150px; object-fit: contain; background: #f5f3f8; border-radius: 6px; }
+.commons-no-preview { display: grid; place-items: center; min-height: 150px; padding: 16px; background: #f5f3f8; border-radius: 6px; line-height: 1.8; }
+.web-search-settings-panel { margin-top: 20px; }
+.commons-result strong, .commons-result small { display: block; margin-top: 8px; overflow-wrap: anywhere; }
+.commons-result strong { font-size: 12px; }
+.commons-result small { color: #847b90; font-size: 11px; line-height: 1.6; }
+.commons-result .text-button { margin-top: 6px; }
+.commons-confirm { display: flex !important; gap: 8px; align-items: flex-start; margin-top: 15px; line-height: 1.7; }
+.commons-confirm input { width: auto !important; margin: 3px 0 0; }
+@media (max-width: 560px) { .commons-results { grid-template-columns: 1fr; } }
 .speech-settings-panel { grid-column: 1 / -1; }
 .speech-settings-panel .desktop-form { max-width: 760px; }
 .speech-settings-panel .field-hint, #speech-error { overflow-wrap: anywhere; }

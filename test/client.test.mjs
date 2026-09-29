@@ -71,6 +71,57 @@ test('configuration saves cannot race across the three model cards', async () =>
   assert.equal(calls, 2);
 });
 
+test('web search consent uses a real keyless DOM form, persists checked and unchecked values and reloads', async t => {
+  let saved = { enabled: false, error: '' }, saves = 0;
+  const bridge = { load: async () => ({ settings: {}, status: { mode: 'demo' }, webSearchSettings: saved }),
+    saveWebSearchSettings: async value => { saves++; assert.deepEqual(Object.keys(value), ['enabled']); saved = { enabled: value.enabled, error: '' }; return saved; } };
+  const app = realSettingsHarness(bridge); t.after(() => app.close());
+  await app.ready(); app.run("navigate('settings')");
+  const connection = app.document.querySelector('#connection-result').textContent;
+  let form = app.document.querySelector('#web-search-settings-form');
+  assert.equal(form.elements.namedItem('apiKey'), null);
+  form.elements.namedItem('enabled').checked = true;
+  await app.fire('input', form.elements.namedItem('enabled'));
+  await app.fire('change', form.elements.namedItem('enabled'));
+  assert.equal(app.document.querySelector('#connection-result').textContent, connection);
+  // An unrelated model save/render must not lose pending consent or read a missing key.
+  app.run('render()'); form = app.document.querySelector('#web-search-settings-form');
+  assert.equal(form.elements.namedItem('enabled').checked, true);
+  await app.fire('submit', form);
+  assert.equal(saves, 1); assert.equal(saved.enabled, true);
+  assert.equal(app.run('modelSettingsSaving'), false);
+  assert.equal(app.document.querySelector('#web-search-settings-form [name=enabled]').checked, true);
+  assert.match(app.document.querySelector('#web-search-settings-result').textContent, /已启用并保存/);
+  const reloaded = realSettingsHarness(bridge); t.after(() => reloaded.close());
+  await reloaded.ready(); reloaded.run("navigate('settings')");
+  form = reloaded.document.querySelector('#web-search-settings-form');
+  assert.equal(form.elements.namedItem('enabled').checked, true);
+  form.elements.namedItem('enabled').checked = false;
+  await reloaded.fire('change', form.elements.namedItem('enabled'));
+  await reloaded.fire('submit', form);
+  assert.equal(saves, 2); assert.equal(saved.enabled, false);
+  assert.equal(reloaded.document.querySelector('#web-search-settings-form [name=enabled]').checked, false);
+  assert.match(reloaded.document.querySelector('#web-search-settings-result').textContent, /已关闭并保存/);
+});
+
+test('web search save failures remain on the same form and preserve the consent draft for retry', async t => {
+  let calls = 0;
+  const app = realSettingsHarness({ load: async () => ({ settings: {}, status: { mode: 'demo' }, webSearchSettings: { enabled: false } }),
+    saveWebSearchSettings: async value => { if (++calls === 1) throw new Error('测试保存失败'); return { enabled: value.enabled }; } });
+  t.after(() => app.close()); await app.ready(); app.run("navigate('settings')");
+  const form = app.document.querySelector('#web-search-settings-form');
+  form.elements.namedItem('enabled').checked = true;
+  await app.fire('change', form.elements.namedItem('enabled'));
+  await app.fire('submit', form);
+  assert.match(app.document.querySelector('#web-search-settings-error').textContent, /测试保存失败/);
+  assert.equal(form.elements.namedItem('enabled').checked, true);
+  assert.equal(form.querySelector('[type=submit]').disabled, false);
+  assert.equal(app.run('modelSettingsSaving'), false);
+  assert.equal(app.run('webSearchSettings.enabled'), false);
+  await app.fire('submit', form);
+  assert.equal(app.run('webSearchSettings.enabled'), true); assert.equal(calls, 2);
+});
+
 test('AI speech previews do not synthesize; confirmation preserves the course and cached playback never calls a model', async () => {
   let posts = 0, plays = 0, pauses = 0;
   const text = 'Sarah: Hello, Mark.\nMark: Good morning.';
@@ -148,6 +199,59 @@ test('desktop image suggestions never generate without confirmation; failed gene
   assert.equal(app.node('#illustration-dialog').open,false);
   assert.match(app.node('#app').innerHTML,/src="\/course-images\/b{64}"/);
   assert.ok(!app.node('#app').innerHTML.includes('<script>caption</script>'));
+});
+test('online image search is explicit, shows source and license, and only downloads after confirmation', async () => {
+  let searches = 0, downloads = 0;
+  const candidate = { pageId: 42, title: '<script>Heart</script>', author: 'Example Author', license: 'CC BY-SA 4.0', pageUrl: 'https://commons.wikimedia.org/wiki/File:Heart.png', preview: 'data:image/png;base64,AAAA' };
+  const illustration = { id: 'c'.repeat(64), source: 'commons', title: 'Heart', author: 'Example Author', license: candidate.license, licenseUrl: '', sourceUrl: candidate.pageUrl, caption: '心脏结构', created: 1 };
+  const bridge = { load: async () => ({ settings: {}, status: { mode: 'demo' }, imageSettings: { enabled: false } }),
+    searchCommonsImages: async query => { searches++; assert.equal(query, '心脏'); return [candidate]; },
+    useCommonsImage: async value => { downloads++; assert.equal(value.pageId, 42); assert.equal(value.expectedLicense, candidate.license); return { text: '正文', illustration }; } };
+  const app = harness(null, null, bridge); await Promise.resolve();
+  app.run("state.blockCourses={p1:{blocks:[{id:'b1',type:'reading',title:'心脏',objective:'理解',content:{text:'正文'}}]}}; activeLesson='p1'; page='study'");
+  await app.run("action('request-illustration',{dataset:{id:'p1',block:'b1'}})");
+  assert.equal(searches, 0); assert.equal(downloads, 0);
+  assert.match(app.node('#illustration-dialog').innerHTML, /在线找图/);
+  await app.run("action('image-search-provider',{dataset:{provider:'commons'}})");
+  await app.submit('commons-search-form', { query: '心脏' });
+  assert.equal(searches, 1); assert.equal(downloads, 0);
+  assert.match(app.node('#illustration-dialog').innerHTML, /CC BY-SA 4.0/);
+  assert.ok(!app.node('#illustration-dialog').innerHTML.includes('<script>Heart</script>'));
+  await app.submit('commons-select-form', { pageId: '42', caption: '心脏结构' });
+  assert.equal(downloads, 0);
+  await app.submit('commons-select-form', { pageId: '42', caption: '心脏结构', rightsConfirmed: 'on' });
+  assert.equal(downloads, 1);
+  assert.equal(app.run('state.blockCourses.p1.blocks[0].content.illustration.source'), 'commons');
+  assert.equal(app.node('#illustration-dialog').open, false);
+});
+
+test('AI image search suggests keywords and searches only after a click, without generating an image', async () => {
+  let calls = 0;
+  const app = harness(null, null, { load: async () => ({ settings: {}, status: { mode: 'ai' }, imageSettings: { enabled: false } }),
+    autoSearchCommonsImages: async () => { calls++; return { query: 'heart anatomy', results: [] }; } });
+  await Promise.resolve();
+  app.run("state.blockCourses={p1:{blocks:[{id:'b1',type:'reading',title:'心脏',objective:'理解',content:{text:'正文'}}]}}");
+  await app.run("action('request-illustration',{dataset:{id:'p1',block:'b1'}})");
+  assert.equal(calls, 0);
+  await app.run("action('image-search-provider',{dataset:{provider:'commons'}})");
+  await app.run("action('auto-search-commons',{dataset:{}})");
+  assert.equal(calls, 1);
+  assert.equal(app.run('illustrationDraft.query'), 'heart anatomy');
+});
+test('Bailian web search reuses the LLM account, displays real candidates and downloads only a confirmed token', async () => {
+  let searches = 0, downloads = 0;
+  const result = { candidateId: 'candidate-token', title: '心脏结构', provider: '百炼文搜图', sourceUrl: '', imageUrl: 'https://images.example.org/heart.png', license: '授权未确认', preview: '' };
+  const app = harness(null, null, { load: async () => ({ settings: {}, status: { mode: 'ai' }, imageSettings: { enabled: false }, webSearchSettings: { enabled: true } }),
+    autoSearchWebImages: async () => { searches++; return { query: '心脏结构', results: [result], recommendation: '适合说明**心房**。', warning: '已保留工具返回的图片候选，不会重新搜索。' }; },
+    useWebImage: async value => { downloads++; assert.equal(value.candidateId, 'candidate-token'); assert.equal(value.rightsConfirmed, true); return { text: '正文', illustration: { id: 'd'.repeat(64), source: 'web', title: '心脏结构', caption: '图注', author: '作者未确认', license: '授权未确认；用户确认使用', licenseUrl: '', sourceUrl: result.imageUrl, created: 1, retrieved: 1 } }; } });
+  await Promise.resolve(); app.run("state.blockCourses={p1:{blocks:[{id:'b1',type:'reading',title:'心脏',objective:'理解',content:{text:'正文'}}]}};activeLesson='p1';page='study'");
+  await app.run("action('request-illustration',{dataset:{id:'p1',block:'b1'}})"); assert.equal(searches, 0);
+  await app.run("action('auto-search-commons',{dataset:{}})"); assert.equal(searches, 1);
+  assert.match(app.node('#illustration-dialog').innerHTML, /来源页面未提供/);
+  assert.match(app.node('#illustration-dialog').innerHTML, /<strong>心房<\/strong>/);
+  assert.match(app.node('#illustration-dialog').innerHTML, /已保留工具返回的图片候选/);
+  await app.submit('commons-select-form', { pageId: 'candidate-token', caption: '图注', rightsConfirmed: 'on' });
+  assert.equal(downloads, 1); assert.equal(searches, 1); assert.equal(app.run('state.blockCourses.p1.blocks[0].content.illustration.source'), 'web');
 });
 test('repeated image confirmation cannot clear the busy state or start another paid request', async () => {
   let calls=0,finish;
@@ -269,6 +373,23 @@ test('image settings save failures expose the cause in both notices and preserve
 });
 
 // This harness checks application state transitions, not browser rendering.
+// Keyless-form regressions need real elements.namedItem() and actual FormData.
+function realSettingsHarness(bridge) {
+  const dom = new JSDOM('<div id="app"></div><div id="toast"></div>', { url: 'http://localhost' });
+  const document = dom.window.document, listeners = new Map();
+  document.addEventListener = (name, listener) => { const group = listeners.get(name) || []; group.push(listener); listeners.set(name, group); };
+  dom.window.learnflowDesktop = bridge; dom.window.scrollTo = () => {};
+  const context = vm.createContext({
+    demoPlan, demoLessons, lessonFromBlocks, validOutline, validBlockContent, validBlockSpec, blockGenerationContext, revisedContent, restoredContent, assistedBlockTypes, Marked, DOMPurify, createMarkdownRenderer, validQuestionnaire, validClarification, learningBriefFrom, validIllustration, validImageProposal, speechDefaults, speechVoices, listeningText, speechTurns, speechRequest, validAudioId, structuredClone, crypto: webcrypto, AbortSignal,
+    document, window: dom.window, FormData: dom.window.FormData, setTimeout: () => 1, clearTimeout() {}
+  });
+  vm.runInContext(source, context);
+  return { document, run: code => vm.runInContext(code, context), close: () => dom.window.close(),
+    ready: async () => { await Promise.resolve(); },
+    fire: async (name, target) => { for (const listener of listeners.get(name) || []) await listener({ target, preventDefault() {} }); }
+  };
+}
+
 function harness(saved, fetchImpl, desktopBridge) {
   const nodes = new Map(), listeners = new Map(), storage = new Map(saved ? [['learnflow.v1', saved]] : []);
   const node = selector => {
