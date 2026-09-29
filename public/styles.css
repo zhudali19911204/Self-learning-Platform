@@ -141,3 +141,12 @@
 .quick-ask-button:focus-visible { outline: 3px solid #ab97ef; outline-offset: 3px; }
 @media(max-width:1000px) { .study-layout > .lesson-content { grid-column: 1; } .quick-ask-dock { top: auto; right: 24px; bottom: 24px; } }
 @media(max-width:560px) { .quick-ask-dock { right: 15px; bottom: 15px; } .quick-ask-button { width: 58px; height: 58px; border-radius: 50%; gap: 2px; font-size: 10px; } .quick-ask-button .icon { width: 16px; height: 16px; } }
+/* Cached teaching illustrations never load model-provided remote URLs. */
+.image-settings-panel { grid-column: 1 / -1; }
+.image-settings-panel .desktop-form { max-width: 760px; }
+#illustration-download-notice, #illustration-error, .image-settings-panel .field-hint { overflow-wrap: anywhere; }
+.course-illustration { margin: 24px 0 0; padding: 16px; border: 1px solid #e6e0f5; border-radius: 14px; background: #faf9fe; }
+.course-illustration img { display: block; width: 100%; height: auto; max-width: 720px; max-height: 680px; object-fit: contain; margin: 0 auto; border-radius: 8px; }
+.course-illustration figcaption { margin-top: 14px; line-height: 1.8; }
+.course-illustration figcaption small { display: block; margin-top: 6px; color: #8b80a6; font-size: 12px; }
+#illustration-dialog { width: min(720px, calc(100vw - 34px)); max-height: calc(100vh - 50px); overflow-y: auto; }

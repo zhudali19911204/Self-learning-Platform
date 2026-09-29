@@ -4,6 +4,7 @@ import { Marked } from './vendor/marked.js';
 import DOMPurify from './vendor/purify.js';
 import { createMarkdownRenderer } from './markdown.js';
 import { validQuestionnaire, validClarification, learningBriefFrom } from './planning.js';
+import { validIllustration, validImageProposal } from './illustrations.js';
 
 const renderMarkdown = createMarkdownRenderer(Marked, DOMPurify);
 
@@ -49,6 +50,7 @@ let readingReturn = null;
 let status = { mode: 'loading' };
 let connectionResult = '';
 let revisionBusy = false;
+let imageSettings = null, imageConnectionResult = '', illustrationBusy = false, illustrationDraft = null;
 let plannerDraft = { step: 'goal', goal: '', level: '零基础', daily: 25, days: 14, questionnaire: null, answers: [], notes: '' };
 let plannerBusy = false, plannerError = '';
 const plan = () => state.plans.find(p => p.id === state.active) || state.plans[0];
@@ -163,8 +165,10 @@ function blockPart(block, index, lessonId, teaching = false) {
   const labels = { reading: '知识讲解', example: '配套案例', practice: '动手实践', quiz: '随堂练习', summary: '知识总结' };
   const attrs = `data-id="${escape(lessonId)}" data-block="${escape(block.id)}"`;
   const editable = ['reading', 'example'].includes(block.type) && block.content;
-  const actions = editable ? `<div class="revision-actions">${button(block.type === 'reading' ? '换个讲法' : '换个例子', 'request-revision', 'secondary', attrs, '')}${block.content.revisions?.length ? button('恢复上一版', 'restore-block', 'secondary', attrs, 'back') : ''}</div>` : '';
-  return `<section class="${teaching ? `teaching-part teaching-${block.type}` : 'reading-section content-block'}" data-block-id="${escape(block.id)}"><div class="teaching-part-heading"><span class="pill purple">${String(index + 1).padStart(2, '0')} · ${labels[block.type]}</span>${actions}</div><h2 class="block-title">${escape(block.title)}</h2><p class="block-objective">${escape(block.objective)}</p>${block.content ? block.type === 'quiz' ? `<p>已生成 ${block.content.questions.length} 道练习题。${button('去练习', 'quiz', 'secondary')}</p>` : `<div class="block-text markdown-content">${renderMarkdown(block.content.text)}</div>` : `<div class="block-pending"><span>此模块尚未生成，可以按需展开。</span>${button('生成这一块', 'generate-block', 'secondary', attrs, 'spark')}</div>`}</section>`;
+  const imageAction = editable && desktop && imageSettings?.enabled ? button(block.content.illustration ? '调整配图' : block.content.imageProposal ? '查看建议配图' : 'AI 配图建议', 'request-illustration', 'secondary', attrs, 'spark') : '';
+  const actions = editable ? `<div class="revision-actions">${imageAction}${button(block.type === 'reading' ? '换个讲法' : '换个例子', 'request-revision', 'secondary', attrs, '')}${block.content.revisions?.length ? button('恢复上一版', 'restore-block', 'secondary', attrs, 'back') : ''}</div>` : '';
+  const figure = desktop && validIllustration(block.content?.illustration) ? `<figure class="course-illustration"><img src="/course-images/${block.content.illustration.id}" alt="${escape(block.content.illustration.caption)}" loading="lazy"><figcaption>${escape(block.content.illustration.caption)}<small>AI 生成教学示意 · 请结合正文核验，勿用于精确测量或数据判断</small></figcaption></figure>` : '';
+  return `<section class="${teaching ? `teaching-part teaching-${block.type}` : 'reading-section content-block'}" data-block-id="${escape(block.id)}"><div class="teaching-part-heading"><span class="pill purple">${String(index + 1).padStart(2, '0')} · ${labels[block.type]}</span>${actions}</div><h2 class="block-title">${escape(block.title)}</h2><p class="block-objective">${escape(block.objective)}</p>${block.content ? block.type === 'quiz' ? `<p>已生成 ${block.content.questions.length} 道练习题。${button('去练习', 'quiz', 'secondary')}</p>` : `<div class="block-text markdown-content">${renderMarkdown(block.content.text)}</div>${figure}` : `<div class="block-pending"><span>此模块尚未生成，可以按需展开。</span>${button('生成这一块', 'generate-block', 'secondary', attrs, 'spark')}</div>`}</section>`;
 }
 function teachingSequence(course, lessonId) {
   const units = [];
@@ -279,7 +283,41 @@ function desktopSettingsPage() {
   ${button('导出完整 JSON 备份', 'export-data', 'secondary full', '', 'export')}
   ${button('导入学习备份', 'import-data', 'secondary full', '', 'plus')}
   ${button('导出 Wiki Markdown', 'export-wiki', 'secondary full', state.notes.length ? '' : 'disabled', 'export')}
-  <p class="field-hint">可导入网页版导出的 JSON 备份。导入前会确认替换；上一个版本保留为 .bak 文件。学习数据不包含模型配置或密钥。</p></section></div>`;
+  <p class="field-hint">完整备份包含课程配图和历史版本。导入前会确认替换并创建 SQLite 快照。学习备份不包含模型配置或密钥。</p></section>${imageSettingsPanel()}</div>`;
+}
+
+function imageProtocolHints(protocol) {
+  return protocol === 'dashscope' ? {
+    url: '例如 https://dashscope.aliyuncs.com/api/v1',
+    service: '百炼原生同步接口：支持 wan2.7-image / wan2.7-image-pro、qwen-image-3.0 / qwen-image-3.0-pro。根地址以 /api/v1 结尾；填写百炼官方 /compatible-mode/v1 地址时，保存会转换为同域名的 /api/v1，不切换服务商。使用该服务对应的密钥。旧版异步模型暂不支持。Token Plan 使用范围有限，请确认服务商是否允许当前使用方式；此提醒不阻止保存，也不代表生成权限已验证。',
+    size: '1024x1024（自动转换为 1024*1024）；万相支持 1K / 2K，pro 还支持 4K。千问 3.0 仅填宽x高。',
+    downloads: '原生接口返回 URL。仅对百炼官方接口内置允许已核实的地域结果域名和加速存储域名（含 dashscope-7c2c.oss-accelerate.aliyuncs.com，清单见 README）；官方存储会动态变化，其他域名仍须核对后填写精确域名，不放开全部 OSS 或通配域名。下载失败可修改下载域名并保存，再回到原内容块仅重试下载；不要重启，以免丢失待下载链接。仅本机模式不允许远端下载；下载不携带 API Key 或 Cookie，不跟随重定向。'
+  } : {
+    url: '例如 http://127.0.0.1:8001/v1（不含 /images/generations）',
+    service: '通用兼容接口：自动追加 /images/generations，要求服务返回 data[0].b64_json 或 data[0].url；不要填完整生成地址。',
+    size: '尺寸为宽x高，如 1024x1024；须符合服务商实际支持范围。',
+    downloads: 'URL 结果默认只能从接口同源地址下载。CDN 须填写服务商可信的精确域名；不支持通配符。下载不会携带 API Key。若支持，优先选择 Base64。'
+  };
+}
+function imageSettingsPanel() {
+  const cfg = imageSettings || { enabled: false, protocol: 'compatible', model: '', baseUrl: '', size: '1024x1024', responseFormat: 'auto', timeoutMs: 180000, localOnly: true, downloadHosts: '' };
+  const native = cfg.protocol === 'dashscope', hints = imageProtocolHints(cfg.protocol);
+  return `<section class="panel image-settings-panel"><h2>课程图片模型</h2><p>独立接入通用兼容服务或百炼原生同步接口。AI 按需要建议教学配图，确认提示词后才生成一张图片；不会自动扣费或自动重试。</p>${cfg.error ? `<div class="notice error">${escape(cfg.error)}</div>` : ''}<form id="image-settings-form" class="desktop-form">
+  <label class="check-label"><input type="checkbox" name="enabled" ${cfg.enabled ? 'checked' : ''}>启用课程配图</label>
+  <label for="image-protocol">图片接口协议</label><select id="image-protocol" name="protocol"><option value="compatible" ${!native ? 'selected' : ''}>通用兼容接口（/images/generations）</option><option value="dashscope" ${native ? 'selected' : ''}>阿里百炼原生接口（万相 2.7 / 千问图片 3.0）</option></select><p id="image-protocol-hint" class="field-hint">${escape(hints.service)}</p>
+  <label for="image-model-name">图片模型名称</label><input id="image-model-name" name="model" maxlength="200" value="${escape(cfg.model)}" placeholder="服务实际提供的文生图模型 ID，不能填聊天模型">
+  <label for="image-model-url">接口根地址</label><input id="image-model-url" name="baseUrl" maxlength="2000" value="${escape(cfg.baseUrl)}" placeholder="${escape(hints.url)}">
+  <label class="check-label"><input type="checkbox" name="localOnly" ${cfg.localOnly ? 'checked' : ''}>仅本机图片服务</label><p class="field-hint">云端须关闭此选项并使用 HTTPS。图片提示词会发送到该服务；AI 配图分析会将当前模块正文发送到已配置的文字模型。</p>
+  <label for="image-key-action">独立 API Key</label><select id="image-key-action" name="keyAction"><option value="keep">${cfg.hasApiKey ? '保留已保存的图片密钥' : '不填写密钥（本地服务）'}</option><option value="replace">设置 / 更换密钥</option><option value="clear">清除密钥</option></select><input id="image-model-key" name="apiKey" type="password" autocomplete="new-password" maxlength="4096" aria-label="新的图片模型 API Key" placeholder="不沿用聊天模型密钥；不回显旧密钥">
+  <div class="form-row"><div><label for="image-size">尺寸（宽x高）</label><input id="image-size" name="size" value="${escape(cfg.size)}" maxlength="20" required></div><div><label for="image-response-format">返回格式</label><select id="image-response-format" name="responseFormat" ${native ? 'disabled' : ''}>${[['auto','自动（不传参数）'],['b64_json','Base64'],['url','图片 URL']].map(([v,l]) => `<option value="${v}" ${(native ? v === 'auto' : cfg.responseFormat === v) ? 'selected' : ''}>${l}</option>`).join('')}</select></div><div><label for="image-timeout">超时（秒）</label><input id="image-timeout" name="timeout" type="number" min="1" max="600" value="${cfg.timeoutMs / 1000}" required></div></div><p id="image-size-hint" class="field-hint">${escape(hints.size)}</p>
+  <label for="image-download-hosts">额外允许的图片下载域名（可选）</label><input id="image-download-hosts" name="downloadHosts" maxlength="2000" value="${escape(cfg.downloadHosts)}" placeholder="例如 images.vendor.example，多域名用英文逗号分隔"><p id="image-download-hint" class="field-hint">${escape(hints.downloads)}</p>
+  <p id="image-settings-error" class="inline-error" role="alert"></p><button type="submit" class="btn primary full" ${cfg.error ? 'disabled' : ''}>保存图片模型配置 ${icon('check')}</button></form>
+  ${button('检查已保存的服务（不生成图片）', 'check-image-connection', 'secondary full', cfg.enabled && !cfg.error ? '' : 'disabled', 'bolt')}<div id="image-connection-result" class="notice" role="status">${escape(imageConnectionResult || '仅检查 /models；不是生成能力验证，也不请求付费生成。')}</div><p class="field-hint">图片保存在本机 images 目录，自动随完整学习备份导出。普通 Markdown 不加载外部图片。第一版支持内容块课程的讲解与案例；不自动修改已有课程。</p></section>`;
+}
+function renderIllustrationDialog() {
+  const draft = illustrationDraft;
+  const pending = draft.pendingDownload;
+  $('#illustration-dialog').innerHTML = `<div class="modal-heading"><h2 id="illustration-title">教学配图</h2><button class="icon-button" data-action="close-illustration" aria-label="关闭" ${illustrationBusy ? 'disabled' : ''}>${icon('close')}</button></div><p>${escape(draft.reason)}</p><form id="illustration-form"><fieldset class="planner-fields" ${illustrationBusy ? 'disabled' : ''}><label for="illustration-prompt">图片生成提示词${pending ? '（已生成结果，不再修改）' : '（可以修改）'}</label><textarea id="illustration-prompt" name="prompt" maxlength="4000" rows="6" required ${pending ? 'readonly' : ''}>${escape(draft.prompt)}</textarea><label for="illustration-caption">图注：帮助读者理解什么</label><textarea id="illustration-caption" name="caption" maxlength="500" rows="3" required ${pending ? 'readonly' : ''}>${escape(draft.caption)}</textarea><p class="field-hint">只生成一张；云端按服务商规则计费。生成错误不自动重试。图片可能包含错误，应以正文为准。重新生成成功后替换当前配图；讲解旧版本保留其原配图。</p>${pending ? `<p id="illustration-download-notice" class="notice">服务已返回图片地址，可能已计费。下载域名：${escape(pending.host)}。仅重试下载不会重新生成；链接只在本次运行中保留最多 30 分钟，关闭应用后失效。域名未知时先核对服务商信息，再到设置添加精确域名。</p>` : ''}<p id="illustration-error" class="inline-error" role="alert">${escape(draft.error || '')}</p><button type="submit" class="btn primary full">${illustrationBusy ? '<span class="spinner"></span>AI 正在分析是否需要配图…' : pending ? '仅重试下载（不重新生成）' : '确认生成图片（可能计费）'}</button>${pending ? '<button type="button" class="btn secondary full" data-action="illustration-download-settings">打开图片设置</button><button type="button" class="btn secondary full" data-action="discard-illustration-download">放弃此结果，重新生成（可能计费）</button>' : ''}</fieldset></form>`;
 }
 
 function planner() { renderPlanner(); if (!$('#planner').open) $('#planner').showModal(); }
@@ -472,6 +510,50 @@ async function action(name, element) {
     if (block.type === 'quiz' && state.progress[id]) state.progress[id] = { ...state.progress[id], completed: false, lastScore: 0, lastAnswers: [] };
     if (!desktop) save(); render(); return;
   }
+  if (name === 'check-image-connection') {
+    try { const result = await desktop.checkImageConnection(); imageConnectionResult = result.message; }
+    catch (error) { imageConnectionResult = '服务检查失败：' + error.message; }
+    if ($('#image-connection-result')) $('#image-connection-result').textContent = imageConnectionResult;
+    return;
+  }
+  if (name === 'close-illustration') { if (!illustrationBusy) $('#illustration-dialog').close(); return; }
+  if (name === 'illustration-download-settings') {
+    if (illustrationBusy) return;
+    $('#illustration-dialog').close(); page = 'settings'; render(); $('.image-settings-panel').scrollIntoView({ block: 'start' }); return;
+  }
+  if (name === 'discard-illustration-download') {
+    if (illustrationBusy || !illustrationDraft?.pendingDownload) return;
+    if (!window.confirm('放弃待下载结果后，再次生成可能重复计费。确定放弃这次结果吗？')) return;
+    const draft = illustrationDraft;
+    await desktop.discardIllustrationDownload(draft.lessonId, draft.blockId, draft.pendingDownload.id);
+    delete draft.pendingDownload; delete draft.error; renderIllustrationDialog(); return;
+  }
+  if (name === 'request-illustration') {
+    if (!desktop || !imageSettings?.enabled) throw new Error('请在设置中启用图片模型。');
+    if (illustrationBusy) throw new Error('正在处理配图，请稍候。');
+    const id = element.dataset.id, block = state.blockCourses?.[id]?.blocks.find(item => item.id === element.dataset.block);
+    if (!block?.content || !['reading', 'example'].includes(block.type)) throw new Error('请先生成讲解或案例。');
+    const proposal = block.content.illustration || block.content.imageProposal;
+    let pending;
+    illustrationBusy = true;
+    try { pending = await desktop.getPendingIllustration?.(id, block.id); }
+    catch (error) { illustrationBusy = false; throw error; }
+    illustrationDraft = { lessonId: id, blockId: block.id, expectedText: block.content.text, expectedImageId: block.content.illustration?.id || '', prompt: proposal?.prompt || '', caption: proposal?.caption || block.title, reason: proposal ? '根据本模块的教学配图建议，可修改提示词，再确认生成。' : 'AI 正在根据已保存的讲解判断配图是否有帮助…' };
+    if (pending?.pendingDownload) Object.assign(illustrationDraft, { prompt: pending.prompt, caption: pending.caption, pendingDownload: pending.pendingDownload, error: pending.error, reason: '上次图片下载或保存未完成，可以重用已有结果，不需要再次生成。' });
+    illustrationBusy = !pending?.pendingDownload && !proposal && status.mode === 'ai';
+    renderIllustrationDialog(); $('#illustration-dialog').showModal();
+    if (!illustrationBusy) {
+      if (!pending?.pendingDownload && !proposal) { illustrationDraft.reason = '文字模型尚未连接，无法自动分析；你也可以自己填写图片提示词。'; renderIllustrationDialog(); }
+      return;
+    }
+    try {
+      const suggestion = await desktop.suggestIllustration(id, block.id);
+      illustrationDraft.reason = suggestion.reason + (suggestion.needed ? '' : ' 如仍想配图，可以填写自己的提示词。');
+      if (suggestion.needed && validImageProposal(suggestion)) { illustrationDraft.prompt = suggestion.prompt; illustrationDraft.caption = suggestion.caption; }
+    } catch (error) { illustrationDraft.reason = 'AI 配图分析失败：' + error.message + ' 你仍可自己填写提示词。'; }
+    finally { illustrationBusy = false; renderIllustrationDialog(); }
+    return;
+  }
   if (name === 'request-revision') {
     const block = state.blockCourses?.[id]?.blocks.find(item => item.id === element.dataset.block);
     if (!block?.content || !['reading', 'example'].includes(block.type)) throw new Error('请先生成讲解或案例。');
@@ -515,7 +597,7 @@ document.addEventListener('click', async event => {
   const element = event.target.closest('[data-page], [data-action]'); if (!element || element.disabled) return;
   event.preventDefault();
   if (element.dataset.page) { activeNote = null; return element.dataset.page === 'study' ? openLesson(activeLesson || nextLesson().id, lessonTab) : navigate(element.dataset.page); }
-  const loading = ['generate-lesson', 'generate-block', 'restore-block', 'create-note', 'test-connection'].includes(element.dataset.action);
+  const loading = ['generate-lesson', 'generate-block', 'restore-block', 'create-note', 'test-connection', 'check-image-connection'].includes(element.dataset.action);
   const html = element.innerHTML;
   try { if (loading) { element.disabled = true; element.innerHTML = '<span class="spinner"></span>正在整理，请稍候…'; } await action(element.dataset.action, element); }
   catch (e) { toast(e.message); }
@@ -524,8 +606,16 @@ document.addEventListener('click', async event => {
 document.addEventListener('cancel', event => {
   if (event.target.id === 'revise-block-dialog' && revisionBusy) event.preventDefault();
   if (event.target.id === 'planner' && plannerBusy) event.preventDefault();
+  if (event.target.id === 'illustration-dialog' && illustrationBusy) event.preventDefault();
 }, true);
 document.addEventListener('input', event => {
+  if (desktop && event.target.closest?.('#image-settings-form')) {
+    $('#image-settings-error').textContent = '';
+    if (event.target.id === 'image-model-key' && event.target.value.trim()) $('#image-key-action').value = 'replace';
+    imageConnectionResult = '图片配置尚未保存，请保存后再检查。';
+    $('#image-connection-result').textContent = imageConnectionResult;
+    $('[data-action="check-image-connection"]').disabled = true;
+  }
   if (!plannerBusy && event.target.closest?.('#planner')) {
     if (event.target.id === 'goal') plannerDraft.goal = event.target.value;
     if (event.target.id === 'planner-notes') plannerDraft.notes = event.target.value;
@@ -563,14 +653,54 @@ document.addEventListener('change', event => {
     $('[data-action="test-connection"]').disabled = true;
   }
   if (desktop && event.target.id === 'key-action' && event.target.value !== 'replace') $('#model-key').value = '';
+  if (desktop && event.target.id === 'image-key-action' && event.target.value !== 'replace') $('#image-model-key').value = '';
+  if (desktop && event.target.id === 'image-protocol') {
+    const hints = imageProtocolHints(event.target.value);
+    $('#image-protocol-hint').textContent = hints.service;
+    $('#image-size-hint').textContent = hints.size;
+    $('#image-download-hint').textContent = hints.downloads;
+    $('#image-model-url').placeholder = hints.url;
+    $('#image-response-format').disabled = event.target.value === 'dashscope';
+    $('#image-response-format').value = 'auto';
+    $('#image-model-key').value = '';
+    $('#image-key-action').value = $('#image-settings-form [name=localOnly]').checked ? 'clear' : 'replace';
+    $('#image-settings-error').textContent = '';
+    imageConnectionResult = '接口协议已切换，请核对根地址、重新填写密钥并保存。';
+    $('#image-connection-result').textContent = imageConnectionResult;
+    $('[data-action="check-image-connection"]').disabled = true;
+  }
 });
 document.addEventListener('submit', async event => {
   event.preventDefault(); const form = event.target; const values = new FormData(form);
+  if (form.id === 'illustration-form' && illustrationBusy) return;
   if (['plan-form', 'clarification-form', 'plan-confirm-form'].includes(form.id)) return submitPlanner(form.id, values);
   const submit = form.querySelector('button[type="submit"]');
   const label = submit.innerHTML; submit.disabled = true;
   try {
-    if (form.id === 'desktop-settings-form' && desktop) {
+    if (form.id === 'image-settings-form' && desktop) {
+      $('#image-settings-error').textContent = '';
+      submit.innerHTML = '<span class="spinner"></span>正在保存到本机…';
+      imageSettings = await desktop.saveImageSettings({ enabled: values.get('enabled') === 'on', protocol: values.get('protocol') || 'compatible', model: values.get('model'), baseUrl: values.get('baseUrl'), localOnly: values.get('localOnly') === 'on', keyAction: values.get('keyAction'), apiKey: values.get('apiKey'), size: values.get('size'), responseFormat: values.get('protocol') === 'dashscope' ? 'auto' : values.get('responseFormat'), timeoutMs: Number(values.get('timeout')) * 1000, downloadHosts: values.get('downloadHosts') });
+      const rootAdjusted = values.get('baseUrl')?.trim().replace(/\/+$/, '') !== imageSettings.baseUrl;
+      imageConnectionResult = rootAdjusted && imageSettings.protocol === 'dashscope' ? '图片配置已保存。已将根地址调整为同域名的 /api/v1，未更换服务商或密钥。保存不调用模型；可检查服务，实际生成仍需手动确认。' : '图片配置已保存。可检查服务，或在讲解与案例右上角查看配图建议。'; render(); toast('图片模型配置已保存在本机。');
+    } else if (form.id === 'illustration-form' && desktop) {
+      if (illustrationBusy) throw new Error('正在生成配图，请勿重复提交。');
+      $('#illustration-error').textContent = '';
+      const prompt = values.get('prompt')?.trim(), caption = values.get('caption')?.trim();
+      if (!validImageProposal({ prompt, caption }) || !illustrationDraft) throw new Error('请填写图片提示词和图注。');
+      illustrationDraft.prompt = prompt; illustrationDraft.caption = caption;
+      illustrationBusy = true; submit.innerHTML = illustrationDraft.pendingDownload ? '<span class="spinner"></span>仅下载已有图片…' : '<span class="spinner"></span>正在生成并保存图片…';
+      const fields = form.querySelector('fieldset'); if (fields) fields.disabled = true;
+      const draft = { ...illustrationDraft }, scrollTop = window.scrollY;
+      const content = draft.pendingDownload ? await desktop.retryIllustrationDownload({ lessonId: draft.lessonId, blockId: draft.blockId, pendingId: draft.pendingDownload.id }) : await desktop.generateIllustration(draft);
+      if (content?.pendingDownload) {
+        Object.assign(illustrationDraft, { pendingDownload: content.pendingDownload, prompt: content.prompt, caption: content.caption, error: content.error });
+        illustrationBusy = false; renderIllustrationDialog(); return;
+      }
+      const block = state.blockCourses?.[draft.lessonId]?.blocks.find(item => item.id === draft.blockId);
+      if (block) block.content = content;
+      $('#illustration-dialog').close(); render(); window.scrollTo({ top: scrollTop, behavior: 'instant' }); toast('教学配图已保存到本机。');
+    } else if (form.id === 'desktop-settings-form' && desktop) {
       $('#settings-error').textContent = '';
       $('#remote-permission').hidden = true;
       const testButton = $('[data-action="test-connection"]');
@@ -644,14 +774,20 @@ document.addEventListener('submit', async event => {
       }
       if ($('#wiki-answer')) $('#wiki-answer').innerHTML = answerHTML();
     }
-  } catch (e) { if (form.id === 'revision-form' && $('#revision-error')) $('#revision-error').textContent = e.message; else if (form.id === 'desktop-settings-form' && $('#settings-error')) $('#settings-error').textContent = e.message; else if (form.id === 'plan-form' && $('#plan-error')) $('#plan-error').textContent = e.message; else if (form.id === 'lesson-ask-form' && $('#lesson-ask-error')) $('#lesson-ask-error').textContent = e.message; else toast(e.message); }
-  finally { if (form.id === 'revision-form') revisionBusy = false; if (submit.isConnected) { submit.disabled = form.id === 'plan-form' && status.mode !== 'ai'; submit.innerHTML = label; } }
+  } catch (e) { if (form.id === 'illustration-form' && $('#illustration-error')) $('#illustration-error').textContent = e.message;
+    else if (form.id === 'image-settings-form' && $('#image-settings-error')) {
+      $('#image-settings-error').textContent = e.message;
+      imageConnectionResult = `图片配置保存失败：${e.message}`;
+      $('#image-connection-result').textContent = imageConnectionResult;
+      $('[data-action="check-image-connection"]').disabled = true;
+    } else if (form.id === 'revision-form' && $('#revision-error')) $('#revision-error').textContent = e.message; else if (form.id === 'desktop-settings-form' && $('#settings-error')) $('#settings-error').textContent = e.message; else if (form.id === 'plan-form' && $('#plan-error')) $('#plan-error').textContent = e.message; else if (form.id === 'lesson-ask-form' && $('#lesson-ask-error')) $('#lesson-ask-error').textContent = e.message; else toast(e.message); }
+  finally { if (form.id === 'illustration-form') { illustrationBusy = false; const fields = form.querySelector('fieldset'); if (fields) fields.disabled = false; } if (form.id === 'revision-form') revisionBusy = false; if (submit.isConnected) { submit.disabled = form.id === 'plan-form' && status.mode !== 'ai'; submit.innerHTML = label; } }
 });
 if (desktop) {
   $('#app').innerHTML = '<div class="empty-state"><h2>正在读取本地数据…</h2></div>';
   desktop.load().then(result => {
     if (result.state) state = result.state;
-    desktopSettings = result.settings; dataDirectory = result.dataDirectory; status = result.status;
+    desktopSettings = result.settings; imageSettings = result.imageSettings || null; dataDirectory = result.dataDirectory; status = result.status;
     if (result.startPage === 'settings') page = 'settings';
     storageWarning = result.stateError || ''; render();
   }).catch(error => {

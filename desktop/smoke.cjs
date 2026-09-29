@@ -9,6 +9,8 @@ exports.run = async (window, store, directory) => {
   const wait = expression => evaluate(`new Promise((resolve, reject) => { let attempts = 0; const timer = setInterval(() => { try { if (${expression}) { clearInterval(timer); resolve(true); } else if (++attempts > 150) { clearInterval(timer); reject(new Error('Desktop check timed out')); } } catch (error) { clearInterval(timer); reject(error); } }, 100); })`);
   await wait("document.querySelector('main h1')");
   const localSettings = { provider: 'ollama', model: '', baseUrl: '', keyAction: 'clear', apiKey: '', localOnly: true, jsonMode: 'auto', timeoutMs: 120000, maxTokens: 8192 };
+  const { imageDefaults } = await import('../image-model.mjs');
+  await evaluate(`window.learnflowDesktop.saveImageSettings(${JSON.stringify({...imageDefaults,keyAction:'clear',apiKey:''})})`);
   await evaluate(`window.learnflowDesktop.saveSettings(${JSON.stringify(localSettings)})`);
   window.webContents.reload();
   await new Promise(resolve => window.webContents.once('did-finish-load', resolve));
@@ -124,6 +126,13 @@ exports.run = async (window, store, directory) => {
   assert.equal(loaded.settings.apiKey, undefined);
   // Exercise the complete lesson Q&A path against a local mock model.
   const requests = [];
+  const imageRequests = [];
+  const nativeRequests = [];
+  let nativeDownloads = 0, nativeChecks = 0;
+  let failNextNativeDownload = false;
+  const imageBitmap = Buffer.alloc(64 * 64 * 4);
+  for (let pixel = 0; pixel < 64 * 64; pixel++) { imageBitmap[pixel * 4] = 220; imageBitmap[pixel * 4 + 1] = 170; imageBitmap[pixel * 4 + 2] = 110; imageBitmap[pixel * 4 + 3] = 255; }
+  const testPng = require('electron').nativeImage.createFromBitmap(imageBitmap, {width:64,height:64}).toPNG();
   const planningQuestionnaire = { summary:'你希望用 Python 整理文件，需要先明确成果与练习方式。', questions:[
     {question:'你想优先整理哪类文件？',why:'选择贴近工作的案例。',type:'single',options:[{label:'本地文档',description:'按类型与日期整理。'},{label:'图片素材',description:'按项目整理和命名。'}]},
     {question:'你希望达成什么成果？',why:'帮助设计验收任务。',type:'multiple',options:[{label:'独立完成小工具',description:'先预览再执行，避免误操作。'},{label:'理解关键代码',description:'能够解释并修改规则。'}]}
@@ -131,9 +140,36 @@ exports.run = async (window, store, directory) => {
   const chatMarkdown = '## 直接回答\n\n**输出**会把内容显示给用户。\n\n```python\nprint("你好")\n```';
   const wikiMarkdown = '## 核心概念\n\n**现金流**表示一定期间的现金收入与支出。\n\n### 实践检查\n\n- 确认时间范围\n- 比较收入与支出';
   const model = http.createServer(async (req, res) => {
+    if (req.url === '/v1/models') { res.writeHead(200, {'Content-Type':'application/json'}); res.end(JSON.stringify({data:[{id:'smoke-image-model'}]})); return; }
+    if (req.url.startsWith('/api/v1/models?')) {
+      nativeChecks++; assert.equal(req.headers.authorization,'Bearer smoke-native-key-not-real');
+      assert.equal(new URL(req.url,'http://localhost').searchParams.get('model'),'wan2.7-image-pro');
+      res.writeHead(200,{'Content-Type':'application/json'});
+      res.end(JSON.stringify({success:true,code:null,output:{models:[{model:'wan2.7-image-pro',capabilities:['IG']}]}}));return;
+    }
+    if (req.url.startsWith('/native-result.png')) {
+      nativeDownloads++; assert.equal(req.headers.authorization,undefined); assert.equal(req.headers.cookie,undefined);
+      if (failNextNativeDownload) { failNextNativeDownload=false; res.writeHead(503);res.end('mock download unavailable');return; }
+      res.writeHead(200,{'Content-Type':'image/png'});res.end(testPng);return;
+    }
     const chunks = [];
     for await (const chunk of req) chunks.push(chunk);
     const payload = JSON.parse(Buffer.concat(chunks).toString('utf8'));
+    if (req.url === '/api/v1/services/aigc/multimodal-generation/generation') {
+      nativeRequests.push(payload);assert.equal(req.headers.authorization,'Bearer smoke-native-key-not-real');
+      assert.deepEqual(payload.parameters,{n:1,size:'1024*1024'});assert.equal(payload.response_format,undefined);
+      const prompt=payload.input.messages[0].content[0].text;
+      const failed=prompt==='原生故障测试';
+      if (prompt==='下载故障测试') failNextNativeDownload=true;
+      res.writeHead(failed ? 400 : 200,{'Content-Type':'application/json'});
+      res.end(JSON.stringify(failed ? {code:'InvalidParameter',message:'private upstream prompt smoke-native-key-not-real',request_id:'12345678-abcd-1234-abcd-1234567890ab'} : {output:{choices:[{message:{role:'assistant',content:[{text:'mock explanation'},{image:`http://127.0.0.1:${model.address().port}/native-result.png?Signature=private-mock-signature`,type:'image'}]}}]}}));return;
+    }
+    if (req.url === '/v1/images/generations') {
+      imageRequests.push(payload);
+      assert.equal(req.headers.authorization, 'Bearer smoke-image-key-not-real');
+      res.writeHead(payload.prompt === '故障测试' ? 503 : 200, {'Content-Type':'application/json'});
+      res.end(JSON.stringify(payload.prompt === '故障测试' ? {error:'mock failure'} : {data:[{b64_json:testPng.toString('base64')}]})); return;
+    }
     requests.push({ path: req.url, payload });
     const input = JSON.parse(payload.messages[1].content);
     if (input.revisionRequest === '测试模型不可用') {
@@ -142,7 +178,8 @@ exports.run = async (window, store, directory) => {
     }
     // Deliberately keep legacy fences in test-only output: they must remain inert code, not drawings.
     const markdownAnswer = ['## 核心结论', '', '**剩余现金 40 元**：收入 100 元，减去支出 60 元。', '', '### 计算步骤', '', '1. 从收支表中找到收入。', '2. 减去支出，得到剩余现金。', '', '> 提示：先确认收入与支出的时间范围一致。', '', '| 项目 | 金额 |', '| --- | ---: |', '| 收入 | 100 |', '| 支出 | 60 |', '', '```flow', '开始 -> 员工提交申请', '员工提交申请 -> 主管审批', '主管审批 -> 判断天数', '判断天数 ->|是（<=3天）| 主管批准', '判断天数 ->|否（>3天）| 部门经理审批', '主管批准 -> 结束1', '部门经理审批 -> 经理判断', '经理判断 ->|批准| 结束2', '经理判断 ->|驳回| 结束3', '```', '', '```chart', 'type: bar', 'title: 示例收支', '收入 | 100', '支出 | 60', '```', '', '```python', 'balance = 100 - 60', 'print(balance)', '```'].join('\n');
-    const output = payload.messages[0].content.includes('自学课程顾问') ? planningQuestionnaire
+    const output = payload.messages[0].content.includes('教学配图编辑') && !input.revisionRequest ? {needed:true,reason:'一张场景图有助于建立直观认识。',prompt:'无文字的日常消费教学插图，强调收入与支出的差异',caption:'图片帮助理解收支场景，不代表精确数值。'}
+      : payload.messages[0].content.includes('自学课程顾问') ? planningQuestionnaire
       : input.daily !== undefined ? {...demoPlan,title:'路线纠正集成测试',lessons:input.repair ? demoPlan.lessons : [demoPlan.lessons[0]]}
       : input.revisionRequest ? {text:markdownAnswer}
       : input.notes ? {answer:'## 检索结论\n\n**输入与输出**已记录在你的知识卡片中。',citations:[input.notes[0].id]}
@@ -279,6 +316,140 @@ exports.run = async (window, store, directory) => {
     await evaluate(`document.querySelector('[data-page=routes]').click(); document.querySelector('[data-action=open-lesson][data-id="${lessonId}"]').click()`);
     await wait("document.querySelector('.teaching-reading .block-text')?.textContent.includes('原始讲解')");
     assert.equal(await evaluate("document.querySelector('[data-action=restore-block]') === null"), true);
+    // Independently configure image service through the real settings form.
+    await evaluate("document.querySelector('[data-page=settings]').click()");
+    await evaluate(`document.querySelector('#image-settings-form [name=enabled]').checked = true; document.querySelector('#image-model-name').value = 'smoke-image-model'; document.querySelector('#image-model-url').value = ${JSON.stringify(modelUrl)}; document.querySelector('#image-key-action').value = 'replace'; document.querySelector('#image-model-key').value = 'smoke-image-key-not-real'; document.querySelector('#image-size').value = '64x64'; document.querySelector('#image-settings-form').requestSubmit()`);
+    await wait("document.querySelector('#image-connection-result')?.textContent.includes('图片配置已保存')");
+    const imageConfiguration = await readFile(path.join(directory,'image-settings.json'),'utf8');
+    assert.ok(!imageConfiguration.includes('smoke-image-key-not-real'));
+    assert.equal((await evaluate('window.learnflowDesktop.load()')).imageSettings.apiKey, undefined);
+    await evaluate("document.querySelector('[data-action=check-image-connection]').click()");
+    await wait("document.querySelector('#image-connection-result')?.textContent.includes('未生成图片')");
+    assert.equal(imageRequests.length,0);
+    await evaluate(`document.querySelector('[data-page=routes]').click(); document.querySelector('[data-action=open-lesson][data-id="${lessonId}"]').click()`);
+    await wait("document.querySelector('[data-action=request-illustration]')");
+    await evaluate(`document.querySelector('[data-action=request-illustration][data-block="${readingId}"]').click()`);
+    await wait("document.querySelector('#illustration-prompt')?.value.includes('教学插图') && !document.querySelector('#illustration-form fieldset').disabled");
+    assert.equal(imageRequests.length,0,'suggesting an image must not generate or charge for one');
+    await evaluate("document.querySelector('#illustration-prompt').value = '故障测试'; document.querySelector('#illustration-form').requestSubmit()");
+    await wait("document.querySelector('#illustration-error')?.textContent.includes('503') && !document.querySelector('#illustration-form button[type=submit]').disabled");
+    assert.equal(imageRequests.length,1,'generation failure must not auto-retry');
+    assert.equal((await store.loadState()).blockCourses[lessonId].blocks[0].content.illustration,undefined);
+    await evaluate("document.querySelector('#illustration-prompt').value = '无文字教学示意'; document.querySelector('#illustration-form').requestSubmit()");
+    await wait("!document.querySelector('#illustration-dialog').open && document.querySelector('.course-illustration img')?.complete && document.querySelector('.course-illustration img')?.naturalWidth === 64");
+    assert.equal(imageRequests.length,2);
+    const withImage = (await store.loadState()).blockCourses[lessonId].blocks[0].content;
+    assert.equal(withImage.text,'原始讲解：认识现金流。');
+    assert.ok(withImage.illustration.id);
+    assert.equal(withImage.illustration.model,'smoke-image-model');
+    assert.ok(!await evaluate("document.cookie.includes('learnflow-assets')"));
+    const assetUrl = await evaluate("document.querySelector('.course-illustration img').src");
+    assert.equal((await fetch(assetUrl)).status,403,'asset cookie is required outside the app');
+    await evaluate(`window.learnflowDesktop.reviseBlock(${JSON.stringify(lessonId)},${JSON.stringify(readingId)},{text:'新正文不应该沿用旧图'},${JSON.stringify(withImage.text)})`);
+    assert.equal((await store.loadState()).blockCourses[lessonId].blocks[0].content.illustration,undefined);
+    await evaluate(`window.learnflowDesktop.restoreBlock(${JSON.stringify(lessonId)},${JSON.stringify(readingId)},'新正文不应该沿用旧图')`);
+    window.webContents.reload();
+    await new Promise(resolve => window.webContents.once('did-finish-load',resolve));
+    await wait("document.querySelector('main h1')");
+    await evaluate(`document.querySelector('[data-page=routes]').click(); document.querySelector('[data-action=open-lesson][data-id="${lessonId}"]').click()`);
+    await wait("document.querySelector('.course-illustration img')?.complete && document.querySelector('.course-illustration img')?.naturalWidth === 64");
+    assert.equal(imageRequests.length,2,'reload and restoration must reuse the local file');
+    await wait("document.querySelector('.course-illustration img')?.getBoundingClientRect().height > 50");
+    await evaluate("document.querySelector('.course-illustration').scrollIntoView({block:'start'}); new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))");
+    await writeFile(path.join(directory,'..','illustration-smoke.png'),(await window.webContents.capturePage()).toPNG());
+    // Switch protocols using the actual UI; only a local native-protocol mock is contacted.
+    await evaluate("document.querySelector('[data-page=settings]').click(); document.querySelector('#image-protocol').value='dashscope'; document.querySelector('#image-protocol').dispatchEvent(new Event('change',{bubbles:true}))");
+    assert.equal(await evaluate("document.querySelector('#image-response-format').disabled"),true);
+    assert.equal(await evaluate("document.querySelector('#image-model-key').value"),'');
+    assert.equal(await evaluate("document.querySelector('[data-action=check-image-connection]').disabled"),true);
+    // Reproduce the exact reported Token Plan root, saving only a fake key.
+    // Do not click connection or generation until the service is local again.
+    await evaluate("document.querySelector('#image-model-name').value='wan2.7-image-pro'; document.querySelector('#image-model-url').value='https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1'; document.querySelector('#image-settings-form [name=localOnly]').checked=false; document.querySelector('#image-key-action').value='replace'; document.querySelector('#image-model-key').value='smoke-token-plan-key-not-real'; document.querySelector('#image-size').value='1024x1024'; document.querySelector('#image-settings-form').requestSubmit()");
+    await wait("document.querySelector('#image-connection-result')?.textContent.includes('同域名的 /api/v1')");
+    const tokenSaved=(await evaluate('window.learnflowDesktop.load()')).imageSettings;
+    assert.equal(tokenSaved.baseUrl,'https://token-plan.cn-beijing.maas.aliyuncs.com/api/v1');
+    assert.equal(tokenSaved.protocol,'dashscope');assert.equal(tokenSaved.hasApiKey,true);assert.equal(tokenSaved.apiKey,undefined);
+    assert.equal(await evaluate("document.querySelector('#image-settings-error').textContent"),'');
+    const tokenFile=await readFile(path.join(directory,'image-settings.json'),'utf8');
+    assert.ok(!tokenFile.includes('smoke-token-plan-key-not-real'));assert.ok(JSON.parse(tokenFile).encryptedApiKey.length>0);
+    assert.equal(nativeRequests.length,0);assert.equal(nativeChecks,0);assert.equal(nativeDownloads,0);
+    window.webContents.reload();await new Promise(resolve=>window.webContents.once('did-finish-load',resolve));
+    await wait("document.querySelector('main h1')");await evaluate("document.querySelector('[data-page=settings]').click()");
+    assert.equal(await evaluate("document.querySelector('#image-model-url').value"),tokenSaved.baseUrl);
+    assert.equal(await evaluate("document.querySelector('#image-protocol-hint').textContent.includes('此提醒不阻止保存')"),true);
+    await evaluate("document.querySelector('#image-settings-form [name=localOnly]').checked=true");
+    await evaluate(`document.querySelector('#image-model-name').value='wan2.7-image-pro'; document.querySelector('#image-model-url').value=${JSON.stringify(modelUrl.replace(/\/v1$/,'/compatible-mode/v1'))}; document.querySelector('#image-key-action').value='replace'; document.querySelector('#image-model-key').value='smoke-native-key-not-real'; document.querySelector('#image-size').value='1024x1024'; document.querySelector('#image-settings-form').requestSubmit()`);
+    await wait("document.querySelector('#image-connection-result')?.textContent.includes('图片配置已保存')");
+    const nativeConfiguration=await readFile(path.join(directory,'image-settings.json'),'utf8');
+    assert.equal(JSON.parse(nativeConfiguration).protocol,'dashscope');assert.ok(!nativeConfiguration.includes('smoke-native-key-not-real'));
+    assert.equal(JSON.parse(nativeConfiguration).baseUrl,modelUrl.replace(/\/v1$/,'/api/v1'));
+    window.webContents.reload();await new Promise(resolve=>window.webContents.once('did-finish-load',resolve));
+    await wait("document.querySelector('main h1')");await evaluate("document.querySelector('[data-page=settings]').click()");
+    assert.equal(await evaluate("document.querySelector('#image-protocol').value"),'dashscope');
+    assert.equal(await evaluate("document.querySelector('#image-response-format').disabled"),true);
+    await evaluate("document.querySelector('[data-action=check-image-connection]').click()");
+    await wait("document.querySelector('#image-connection-result')?.textContent.includes('已在列表中找到模型')");
+    assert.equal(nativeChecks,1);assert.equal(nativeRequests.length,0);
+    await evaluate("document.querySelector('.image-settings-panel').scrollIntoView({block:'start'}); new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))");
+    assert.equal(await evaluate("document.documentElement.scrollWidth <= innerWidth + 1"),true,'native settings hints should not cause horizontal overflow');
+    await writeFile(path.join(directory,'..','bailian-settings-smoke.png'),(await window.webContents.capturePage()).toPNG());
+    await evaluate(`document.querySelector('[data-page=routes]').click(); document.querySelector('[data-action=open-lesson][data-id="${lessonId}"]').click()`);
+    await wait(`document.querySelector('[data-action=request-illustration][data-block="${readingId}"]')`);
+    await evaluate(`document.querySelector('[data-action=request-illustration][data-block="${readingId}"]').click()`);
+    await wait("document.querySelector('#illustration-form') && document.querySelector('#illustration-dialog').open");
+    await evaluate("document.querySelector('#illustration-prompt').value='原生故障测试'; document.querySelector('#illustration-form').requestSubmit()");
+    await wait("document.querySelector('#illustration-error')?.textContent.includes('InvalidParameter') && !document.querySelector('#illustration-form button[type=submit]').disabled");
+    const nativeError=await evaluate("document.querySelector('#illustration-error').textContent");
+    assert.ok(!nativeError.includes('smoke-native-key-not-real'));assert.ok(!nativeError.includes('private upstream prompt'));
+    assert.equal(nativeRequests.length,1);assert.equal(nativeDownloads,0);
+    assert.equal((await store.loadState()).blockCourses[lessonId].blocks[0].content.illustration.model,'smoke-image-model','native failure preserves the old illustration');
+    await evaluate("document.querySelector('#illustration-prompt').value='下载故障测试'; document.querySelector('#illustration-form').requestSubmit()");
+    await wait("document.querySelector('#illustration-download-notice') && document.querySelector('#illustration-error')?.textContent.includes('503') && !document.querySelector('#illustration-form fieldset').disabled");
+    assert.equal(nativeRequests.length,2);assert.equal(nativeDownloads,1);
+    assert.ok(!await evaluate("document.querySelector('#illustration-dialog').innerHTML.includes('private-mock-signature')"));
+    const retained=await evaluate(`window.learnflowDesktop.getPendingIllustration(${JSON.stringify(lessonId)},${JSON.stringify(readingId)})`);
+    assert.equal(retained.pendingDownload.host,'127.0.0.1');assert.equal(retained.url,undefined);
+    const repeated=await evaluate(`window.learnflowDesktop.generateIllustration(${JSON.stringify({lessonId,blockId:readingId,expectedText:withImage.text,expectedImageId:withImage.illustration.id,prompt:'不应再次计费',caption:'测试'})})`);
+    assert.equal(repeated.pendingDownload.id,retained.pendingDownload.id);assert.equal(nativeRequests.length,2,'pending downloads must block another generation');
+    await evaluate("document.querySelector('[data-action=close-illustration]').click()");
+    await evaluate(`document.querySelector('[data-action=request-illustration][data-block="${readingId}"]').click()`);
+    await wait("document.querySelector('#illustration-dialog').open && document.querySelector('#illustration-download-notice')");
+    assert.equal(await evaluate("document.querySelector('#illustration-prompt').readOnly"),true);
+    assert.equal(await evaluate("document.querySelector('#illustration-form button[type=submit]').textContent"),'仅重试下载（不重新生成）');
+    assert.equal(nativeRequests.length,2);
+    await evaluate('new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))');
+    await writeFile(path.join(directory,'..','image-download-retry-smoke.png'),(await window.webContents.capturePage()).toPNG());
+    await evaluate("document.querySelector('#illustration-form').requestSubmit()");
+    await wait("!document.querySelector('#illustration-dialog').open && document.querySelector('.course-illustration img')?.naturalWidth===64");
+    const nativeContent=(await store.loadState()).blockCourses[lessonId].blocks[0].content;
+    assert.equal(nativeContent.text,withImage.text);assert.equal(nativeContent.illustration.model,'wan2.7-image-pro');
+    assert.equal(nativeRequests.length,2);assert.equal(nativeDownloads,2);assert.equal(imageRequests.length,2,'native mode must never fall back to a paid compatible request');
+    assert.equal(await evaluate(`window.learnflowDesktop.getPendingIllustration(${JSON.stringify(lessonId)},${JSON.stringify(readingId)})`),null);
+    window.webContents.reload();await new Promise(resolve=>window.webContents.once('did-finish-load',resolve));
+    await wait("document.querySelector('main h1')");
+    await evaluate(`document.querySelector('[data-page=routes]').click(); document.querySelector('[data-action=open-lesson][data-id="${lessonId}"]').click()`);
+    await wait("document.querySelector('.course-illustration img')?.naturalWidth===64");
+    assert.equal(nativeRequests.length,2);assert.equal(nativeDownloads,2,'reloading uses the local image, not the cloud URL');
+    // A private download token cannot outlive its course content or source service.
+    const retrySettings=(await evaluate('window.learnflowDesktop.load()')).imageSettings;
+    const retryBlock=await evaluate(`window.learnflowDesktop.appendBlock(${JSON.stringify(lessonId)},{type:'reading',title:'下载重试版本保护',objective:'验证下载结果不会覆盖更新内容'})`);
+    await evaluate(`window.learnflowDesktop.saveBlock(${JSON.stringify(lessonId)},${JSON.stringify(retryBlock.id)},{text:'下载重试原文'})`);
+    const retryValue={lessonId,blockId:retryBlock.id,expectedText:'下载重试原文',expectedImageId:'',prompt:'下载故障测试',caption:'重试保护测试'};
+    const servicePending=await evaluate(`window.learnflowDesktop.generateIllustration(${JSON.stringify(retryValue)})`);
+    assert.ok(servicePending.pendingDownload);assert.equal(nativeRequests.length,3);assert.equal(nativeDownloads,3);
+    assert.equal(await evaluate(`window.learnflowDesktop.getPendingIllustration(${JSON.stringify(lessonId)},${JSON.stringify(readingId)})`),null,'another block cannot access this token');
+    await evaluate(`window.learnflowDesktop.saveImageSettings(${JSON.stringify({...retrySettings,baseUrl:retrySettings.baseUrl.replace('127.0.0.1','localhost'),keyAction:'clear',apiKey:''})})`);
+    const serviceError=await evaluate(`window.learnflowDesktop.retryIllustrationDownload(${JSON.stringify({lessonId,blockId:retryBlock.id,pendingId:servicePending.pendingDownload.id})}).then(()=>null,error=>error.message)`);
+    assert.match(serviceError,/服务已更改/);assert.equal(nativeRequests.length,3);assert.equal(nativeDownloads,3);
+    await evaluate(`window.learnflowDesktop.saveImageSettings(${JSON.stringify({...retrySettings,keyAction:'replace',apiKey:'smoke-native-key-not-real'})})`);
+    const textPending=await evaluate(`window.learnflowDesktop.generateIllustration(${JSON.stringify(retryValue)})`);
+    assert.ok(textPending.pendingDownload);assert.equal(nativeRequests.length,4);assert.equal(nativeDownloads,4);
+    await evaluate(`window.learnflowDesktop.reviseBlock(${JSON.stringify(lessonId)},${JSON.stringify(retryBlock.id)},{text:'下载重试新正文'},'下载重试原文')`);
+    const staleError=await evaluate(`window.learnflowDesktop.retryIllustrationDownload(${JSON.stringify({lessonId,blockId:retryBlock.id,pendingId:textPending.pendingDownload.id})}).then(()=>null,error=>error.message)`);
+    assert.match(staleError,/课程／服务已更改/);assert.equal(nativeRequests.length,4);assert.equal(nativeDownloads,4);
+    assert.equal((await store.loadState()).blockCourses[lessonId].blocks.find(block=>block.id===retryBlock.id).content.text,'下载重试新正文');
+    console.log('IMAGE_DOWNLOAD_SMOKE',JSON.stringify({passed:true,checks:['download-failure-preserves-old-image','pending-token-no-signed-url','download-only-retry-no-paid-post','dialog-close-reopen-reuses-result','source-change-and-stale-content-blocked']}));
+    console.log('BAILIAN_NATIVE_SMOKE',JSON.stringify({passed:true,checks:['protocol-ui-save-reload-encryption','native-model-list-no-generation','native-error-no-retry-no-key-leak','native-payload-url-download-no-key','native-image-local-persistence-no-fallback']}));
     // Generate an AI Wiki card and verify that source Markdown survives a renderer reload.
     await evaluate("document.querySelector('[data-tab=notes]').click(); document.querySelector('[data-action=create-note]').click()");
     await wait("document.querySelector('#note-preview-content h3')?.textContent === '核心概念'");
@@ -296,6 +467,7 @@ exports.run = async (window, store, directory) => {
     await new Promise(resolve => model.close(resolve));
   }
   await evaluate(`window.learnflowDesktop.saveSettings(${JSON.stringify({ ...localSettings, model: 'desktop-smoke-model' })})`);
+  await evaluate(`window.learnflowDesktop.saveImageSettings(${JSON.stringify({...imageDefaults,keyAction:'clear',apiKey:''})})`);
   window.webContents.reload();
   await new Promise(resolve => window.webContents.once('did-finish-load', resolve));
   await wait("document.querySelector('main h1')");
@@ -303,5 +475,5 @@ exports.run = async (window, store, directory) => {
   await wait("document.querySelector('#desktop-settings-form')");
   const image = await window.webContents.capturePage();
   await writeFile(path.join(directory, '..', 'settings-smoke.png'), image.toPNG());
-  console.log('DESKTOP_SMOKE', JSON.stringify({ passed: true, checks: ['window', 'sandbox', 'settings-save', 'os-encryption', 'cloud-save-confirmation', 'cloud-settings-reload', 'lan-save-confirmation', 'quick-ask-right-dock-and-focus', 'quick-ask-return-position', 'quiz', 'wiki', 'disk-persistence', 'reload', 'lesson-qa', 'adaptive-learning-questionnaire-and-confirmation', 'plan-invalid-count-repair', 'teaching-unit', 'feedback-regeneration', 'markdown-typography', 'legacy-diagram-fences-as-code-reload', 'markdown-revision-preset', 'reflection-markdown-preview', 'note-markdown-read-edit', 'chat-markdown', 'grounded-markdown-citations', 'ai-wiki-markdown-reload', 'revision-failure-preserves-content', 'revision-restore-reload'], screenshot: path.join(directory, '..', 'settings-smoke.png') }));
+  console.log('DESKTOP_SMOKE', JSON.stringify({ passed: true, checks: ['window', 'sandbox', 'settings-save', 'os-encryption', 'cloud-save-confirmation', 'cloud-settings-reload', 'lan-save-confirmation', 'quick-ask-right-dock-and-focus', 'quick-ask-return-position', 'quiz', 'wiki', 'disk-persistence', 'reload', 'lesson-qa', 'adaptive-learning-questionnaire-and-confirmation', 'plan-invalid-count-repair', 'teaching-unit', 'feedback-regeneration', 'markdown-typography', 'legacy-diagram-fences-as-code-reload', 'markdown-revision-preset', 'reflection-markdown-preview', 'note-markdown-read-edit', 'chat-markdown', 'grounded-markdown-citations', 'ai-wiki-markdown-reload', 'revision-failure-preserves-content', 'revision-restore-reload', 'image-settings-os-encryption', 'image-model-check-without-generation', 'image-suggestion-before-confirmation', 'image-generation-failure-no-retry', 'image-local-render-layout-and-reload', 'image-restoration-with-text', 'private-asset-cookie'], screenshot: path.join(directory, '..', 'settings-smoke.png') }));
 };

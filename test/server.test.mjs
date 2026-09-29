@@ -16,6 +16,34 @@ async function serve(t, config = {}) {
 const input = { goal: '学会 Python 编写工具', level: '零基础', daily: 25, days: 14 };
 const mock = output => async () => Response.json({ message: { content: JSON.stringify(output) } });
 
+test('image proposals are opt-in, bounded and cannot let text models attach arbitrary image URLs', async t => {
+  let enabled = true, proposal = {prompt:'具体的教学插图',caption:'解释阅读重点'}, instructions;
+  const app = await serve(t,{model:'test',getImageSettings:()=>({enabled}),fetchImpl:async(_url,init)=>{
+    instructions = JSON.parse(init.body).messages[0].content;
+    return Response.json({message:{content:JSON.stringify({text:'## 教学正文',imageProposal:proposal,illustration:{url:'https://untrusted.example/track'}})}});
+  }});
+  const request = {goal:'理解输入输出',title:'第一课',objective:'理解关键概念',level:'零基础',intro:'课程',block:{type:'reading',title:'输入输出',objective:'理解'}};
+  assert.deepEqual(await (await app.post('/api/lesson-block',request)).json(),{text:'## 教学正文',imageProposal:proposal});
+  assert.match(instructions,/不为装饰硬凑/);
+  enabled=false;
+  assert.deepEqual(await (await app.post('/api/lesson-block',request)).json(),{text:'## 教学正文'});
+  assert.ok(!instructions.includes('教学配图编辑'));
+  enabled=true;proposal={prompt:'x'.repeat(4001),caption:'图注'};
+  assert.deepEqual(await (await app.post('/api/lesson-block',request)).json(),{text:'## 教学正文'},'a malformed optional proposal must not lose otherwise valid course text');
+  proposal={prompt:'图',caption:'图注'};
+  assert.deepEqual(await (await app.post('/api/lesson-block',{...request,block:{...request.block,type:'practice'}})).json(),{text:'## 教学正文'});
+});
+test('cached images require the desktop asset cookie and never accept arbitrary path traversal', async t => {
+  const id='a'.repeat(64);let reads=0;
+  const app=await serve(t,{apiToken:'asset-test-token',getImageAsset:async()=>{reads++;return {bytes:Buffer.from('test image'),mime:'image/png'};}});
+  assert.equal((await app.get(`/course-images/${id}`)).status,403);assert.equal(reads,0);
+  const authorized=await fetch(`${app.base}/course-images/${id}`,{headers:{Cookie:'learnflow-assets=asset-test-token'}});
+  assert.equal(authorized.status,200);assert.equal(authorized.headers.get('content-type'),'image/png');
+  assert.equal(authorized.headers.get('cache-control'),'no-store');assert.equal(reads,1);
+  assert.equal((await app.get('/course-images/settings.json')).status,404);
+  assert.equal((await fetch(`${app.base}/course-images/${id}`,{headers:{Cookie:'learnflow-assets=asset-test-token',Origin:'https://untrusted.example'}})).status,403);
+});
+
 test('AI clarification is topic-specific, bounded, repaired once, and uses application-owned identifiers', async t => {
   let calls = 0, sent;
   const app = await serve(t, {model:'test',fetchImpl:async (_url,init) => {

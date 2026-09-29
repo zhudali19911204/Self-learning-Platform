@@ -4,7 +4,7 @@
 
 ## Windows 桌面版
 
-当前源码版本为 `1.0.6`，对应 Git 标签 `V-1.0.6`。打包后运行 `release/Learnflow-Setup-1.0.6.exe` 安装。也可直接运行 `release/win-unpacked/Learnflow.exe`（需保留同目录的其他文件，不能只拷贝 exe）。安装后从桌面“知行 Learnflow”快捷方式打开，无需安装 Node.js，也不用手动启动 Web 服务。旧版 `0.1.0` 安装包不包含新增的 SQLite 存储；请重新打包或用开发测试版体验最新功能。
+当前源码版本为 `1.0.7`，对应 Git 标签 `V-1.0.7`。打包后运行 `release/Learnflow-Setup-1.0.7.exe` 安装。也可直接运行 `release/win-unpacked/Learnflow.exe`（需保留同目录的其他文件，不能只拷贝 exe）。安装后从桌面“知行 Learnflow”快捷方式打开，无需安装 Node.js，也不用手动启动 Web 服务。旧版 `0.1.0` 安装包不包含新增的 SQLite 存储；请重新打包或用开发测试版体验最新功能。
 
 源码启动及打包：
 
@@ -41,6 +41,63 @@ npm run desktop:build
 - 更换服务或地址时不会自动沿用之前的密钥，需显式填写新密钥。
 
 示例课程、练习、已有 Wiki 的阅读和编辑都可以离线使用。生成新内容需要可用的本地模型服务，或联网使用云端模型。
+
+### 接入课程图片生成模型
+
+桌面版“设置与数据”新增独立的“课程图片模型”。先启用课程配图，再填写文生图模型 ID、接口根地址与独立 API Key，保存后立即生效。默认关闭配图、开启仅本机模式；不会沿用文字模型的密钥，也不读取 `.env`。
+
+- 选择通用兼容协议时，根地址填写到版本路径，例如 `http://127.0.0.1:8001/v1`；应用自动追加 `/images/generations`，不要填完整生成路径。本地必须已经运行提供文生图接口的服务；普通聊天模型服务不一定具备图片生成能力，软件不会安装图片模型或启动 GPU 推理服务。
+- 云端须明确关闭“仅本机图片服务”，并使用 HTTPS。图片接口协议可选“通用兼容接口”或“阿里百炼原生接口”；旧配置默认继续使用通用兼容协议，不自动改地址或发送新请求。ComfyUI 工作流、百炼旧版异步任务接口暂不支持。
+- 通用协议每次发送 `model`、`prompt`、`n: 1`、`size`。尺寸为 `宽x高`，默认 `1024x1024`，仍须符合所选模型的支持范围。返回格式选“自动”时不传 `response_format`；也可明确选择 `b64_json` 或 `url`。支持 `data[0].b64_json` 和 `data[0].url`，不支持异步任务轮询或流式图片结果。协议参考：[vLLM-Omni 文生图服务示例](https://docs.vllm.ai/projects/vllm-omni/en/latest/user_guide/examples/online_serving/text_to_image/)。
+- “检查已保存的服务”只请求模型列表，不会生成图片；普通百炼原生模式在 `/api/v1/models` 按模型 ID 查询并解析 `output.models`，Token Plan 查询同域名的 `/compatible-mode/v1/models` 并解析 `data[].id`。它只能证明模型列表接口可访问，不能保证生成权限、文生图能力或实际计费。不支持模型列表的服务可直接在课程中手动验证生成。
+- Base64 结果直接保存本地。URL 结果只允许从配置接口的同源地址下载；如果服务返回 CDN URL，需要在“额外允许的图片下载域名”填写服务商可信的精确域名，以英文逗号分隔。不自动访问未知地址，不跟随重定向，下载不携带模型密钥或 Cookie。
+
+#### 百炼原生配置示例
+
+在“课程图片模型”中选择：
+
+- 协议：阿里百炼原生接口。
+- 模型：`wan2.7-image-pro`，也支持 `wan2.7-image`、`qwen-image-3.0-pro`、`qwen-image-3.0`。
+- 北京普通百炼根地址：`https://dashscope.aliyuncs.com/api/v1`；也可填控制台提供的 `https://<业务空间ID>.cn-beijing.maas.aliyuncs.com/api/v1`。新加坡使用控制台的同地域地址和密钥。只填域名时会补齐 `/api/v1`；填写百炼官方域名的 `/compatible-mode/v1` 地址时，原生模式保存为同域名的 `/api/v1`，并在界面明确提示。完整生成路径仍不可填，未知服务商的兼容地址不会被猜测转换。
+- 关闭“仅本机图片服务”，普通百炼地址填写普通百炼 API Key；Token Plan 地址填写其对应的套餐密钥，不混用。切换协议或服务地址后需显式填写密钥，不会自动沿用聊天模型密钥或把旧密钥转发到其他服务。
+- 尺寸：先用 `1024x1024`，发送时自动转为 `1024*1024`。万相还可填 `1K` / `2K`，pro 支持 `4K`；千问 3.0 填宽x高。应用会预检对应模型的像素范围和宽高比。原生模式固定自动返回格式，不传 `response_format`。
+
+原生请求采用 `input.messages[].content[].text` 和 `parameters: { n: 1, size }`，调用 `/services/aigc/multimodal-generation/generation`，从 `output.choices[].message.content[].image` 取回 URL 并立即保存到本机。仅原生模式且根地址为百炼官方域名时，内置允许已核实的 10 个地域图片结果域名和 14 个加速存储域名（含 Token Plan）；其他 CDN 或代理服务仍需显式填写可信域名。本机模式不会访问远端 CDN，远端下载仅接受 HTTPS 默认端口，不允许通配符、任意 OSS 桶或全部 `aliyuncs.com` 域名。参考：[万相原生同步接口](https://help.aliyun.com/zh/model-studio/wan-image-generation-and-editing-api-reference)、[千问图片原生同步接口](https://help.aliyun.com/zh/model-studio/qwen-image-generation-and-editing-api-reference)。
+
+内置精确域名如下，依据 [阿里云官方图片输出存储域名清单](https://help.aliyun.com/zh/model-studio/text-to-image-api-reference)：
+
+| 地域 | 图片结果域名 |
+| --- | --- |
+| 北京 | `dashscope-result-bj.oss-cn-beijing.aliyuncs.com` |
+| 杭州 | `dashscope-result-hz.oss-cn-hangzhou.aliyuncs.com` |
+| 上海 | `dashscope-result-sh.oss-cn-shanghai.aliyuncs.com` |
+| 乌兰察布 | `dashscope-result-wlcb.oss-cn-wulanchabu.aliyuncs.com` |
+| 张家口 | `dashscope-result-zjk.oss-cn-zhangjiakou.aliyuncs.com` |
+| 深圳 | `dashscope-result-sz.oss-cn-shenzhen.aliyuncs.com` |
+| 河源 | `dashscope-result-hy.oss-cn-heyuan.aliyuncs.com` |
+| 成都 | `dashscope-result-cd.oss-cn-chengdu.aliyuncs.com` |
+| 广州 | `dashscope-result-gz.oss-cn-guangzhou.aliyuncs.com` |
+| 乌兰察布 ACDR | `dashscope-result-wlcb-acdr-1.oss-cn-wulanchabu-acdr-1.aliyuncs.com` |
+
+加速存储域名依据 [阿里云千问图片 API 的 OSS 域名说明](https://help.aliyun.com/zh/model-studio/qwen-image-api)。内置以下 14 个精确域名，格式为 `dashscope-<标识>.oss-accelerate.aliyuncs.com`，标识为：`a717`、`66f3`、`7c2c`、`2522`、`c72b`、`0484`、`7e0f`、`5859`、`5496`、`35f9`、`31d9`、`7f1f`、`cc75`、`64e9`。例如 `dashscope-7c2c.oss-accelerate.aliyuncs.com`。官方说明底层存储会动态变化，这不是永久完整名单；未列出的域名仍需核对后手动添加，不自动信任未知 OSS 桶。
+
+遇到“图片下载地址不在允许范围内”，先不要重启或重新生成：在配图面板点“打开图片设置”，将报错中的完整域名追加到“额外允许的图片下载域名”（已有域名用英文逗号分隔），保留密钥、关闭仅本机模式并保存；回到原内容块再次打开配图面板，点“仅重试下载”。仅修改下载域名不会清除当前待下载链接。
+
+配置保存与服务权限分开处理：软件不再因 Token Plan 域名拒绝保存。可填写 `https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1`，原生模式会将路径调整为同域名的 `/api/v1`；不会更换域名、切换到普通按量计费服务或自动替换密钥。保存不发起网络请求，课程仍须手动确认才生成图片。原生路径参考 [Token Plan 多模态生成文档](https://help.aliyun.com/zh/model-studio/token-plan-multimodal-gen)。
+
+允许保存仅表示配置符合本地格式要求，不代表套餐允许当前使用方式或生成权限已验证。Token Plan 个人套餐官方规则限制其通过编程／智能体工具的扩展机制交互使用，并限制自定义应用后端调用；界面保留使用范围提醒，请确认服务商是否允许你的实际使用场景。参见 [Token Plan 使用范围](https://help.aliyun.com/zh/model-studio/token-plan-personal-overview)。失败时显示具体保存原因或预设服务错误说明、已知错误码及合法请求 ID，不回显服务商原始报错中的密钥、提示词或链接；不自动重试、不回退到其他协议，不轮询意外返回的异步任务。
+
+开启后，新生成的内容块讲解与案例会让文字模型判断是否需要图片，有需要才附带配图建议；不为装饰硬凑配图。已有内容可点击右上角“AI 配图建议”。打开面板后，用户可修改提示词和中文图注，最后点击“确认生成图片（可能计费）”才调用图片模型，每次一张，不自动重试。文字模型未连接时，也可直接填写自己的图片提示词。配图分析会发送当前模块正文给文字模型；图片生成仅发送确认的提示词给图片服务。
+
+图片和图注显示在对应讲解或案例正文之后，明确标注“AI 生成教学示意”。图片模型可能误画结构、文字或数值，配图不能代替正文、精确公式和数据验证；优先使用无文字、少元素的场景与直观类比。先前移除的流程图/架构图/数据图表代码绘制功能仍然关闭。第一版不为旧固定结构课程、答疑或 Wiki 自动添加配图，不改写已保存的课程正文。
+
+生成失败保留正文、原配图和输入要求；生成与下载分别使用设置中的超时时间（例如各 180 秒），生成耗时不会提前用尽图片下载的时间。如果生成请求超时，服务端可能仍在生成，请先查服务商记录，避免重复计费。如果服务已返回图片 URL，但下载或本地保存失败，面板显示下载域名（不显示完整签名链接），切换为“仅重试下载（不重新生成）”。可先打开图片设置，核对后填写可信的精确下载域名，再回到原内容块重新打开配图面板，仅下载已有结果；每次都重新校验当前下载权限和图片内容，不自动重试、不调用生成接口。
+
+待下载结果仅存在桌面主进程内存中，最多保留 20 个、每个 30 分钟，不写入学习数据、日志或备份，关闭应用后失效。仅修改下载域名不丢失待下载结果；更改服务、模型或对应正文／配图会使它失效，避免错配与过期覆盖。已有待下载结果时，即使重复点击生成也不会再调用模型；必须明确确认“放弃此结果，重新生成（可能计费）”，才可重新提交生成。旧版失败时未保留的链接无法从本地恢复，应先查看服务商记录。
+
+同一内容块禁止并发生成或下载；返回时再次检查内容版本，过期结果不覆盖新讲解。重新生成讲解会把该讲解的配图一起放入历史版本，新正文不沿用旧图；“恢复上一版”会恢复对应配图。仅调整图片会替换当前配图，不另外建立图片版本历史。
+
+图片最大 12 MB、最长边 4096 像素，仅接受经校验的 PNG、JPEG、静态 WebP。图片二进制保存到本机 `images/<SHA-256>.img`（扩展名不改变实际图片格式），相同内容自动去重；SQLite 仅存图片标识、提示词、图注、模型名和时间，不将图片 Base64 写进每块正文。完整 JSON 导出和删除路线前的备份会嵌入当前及讲解历史引用的图片，导入时先校验并恢复图片，再事务替换学习记录。备份不含模型配置或密钥；当前 JSON 备份上限约 250 MB，大量图片时应在应用关闭后保留整个本地数据目录。删除路线或替换配图暂不自动清理图片文件，避免使旧备份失去图片；不要手动删除仍被引用的文件。
 
 ### 从模糊需求到定制路线
 
@@ -81,11 +138,13 @@ Windows 默认保存位置为 `%APPDATA%/Learnflow/data/`，可在设置页点�
 - `learning.sqlite`：新版桌面应用的主要学习数据库。课程正文按课读取；新课程的大纲和各内容块分别存储、按块写入。课程、成绩、心得、答疑与 Wiki 也分别保存，不再每次重写整份学习记录。
 - `learning.json`、`learning.json.bak`：升级前的旧学习数据；迁移后保留作历史副本，新版不再写入。
 - `settings.json`：模型配置；API Key 使用 Windows 系统加密机制加密后保存，不以明文写入。
+- `image-settings.json`：独立的图片模型配置及系统加密后的图片服务密钥；`.bak` 保留上次配置。默认关闭，不影响已有文字模型。
+- `images/`：本地课程配图文件；正文与讲解历史只保存图片引用，读取时由桌面内部服务提供，不加载外部图片。
 - `backups/`：导入 JSON 备份或从旧版 SQLite 升级结构前自动创建的 SQLite 快照；删除学习路线前也会生成完整 JSON 备份。`settings.json.bak` 仍只保留上次设置保存前的版本。
 
 首次迁移会先校验旧数据，再创建新数据库；迁移失败不会修改旧 JSON。SQLite 的课程更新使用事务与按条目写入。不要在应用运行时只复制 `learning.sqlite` 作为备份；可用应用内“导出完整 JSON 备份”，导入前应用也会生成数据库快照。系统加密不可用时拒绝保存密钥，可继续使用不需要密钥的本地模型。加密密钥绑定当前系统用户，不应依赖复制 `settings.json` 在另一台机器上恢复密钥。
 
-“导出完整 JSON 备份”和“导出 Wiki Markdown”会打开系统保存对话框。完整 JSON 导出会从数据库读取全部课程，包括尚未在当前会话打开的课程。可导入旧 Web 版导出的 Learnflow JSON；导入前会创建 SQLite 快照，再以事务替换学习数据，模型配置不受影响。学习备份不包含密钥。Web 版浏览器数据与桌面版文件彼此独立，不会自动迁移。
+“导出完整 JSON 备份”和“导出 Wiki Markdown”会打开系统保存对话框。完整 JSON 导出会从数据库读取全部课程，包括尚未在当前会话打开的课程，并包含当前与讲解历史引用的配图。可导入旧 Web 版导出的 Learnflow JSON；导入前会创建 SQLite 快照，再以事务替换学习数据，模型配置不受影响。学习备份不包含密钥。Web 版浏览器数据与桌面版文件彼此独立，不会自动迁移；含课程配图的新备份请在新版桌面应用导入，Web 模式不加载配图资产。
 
 桌面窗口使用隔离和沙箱，页面没有 Node.js 权限。内置服务仅绑定回环地址、使用随机端口和会话令牌，随应用关闭；不会提供局域网服务。软件本身没有云同步或遥测。
 

@@ -11,21 +11,170 @@ import { JSDOM } from 'jsdom';
 import { createMarkdownRenderer } from '../public/markdown.js';
 import { validQuestionnaire, validClarification, learningBriefFrom } from '../public/planning.js';
 import { questionnaire, clarification } from '../test-support/planning.mjs';
+import { validIllustration, validImageProposal } from '../public/illustrations.js';
 const DOMPurify = createDOMPurify(new JSDOM('').window);
+const source = (await readFile(new URL('../public/app.js', import.meta.url), 'utf8')).replace(/^import .* from '\.\/[^']+';$/gm, '');
+
+test('desktop image suggestions never generate without confirmation; failed generation keeps text, prompt and current image', async () => {
+  let generationCalls = 0;
+  const image = {id:'a'.repeat(64),prompt:'旧图',caption:'旧图注',model:'image-test',created:1};
+  const bridge = {
+    load: async () => ({state:null,settings:{},status:{mode:'ai'},dataDirectory:'test',imageSettings:{enabled:true}}),
+    generateIllustration: async value => {
+      generationCalls++;
+      if (generationCalls === 1) throw new Error('模拟生成失败');
+      return {text:value.expectedText,illustration:{...image,id:'b'.repeat(64),prompt:value.prompt,caption:value.caption}};
+    }
+  };
+  const app = harness(null, null, bridge); await Promise.resolve();
+  app.run(`state.blockCourses = {p1:{intro:'测试',blocks:[{id:'b1',type:'reading',title:'知识',objective:'理解',content:{text:'原正文',illustration:${JSON.stringify(image)}}},{id:'b2',type:'quiz',title:'测验',objective:'理解',content:null}]}}; activeLesson='p1';page='study';lessonTab='read';render()`);
+  await app.run("action('request-illustration',{dataset:{id:'p1',block:'b1'}})");
+  assert.equal(generationCalls,0);
+  assert.equal(app.node('#illustration-dialog').open,true);
+  assert.match(app.node('#illustration-dialog').innerHTML,/可能计费/);
+  await app.submit('illustration-form',{prompt:'新的配图',caption:'新的图注'});
+  assert.equal(app.run('state.blockCourses.p1.blocks[0].content.illustration.id'),image.id);
+  assert.equal(app.run('state.blockCourses.p1.blocks[0].content.text'),'原正文');
+  assert.match(app.node('#illustration-error').textContent,/模拟生成失败/);
+  assert.equal(app.run('illustrationDraft.prompt'),'新的配图');
+  assert.equal(app.run('illustrationBusy'),false);
+  await app.submit('illustration-form',{prompt:'新的配图',caption:'<script>caption</script>'});
+  assert.equal(generationCalls,2);
+  assert.equal(app.node('#illustration-dialog').open,false);
+  assert.match(app.node('#app').innerHTML,/src="\/course-images\/b{64}"/);
+  assert.ok(!app.node('#app').innerHTML.includes('<script>caption</script>'));
+});
+test('repeated image confirmation cannot clear the busy state or start another paid request', async () => {
+  let calls=0,finish;
+  const image={id:'a'.repeat(64),prompt:'示意',caption:'图注',model:'image',created:1};
+  const bridge={load:async()=>({settings:{},status:{mode:'ai'},imageSettings:{enabled:true}}),generateIllustration:async value=>{calls++;await new Promise(resolve=>{finish=resolve;});return {text:value.expectedText,illustration:image};}};
+  const app=harness(null,null,bridge);await Promise.resolve();
+  app.run(`state.blockCourses={p1:{blocks:[{id:'b1',type:'reading',title:'知识',objective:'理解',content:{text:'原正文',imageProposal:{prompt:'示意',caption:'图注'}}}]}}`);
+  await app.run("action('request-illustration',{dataset:{id:'p1',block:'b1'}})");
+  const pending=app.submit('illustration-form',{prompt:'示意',caption:'图注'});
+  await app.submit('illustration-form',{prompt:'示意',caption:'图注'});
+  assert.equal(calls,1);assert.equal(app.run('illustrationBusy'),true);
+  finish();await pending;assert.equal(app.run('illustrationBusy'),false);
+});
+
+test('pending image downloads preserve the old image and reopen as download-only, with no repeated generation or analysis', async () => {
+  let generationCalls=0,downloadCalls=0,analysisCalls=0,retained=null;
+  const old={id:'a'.repeat(64),prompt:'旧图',caption:'旧图注',model:'image',created:1};
+  const pending={pendingDownload:{id:'download-token',host:'cdn.example',expiresAt:9999},prompt:'新图',caption:'新图注',error:'图片下载地址不在允许范围内。下载域名：cdn.example。'};
+  const bridge={load:async()=>({settings:{},status:{mode:'ai'},imageSettings:{enabled:true}}),getPendingIllustration:async()=>retained,
+    suggestIllustration:async()=>{analysisCalls++;throw new Error('must not analyse again');},
+    generateIllustration:async()=>{generationCalls++;retained=pending;return pending;},
+    retryIllustrationDownload:async value=>{downloadCalls++;assert.equal(value.pendingId,'download-token');return downloadCalls===1 ? {...pending,error:'仍未允许下载域名'} : {text:'原正文',illustration:{...old,id:'b'.repeat(64),prompt:pending.prompt,caption:pending.caption}};}
+  };
+  const app=harness(null,null,bridge);await Promise.resolve();
+  app.run(`state.blockCourses={p1:{blocks:[{id:'b1',type:'reading',title:'知识',objective:'理解',content:{text:'原正文',illustration:${JSON.stringify(old)}}}]}}`);
+  await app.run("action('request-illustration',{dataset:{id:'p1',block:'b1'}})");
+  await app.submit('illustration-form',{prompt:'新图',caption:'新图注'});
+  assert.equal(generationCalls,1);assert.equal(app.run('state.blockCourses.p1.blocks[0].content.illustration.id'),old.id);
+  assert.equal(app.node('#illustration-dialog').open,true);assert.match(app.node('#illustration-dialog').innerHTML,/仅重试下载（不重新生成）/);
+  assert.match(app.node('#illustration-dialog').innerHTML,/readonly/);assert.match(app.node('#illustration-dialog').innerHTML,/cdn.example/);
+  await app.run("action('close-illustration',{dataset:{}})");
+  await app.run("action('request-illustration',{dataset:{id:'p1',block:'b1'}})");
+  assert.equal(analysisCalls,0);assert.equal(app.run('illustrationDraft.prompt'),'新图');
+  await app.submit('illustration-form',{prompt:'新图',caption:'新图注'});
+  assert.equal(generationCalls,1);assert.equal(downloadCalls,1);
+  assert.match(app.node('#illustration-dialog').innerHTML,/仍未允许下载域名/);
+  await app.submit('illustration-form',{prompt:'新图',caption:'新图注'});
+  assert.equal(generationCalls,1);assert.equal(downloadCalls,2);assert.equal(app.node('#illustration-dialog').open,false);
+  assert.equal(app.run('state.blockCourses.p1.blocks[0].content.illustration.id'),'b'.repeat(64));
+});
+
+test('download-only confirmation is single-flight and errors cannot turn into a new paid generation', async () => {
+  let downloads=0,finish,generations=0;
+  const pending={pendingDownload:{id:'download-token',host:'cdn.example',expiresAt:9999},prompt:'教学图',caption:'图注',error:'下载失败'};
+  const app=harness(null,null,{load:async()=>({settings:{},status:{mode:'ai'},imageSettings:{enabled:true}}),getPendingIllustration:async()=>pending,
+    generateIllustration:async()=>{generations++;throw new Error('must not generate');},
+    retryIllustrationDownload:async()=>{downloads++;await new Promise(resolve=>{finish=resolve;});throw new Error('待下载结果已过期，未重新生成');}});await Promise.resolve();
+  app.run("state.blockCourses={p1:{blocks:[{id:'b1',type:'reading',title:'知识',objective:'理解',content:{text:'原正文'}}]}}");
+  await app.run("action('request-illustration',{dataset:{id:'p1',block:'b1'}})");
+  const inFlight=app.submit('illustration-form',{prompt:'教学图',caption:'图注'});
+  await app.submit('illustration-form',{prompt:'教学图',caption:'图注'});
+  assert.equal(downloads,1);assert.equal(app.run('illustrationBusy'),true);
+  finish();await inFlight;assert.equal(generations,0);assert.equal(app.run('illustrationBusy'),false);
+  assert.match(app.node('#illustration-error').textContent,/过期/);
+});
+
+test('discarding a pending download needs confirmation and never generates until the next explicit form submission', async () => {
+  let discarded=0,generations=0;
+  const pending={pendingDownload:{id:'download-token',host:'cdn.example',expiresAt:9999},prompt:'教学图',caption:'图注',error:'下载失败'};
+  const app=harness(null,null,{load:async()=>({settings:{},status:{mode:'ai'},imageSettings:{enabled:true}}),getPendingIllustration:async()=>pending,
+    discardIllustrationDownload:async()=>{discarded++;},generateIllustration:async()=>{generations++;throw new Error('模拟生成失败');}});await Promise.resolve();
+  app.run("state.blockCourses={p1:{blocks:[{id:'b1',type:'reading',title:'知识',objective:'理解',content:{text:'原正文'}}]}}");
+  await app.run("action('request-illustration',{dataset:{id:'p1',block:'b1'}})");
+  app.run('window.confirm=()=>false');await app.run("action('discard-illustration-download',{dataset:{}})");assert.equal(discarded,0);
+  app.run('window.confirm=()=>true');await app.run("action('discard-illustration-download',{dataset:{}})");
+  assert.equal(discarded,1);assert.equal(generations,0);assert.equal(app.run('illustrationDraft.pendingDownload'),undefined);
+  assert.match(app.node('#illustration-dialog').innerHTML,/确认生成图片（可能计费）/);
+  await app.submit('illustration-form',{prompt:'教学图',caption:'图注'});assert.equal(generations,1);
+});
+
+test('native image settings submit the protocol and automatic format while keeping keys out of the rendered form', async () => {
+  const saves=[];
+  const bridge={load:async()=>({settings:{},status:{mode:'ai'},imageSettings:{enabled:false}}),saveImageSettings:async input=>{saves.push(input);const {apiKey,keyAction,...safe}=input;return {...safe,hasApiKey:true};}};
+  const app=harness(null,null,bridge);await Promise.resolve();
+  await app.submit('image-settings-form',{enabled:'on',protocol:'dashscope',model:'wan2.7-image-pro',baseUrl:'https://dashscope.aliyuncs.com/api/v1',keyAction:'replace',apiKey:'secret-image-key',size:'1024x1024',timeout:'180',downloadHosts:''});
+  assert.equal(saves.length,1);assert.equal(saves[0].protocol,'dashscope');assert.equal(saves[0].responseFormat,'auto');
+  assert.equal(saves[0].localOnly,false);assert.equal(saves[0].apiKey,'secret-image-key');
+  const html=app.run('imageSettingsPanel()');
+  assert.match(html,/value="dashscope" selected/);assert.match(html,/id="image-response-format"[^>]+disabled/);
+  assert.match(html,/Token Plan/);assert.ok(!html.includes('secret-image-key'));
+});
+
+test('changing image protocol preserves the draft and requires saving before a connection check', async () => {
+  const app=harness(null,null,{load:async()=>({settings:{},status:{mode:'ai'}})});await Promise.resolve();
+  app.node('#image-model-url').value='https://old.example/compatible-mode/v1';
+  app.node('#image-model-name').value='wan2.7-image-pro';app.node('#image-model-key').value='old-draft-key';
+  app.node('#image-settings-form [name=localOnly]').checked=false;
+  app.change('image-protocol','dashscope');
+  assert.equal(app.node('#image-model-url').value,'https://old.example/compatible-mode/v1');
+  assert.equal(app.node('#image-model-name').value,'wan2.7-image-pro');
+  assert.equal(app.node('#image-model-key').value,'');assert.equal(app.node('#image-key-action').value,'replace');
+  assert.equal(app.node('#image-response-format').disabled,true);assert.equal(app.node('#image-response-format').value,'auto');
+  assert.equal(app.node('[data-action="check-image-connection"]').disabled,true);
+  assert.match(app.node('#image-protocol-hint').textContent,/\/api\/v1/);
+  app.change('image-protocol','compatible');assert.equal(app.node('#image-response-format').disabled,false);
+});
+
+test('saving an aliased native image root explains the same-provider adjustment rather than forbidding Token Plan', async () => {
+  const saves=[],bridge={load:async()=>({settings:{},status:{mode:'ai'}}),saveImageSettings:async input=>{
+    saves.push(input);const {apiKey,keyAction,...safe}=input;return {...safe,baseUrl:'https://token-plan.cn-beijing.maas.aliyuncs.com/api/v1',hasApiKey:true};
+  }};
+  const app=harness(null,null,bridge);await Promise.resolve();
+  await app.submit('image-settings-form',{enabled:'on',protocol:'dashscope',model:'wan2.7-image-pro',baseUrl:'https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1',keyAction:'replace',apiKey:'sk-sp-test-only',size:'1024x1024',timeout:'180',downloadHosts:''});
+  assert.equal(saves.length,1);assert.equal(saves[0].apiKey,'sk-sp-test-only');
+  assert.match(app.run('imageConnectionResult'),/已保存.*同域名.*未更换服务商或密钥/);
+  const html=app.run('imageSettingsPanel()');assert.match(html,/此提醒不阻止保存/);assert.match(html,/token-plan.cn-beijing.maas.aliyuncs.com\/api\/v1/);
+  assert.ok(!html.includes('sk-sp-test-only'));
+});
+
+test('image settings save failures expose the cause in both notices and preserve the previous configuration and draft', async () => {
+  const safe={enabled:true,protocol:'compatible',model:'old-model',baseUrl:'http://localhost/v1',size:'1024x1024',responseFormat:'auto',timeoutMs:180000,localOnly:true,downloadHosts:''};
+  const app=harness(null,null,{load:async()=>({settings:{},status:{mode:'ai'},imageSettings:safe}),saveImageSettings:async()=>{throw new Error('云端须关闭仅本机选项');}});await Promise.resolve();
+  app.node('#image-model-key').value='draft-key';
+  await app.submit('image-settings-form',{enabled:'on',protocol:'dashscope',model:'wan2.7-image-pro',baseUrl:'https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1',localOnly:'on',keyAction:'replace',apiKey:'draft-key',size:'1024x1024',timeout:'180',downloadHosts:''});
+  assert.match(app.node('#image-settings-error').textContent,/仅本机/);
+  assert.match(app.node('#image-connection-result').textContent,/保存失败.*仅本机/);
+  assert.equal(app.node('[data-action="check-image-connection"]').disabled,true);
+  assert.equal(app.run('imageSettings.model'),'old-model');assert.equal(app.node('#image-model-key').value,'draft-key');
+});
 
 // This harness checks application state transitions, not browser rendering.
-const source = (await readFile(new URL('../public/app.js', import.meta.url), 'utf8')).replace(/^import .* from '\.\/[^']+';$/gm, '');
-function harness(saved, fetchImpl) {
+function harness(saved, fetchImpl, desktopBridge) {
   const nodes = new Map(), listeners = new Map(), storage = new Map(saved ? [['learnflow.v1', saved]] : []);
   const node = selector => {
     if (!nodes.has(selector)) nodes.set(selector, { innerHTML: '', textContent: '', open: false, attributes: {}, setAttribute(name, value) { this.attributes[name] = value; }, classList: { add() {}, remove() {} }, scrollIntoView() {}, focus() {}, showModal() { this.open = true; }, close() { this.open = false; } });
     return nodes.get(selector);
   };
   const context = vm.createContext({
-    demoPlan, demoLessons, lessonFromBlocks, validOutline, validBlockContent, validBlockSpec, blockGenerationContext, revisedContent, restoredContent, Marked, DOMPurify, createMarkdownRenderer, validQuestionnaire, validClarification, learningBriefFrom, structuredClone, crypto: webcrypto, AbortSignal,
+    demoPlan, demoLessons, lessonFromBlocks, validOutline, validBlockContent, validBlockSpec, blockGenerationContext, revisedContent, restoredContent, Marked, DOMPurify, createMarkdownRenderer, validQuestionnaire, validClarification, learningBriefFrom, validIllustration, validImageProposal, structuredClone, crypto: webcrypto, AbortSignal,
     document: { querySelector: node, addEventListener(name, listener) { listeners.set(name, listener); } },
     localStorage: { get length() { return storage.size; }, key: index => [...storage.keys()][index] ?? null, getItem: key => storage.get(key) ?? null, setItem: (key, value) => storage.set(key, value), removeItem: key => storage.delete(key) },
-    window: { scrollY: 0, scrollTo({ top }) { this.scrollY = top; }, confirm: () => true }, setTimeout: () => 1, clearTimeout() {},
+    window: { learnflowDesktop: desktopBridge, scrollY: 0, scrollTo({ top }) { this.scrollY = top; }, confirm: () => true }, setTimeout: () => 1, clearTimeout() {},
     fetch: fetchImpl || (async () => ({ ok: true, json: async () => ({ mode: 'demo', model: null }) })),
     FormData: class { constructor(form) { this.values = form.values; } get(key) { return this.values[key] ?? null; } getAll(key) { const value = this.values[key]; return value === undefined ? [] : Array.isArray(value) ? value : [value]; } }
   });
@@ -39,7 +188,8 @@ function harness(saved, fetchImpl) {
     node('#' + id).value = value;
     listeners.get('input')({ target: { id, value, dataset } });
   };
-  return { run, submit, input, node, storage };
+  const change = (id,value) => listeners.get('change')({target:{id,value}});
+  return { run, submit, input, change, node, storage };
 }
 test('learning loop: incorrect answers, retry, completion, Wiki creation, edit and persistence', async () => {
   const app = harness();

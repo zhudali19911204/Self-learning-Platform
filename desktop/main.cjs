@@ -1,15 +1,15 @@
-const { app, BrowserWindow, ipcMain, dialog, shell, safeStorage, Menu, session } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, shell, safeStorage, Menu, session, nativeImage } = require('electron');
 const path = require('node:path');
 const { pathToFileURL } = require('node:url');
 const { randomBytes } = require('node:crypto');
-const { readFile, writeFile, mkdir } = require('node:fs/promises');
+const { readFile, writeFile, mkdir, stat } = require('node:fs/promises');
 
 app.setName('Learnflow');
 const smoke = process.argv.includes('--smoke-test');
 const development = process.argv.includes('--dev-profile');
 if (smoke) app.setPath('userData', path.resolve('.desktop-test'));
 else if (development) app.setPath('userData', path.resolve('.desktop-dev'));
-let window, server, store, learning, base, shuttingDown = false;
+let window, server, store, imageStore, learning, base, shuttingDown = false;
 const token = randomBytes(32).toString('hex');
 if (!app.requestSingleInstanceLock()) app.quit();
 else {
@@ -25,19 +25,28 @@ function handle(channel, fn) {
   });
 }
 async function start() {
-  const { createApp } = await import(pathToFileURL(path.join(__dirname, '..', 'server.mjs')));
+  const { createApp, illustrationGuidance } = await import(pathToFileURL(path.join(__dirname, '..', 'server.mjs')));
   const { createLLM } = await import(pathToFileURL(path.join(__dirname, '..', 'llm.mjs')));
   const { createLocalStore, validState } = await import(pathToFileURL(path.join(__dirname, 'local-store.mjs')));
   const { createSqliteStore } = await import(pathToFileURL(path.join(__dirname, 'sqlite-store.mjs')));
+  const { createImageStore } = await import(pathToFileURL(path.join(__dirname, 'image-store.mjs')));
+  const { createImageModel } = await import(pathToFileURL(path.join(__dirname, '..', 'image-model.mjs')));
+  const { validImageSuggestion, validImageProposal } = await import(pathToFileURL(path.join(__dirname, '..', 'public', 'illustrations.js')));
   const dataDirectory = path.join(app.getPath('userData'), 'data');
   await mkdir(dataDirectory, { recursive: true });
   const available = () => safeStorage.isEncryptionAvailable() && (process.platform !== 'linux' || safeStorage.getSelectedStorageBackend() !== 'basic_text');
-  store = createLocalStore(dataDirectory, {
+  const secrets = {
     encrypt: async value => { if (!available()) throw new Error('系统安全存储不可用，无法保存密钥。可使用不需要密钥的本地模型。'); return safeStorage.encryptString(value).toString('base64'); },
     decrypt: async value => { if (!available()) throw new Error('系统安全存储不可用。'); return safeStorage.decryptString(Buffer.from(value, 'base64')); }
-  });
+  };
+  store = createLocalStore(dataDirectory, secrets);
   await store.initialize();
-  learning = await createSqliteStore(dataDirectory);
+  imageStore = createImageStore(dataDirectory, secrets, bytes => {
+    const decoded = nativeImage.createFromBuffer(bytes), { width, height } = decoded.getSize();
+    if (decoded.isEmpty() || width < 1 || height < 1 || width > 4096 || height > 4096) throw new Error('图片无法解码或尺寸超过 4096，请调整图片模型尺寸。');
+  });
+  await imageStore.initialize();
+  learning = await createSqliteStore(dataDirectory, { withAssets: state => imageStore.withAssets(state) });
   // A separate in-memory session keeps model traffic outside the renderer's
   // localhost-only webRequest policy and uses Chromium's OS trust/proxy setup.
   const modelSession = session.fromPartition('learnflow-model-network');
@@ -55,13 +64,15 @@ async function start() {
     app.quit();
     return;
   }
-  server = createApp({ getLLM: () => llm, apiToken: token });
+  server = createApp({ getLLM: () => llm, apiToken: token, getImageSettings: () => imageStore.getSettings(), getImageAsset: async id => {
+    try { return await imageStore.readAsset(id); } catch { return null; }
+  } });
   await new Promise((resolve, reject) => { server.once('error', reject); server.listen(0, '127.0.0.1', resolve); });
   base = `http://127.0.0.1:${server.address().port}`;
   handle('learnflow:load', async () => {
     let state = null, stateError = '';
     try { state = learning.overview(); } catch (error) { stateError = error.message; }
-    return { settings: store.getSettings(), state, stateError, status: llm.status(), dataDirectory, startPage: process.argv.includes('--settings') ? 'settings' : 'home' };
+    return { settings: store.getSettings(), imageSettings: imageStore.getSettings(), state, stateError, status: llm.status(), dataDirectory, startPage: process.argv.includes('--settings') ? 'settings' : 'home' };
   });
   handle('learnflow:get-lesson', id => learning.getLesson(id));
   handle('learnflow:save-plan', value => learning.savePlan(value));
@@ -85,6 +96,80 @@ async function start() {
   handle('learnflow:save-reflection', (id, value) => learning.saveReflection(id, value));
   handle('learnflow:append-chat', (id, question, answer) => learning.appendChat(id, question, answer));
   handle('learnflow:save-note', value => learning.saveNote(value));
+  const imageRequests = new Set();
+  const { createPendingImageDownloads } = await import('./pending-images.mjs');
+  const pendingImages = createPendingImageDownloads();
+  function illustrationBlock(lessonId, blockId) {
+    const block = learning.getLesson(lessonId).blockCourse?.blocks.find(item => item.id === blockId);
+    if (!block?.content || !['reading', 'example'].includes(block.type)) throw new Error('只能为已保存的讲解或案例配图。');
+    return block;
+  }
+  function pendingIllustration(lessonId, blockId, pendingId) {
+    const key = `${lessonId}/${blockId}`, record = pendingImages.get(key, pendingId);
+    if (!record) return null;
+    const config = imageStore.getConfig();
+    if (JSON.stringify(illustrationBlock(lessonId, blockId).content) !== record.expectedContent || config.baseUrl !== record.baseUrl || config.model !== record.model || config.protocol !== record.protocol) {
+      pendingImages.drop(key, record.id); return null;
+    }
+    return record;
+  }
+  handle('learnflow:save-image-settings', value => imageStore.saveSettings(value));
+  handle('learnflow:check-image-connection', () => createImageModel(imageStore.getConfig(), modelFetch).checkConnection());
+  handle('learnflow:get-pending-illustration', (lessonId, blockId) => {
+    const record = pendingIllustration(lessonId, blockId); return record ? pendingImages.public(record) : null;
+  });
+  handle('learnflow:discard-illustration-download', (lessonId, blockId, pendingId) => {
+    if (typeof pendingId !== 'string' || !pendingId) throw new Error('待下载图片标识无效。');
+    const key = `${lessonId}/${blockId}`;
+    if (imageRequests.has(key)) throw new Error('正在下载配图，请等待完成后再放弃。');
+    pendingImages.drop(key, pendingId);
+  });
+  handle('learnflow:retry-illustration-download', async value => {
+    if (!value || typeof value.pendingId !== 'string' || !value.pendingId) throw new Error('待下载图片标识无效。');
+    const key = `${value.lessonId}/${value.blockId}`;
+    if (imageRequests.has(key)) throw new Error('正在下载配图，请勿重复提交。');
+    const record = pendingIllustration(value.lessonId, value.blockId, value.pendingId);
+    if (!record) throw new Error('待下载结果已过期、应用已重启，或课程／服务已更改。没有重新生成；请查看服务商记录或重新打开配图面板。');
+    imageRequests.add(key);
+    try {
+      const bytes = await createImageModel(imageStore.getConfig(), modelFetch).download(record.url);
+      const id = await imageStore.put(bytes);
+      const content = learning.attachIllustration(value.lessonId, value.blockId, { id, prompt: record.prompt, caption: record.caption, model: record.model, created: Date.now() }, record.expectedContent);
+      pendingImages.drop(key, record.id); return content;
+    } catch (error) {
+      record.error = error.code ? '本地图片保存失败，请检查目录权限和磁盘空间。' : error.message;
+      return pendingImages.public(record);
+    } finally { imageRequests.delete(key); }
+  });
+  handle('learnflow:suggest-illustration', async (lessonId, blockId) => {
+    if (!imageStore.getConfig().enabled) throw new Error('请先启用图片模型。');
+    const block = illustrationBlock(lessonId, blockId);
+    const text = block.content.text;
+    const result = await llm.generate(`${illustrationGuidance}返回 JSON：需要配图时 {"needed":true,"reason":"为什么有帮助","prompt":"图片提示词","caption":"图注"}；无需配图时 {"needed":false,"reason":"解释理由"}。`, { title: block.title, objective: block.objective, text }, validImageSuggestion);
+    if (illustrationBlock(lessonId, blockId).content.text !== text) throw new Error('正文已更新，请重新分析配图。');
+    return result;
+  });
+  handle('learnflow:generate-illustration', async value => {
+    if (!value || !validImageProposal(value)) throw new Error('请填写有效的配图提示词和图注。');
+    const block = illustrationBlock(value.lessonId, value.blockId);
+    if (block.content.text !== value.expectedText || (block.content.illustration?.id || '') !== (value.expectedImageId || '')) throw new Error('课程或配图已更新，请重新打开配图面板。');
+    const requestId = `${value.lessonId}/${value.blockId}`;
+    if (imageRequests.has(requestId)) throw new Error('这个模块正在生成配图，请等待，不要重复提交。');
+    const previousDownload = pendingIllustration(value.lessonId, value.blockId);
+    if (previousDownload) return pendingImages.public(previousDownload); // Never silently charge again.
+    imageRequests.add(requestId);
+    const expectedContent = JSON.stringify(block.content), config = imageStore.getConfig();
+    let downloadURL, downloadHost;
+    try {
+      const bytes = await createImageModel(config, modelFetch).generate(value.prompt, (url, host) => { downloadURL = url; downloadHost = host; });
+      const id = await imageStore.put(bytes);
+      return learning.attachIllustration(value.lessonId, value.blockId, { id, prompt: value.prompt, caption: value.caption, model: config.model, created: Date.now() }, expectedContent);
+    } catch (error) {
+      if (!downloadURL) throw error;
+      const record = pendingImages.put(requestId, { url: downloadURL, host: downloadHost, expectedContent, baseUrl: config.baseUrl, protocol: config.protocol, model: config.model, prompt: value.prompt, caption: value.caption, error: error.code ? '本地图片保存失败，请检查目录权限和磁盘空间。' : error.message });
+      return pendingImages.public(record);
+    } finally { imageRequests.delete(requestId); }
+  });
   handle('learnflow:save-settings', async value => {
     try {
       const settings = await store.saveSettings(value);
@@ -118,20 +203,23 @@ async function start() {
   handle('learnflow:export-backup', async () => {
     const selected = await dialog.showSaveDialog(window, { title: '导出完整学习备份', defaultPath: 'learnflow-backup.json', filters: [{ name: 'Learnflow JSON 备份', extensions: ['json'] }] });
     if (selected.canceled) return false;
-    await writeFile(selected.filePath, JSON.stringify(learning.exportState(), null, 2), 'utf8');
+    const snapshot = await imageStore.withAssets(learning.exportState());
+    await writeFile(selected.filePath, JSON.stringify(snapshot), 'utf8');
     return true;
   });
   handle('learnflow:import', async () => {
     const selected = await dialog.showOpenDialog(window, { title: '导入 Learnflow JSON 备份', properties: ['openFile'], filters: [{ name: 'Learnflow 备份', extensions: ['json'] }] });
     if (selected.canceled) return null;
+    if ((await stat(selected.filePaths[0])).size > 256 * 1024 * 1024) throw new Error('备份超过 256 MB。');
     const bytes = await readFile(selected.filePaths[0]);
     if (bytes.length > 256 * 1024 * 1024) throw new Error('备份超过 256 MB。');
     let imported;
     try { imported = JSON.parse(bytes.toString('utf8')); } catch { throw new Error('备份不是有效的 JSON 文件。'); }
     if (!validState(imported)) throw new Error('备份格式不正确，未修改现有数据。');
+    const stageImages = await imageStore.prepareImport(imported);
     const confirm = await dialog.showMessageBox(window, { type: 'question', buttons: ['取消', '导入并替换'], defaultId: 0, cancelId: 0, message: '用备份替换当前学习数据？', detail: '导入前会创建 SQLite 快照备份。模型配置和密钥不会被替换。' });
     if (confirm.response !== 1) return null;
-    await learning.backupBeforeImport(); return learning.replaceState(imported);
+    await learning.backupBeforeImport(); await stageImages(); return learning.replaceState(imported);
   });
   Menu.setApplicationMenu(Menu.buildFromTemplate([
     { label: '应用', submenu: [{ label: '退出', role: 'quit' }] },
@@ -146,6 +234,7 @@ async function start() {
   window.webContents.on('will-navigate', (event, url) => { if (url !== base + '/') event.preventDefault(); });
   window.webContents.on('will-attach-webview', event => event.preventDefault());
   const rendererSession = window.webContents.session;
+  await rendererSession.cookies.set({ url: base, name: 'learnflow-assets', value: token, httpOnly: true, sameSite: 'strict' });
   rendererSession.setPermissionRequestHandler((_, __, callback) => callback(false));
   rendererSession.setPermissionCheckHandler(() => false);
   rendererSession.webRequest.onBeforeRequest((details, callback) => { callback({ cancel: !details.url.startsWith(base + '/') }); });
@@ -157,12 +246,12 @@ async function start() {
   if (development) { window.setTitle('知行 Learnflow · 开发测试版'); console.log('DESKTOP_DEV_READY'); }
   if (smoke) {
     await require('./smoke.cjs').run(window, { ...store, loadState: async () => learning.exportState() }, dataDirectory);
-    await store.flush(); app.quit();
+    await store.flush(); await imageStore.flush(); app.quit();
   }
 }
 app.on('window-all-closed', () => app.quit());
 app.on('before-quit', event => {
   if (shuttingDown) return;
   event.preventDefault(); shuttingDown = true;
-  Promise.resolve(store?.flush()).finally(() => { learning?.close(); server?.closeAllConnections(); server?.close(); app.quit(); });
+  Promise.all([store?.flush(), imageStore?.flush()]).finally(() => { learning?.close(); server?.closeAllConnections(); server?.close(); app.quit(); });
 });

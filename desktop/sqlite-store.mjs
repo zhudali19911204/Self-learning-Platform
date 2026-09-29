@@ -105,7 +105,7 @@ function readExport(db) {
   return state;
 }
 
-export async function createSqliteStore(directory) {
+export async function createSqliteStore(directory, options = {}) {
   await mkdir(directory, { recursive: true });
   const filename = path.join(directory, 'learning.sqlite');
   if (!(await exists(filename))) {
@@ -193,7 +193,7 @@ export async function createSqliteStore(directory) {
     },
     async deletePlan(planId) {
       planDeletionPreview(planId);
-      const snapshot = JSON.stringify(exportState(), null, 2);
+      const snapshot = JSON.stringify(options.withAssets ? await options.withAssets(exportState()) : exportState(), null, options.withAssets ? undefined : 2);
       const folder = path.join(directory, 'backups');
       await mkdir(folder, { recursive: true });
       const backupPath = path.join(folder, `before-delete-${new Date().toISOString().replace(/[:.]/g, '-')}-${randomUUID()}.json`);
@@ -248,6 +248,19 @@ export async function createSqliteStore(directory) {
       transaction(db, () => {
         db.prepare('UPDATE lesson_blocks SET content_json = ? WHERE lesson_id = ? AND id = ? AND content_json IS NULL').run(JSON.stringify(content), lessonId, blockId);
         if (block.type === 'quiz') db.prepare("UPDATE progress SET completed = 0, last_score = 0, last_answers_json = '[]' WHERE lesson_id = ?").run(lessonId);
+      });
+    },
+    attachIllustration(lessonId, blockId, illustration, expectedContent) {
+      requireLesson(lessonId);
+      if (!id(blockId)) throw new Error('内容块不存在。');
+      return transaction(db, () => {
+        const block = db.prepare('SELECT type, content_json FROM lesson_blocks WHERE lesson_id = ? AND id = ?').get(lessonId, blockId);
+        if (!block?.content_json || !['reading', 'example'].includes(block.type)) throw new Error('只能为已保存的讲解或案例配图。');
+        if (block.content_json !== expectedContent) throw new Error('内容已更新，图片未覆盖当前内容；图片文件已保留在本地。');
+        const next = { ...fromJSON(block.content_json), illustration };
+        if (!validBlockContent(block.type, next)) throw new Error('配图信息无效。');
+        db.prepare('UPDATE lesson_blocks SET content_json = ? WHERE lesson_id = ? AND id = ?').run(JSON.stringify(next), lessonId, blockId);
+        return next;
       });
     },
     reviseBlock(lessonId, blockId, content, expectedText) {
