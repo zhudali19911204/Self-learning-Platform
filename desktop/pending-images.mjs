@@ -15,6 +15,7 @@ export function createPendingImageDownloads({ now = Date.now, ttlMs = 30 * 60 * 
     },
     get(key, id) { prune(); const record = records.get(key); return record && (!id || record.id === id) ? record : null; },
     drop(key, id) { const record = records.get(key); if (record && (!id || record.id === id)) records.delete(key); },
+    dropLessons(lessonIds) { const ids = new Set(lessonIds); for (const key of records.keys()) if (ids.has(key.split('/')[0])) records.delete(key); },
     public(record) {
       return { pendingDownload: { id: record.id, host: record.host || new URL(record.url).hostname, expiresAt: record.expiresAt }, prompt: record.prompt, caption: record.caption, error: record.error };
     }

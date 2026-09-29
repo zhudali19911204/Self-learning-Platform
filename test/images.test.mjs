@@ -267,6 +267,7 @@ test('pending result cache is private, bounded, expiring and token-scoped withou
   cache.drop('p1/b1','wrong');assert.ok(cache.get('p1/b1'));
   cache.put('p1/b2',value);cache.put('p1/b3',value);assert.equal(cache.get('p1/b1'),null);
   const second=cache.get('p1/b2');cache.drop('p1/b2',second.id);assert.equal(cache.get('p1/b2'),null);
+  cache.put('p2/b1',value);cache.dropLessons(['p1']);assert.equal(cache.get('p1/b3'),null);assert.ok(cache.get('p2/b1'));
   clock=1100;assert.equal(cache.get('p1/b3'),null);
   assert.equal(createPendingImageDownloads().get('p1/b3'),null,'new process cache has no prior signed URLs');
   assert.throws(()=>createPendingImageDownloads({max:0}));
@@ -358,9 +359,9 @@ test('content-addressed local assets deduplicate, validate paths and round-trip 
   await assert.rejects(imported.prepareImport({...exported,imageAssets:[{id:'0'.repeat(64),data:png.toString('base64')}]}), /校验/);
   await assert.rejects(imported.prepareImport({...exported,imageAssets:[...exported.imageAssets,...exported.imageAssets]}), /重复/);
 });
-test('SQLite attaches images atomically, rejects stale generations and preserves assets in delete backups', async t => {
+test('SQLite attaches images atomically and deletes unreferenced course assets', async t => {
   const root = await directory(t), assets = createImageStore(root, secrets);
-  const store = await createSqliteStore(root, {withAssets:state => assets.withAssets(state)});
+  const store = await createSqliteStore(root);
   try {
   const course = store.saveOutline('p1', {intro:'教学示意',blocks:[{type:'reading',title:'输入输出',objective:'理解输入与输出'},{type:'quiz',title:'测验',objective:'检查理解'}]});
   const block = course.blocks[0]; store.saveBlock('p1',block.id,{text:'原正文'});
@@ -375,7 +376,24 @@ test('SQLite attaches images atomically, rejects stale generations and preserves
   const another = {...structuredClone(state.plans[0]),id:'another',lessons:state.plans[0].lessons.map(l=>({...l,id:`other-${l.id}`}))};
   store.savePlan(another);
   const deleted = await store.deletePlan(state.plans[0].id);
-  const backup = JSON.parse(await readFile(deleted.backupPath,'utf8')); assert.equal(backup.imageAssets[0].id,id);
-  assert.deepEqual((await assets.readAsset(id)).bytes,png,'deletion retains assets needed by backups');
+  assert.deepEqual(deleted.imageIds, [id]);
+  await assets.deleteAssets(deleted.imageIds);
+  await assert.rejects(assets.readAsset(id), { code: 'ENOENT' });
+  } finally { store.close(); }
+});
+test('deleting one route keeps images still referenced by another route', async t => {
+  const root = await directory(t), assets = createImageStore(root, secrets), store = await createSqliteStore(root);
+  try {
+    await assets.put(png);
+    const route = { ...structuredClone(store.overview().plans[0]), id: 'shared-route', source: 'ai', lessons: store.overview().plans[0].lessons.map((lesson, index) => ({ ...lesson, id: `shared-${index}` })) };
+    store.savePlan(route);
+    for (const lessonId of ['p1', 'shared-0']) {
+      const block = store.saveOutline(lessonId, { intro: '共享配图', blocks: [{ type: 'reading', title: '示意', objective: '理解' }, { type: 'quiz', title: '测验', objective: '检查理解' }] }).blocks[0];
+      store.saveBlock(lessonId, block.id, { text: '课程正文' });
+      store.attachIllustration(lessonId, block.id, image, JSON.stringify({ text: '课程正文' }));
+    }
+    const deleted = await store.deletePlan(route.id);
+    assert.deepEqual(deleted.imageIds, []);
+    assert.deepEqual((await assets.readAsset(id)).bytes, png);
   } finally { store.close(); }
 });

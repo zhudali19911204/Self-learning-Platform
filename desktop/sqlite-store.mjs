@@ -1,5 +1,5 @@
 import { DatabaseSync, backup } from 'node:sqlite';
-import { mkdir, readFile, rename, stat, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, rename, stat } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
 import path from 'node:path';
@@ -7,6 +7,8 @@ import { demoPlan, demoLessons } from '../public/demo.js';
 import { validLesson } from '../server.mjs';
 import { validState } from './local-store.mjs';
 import { validOutline, validBlockSpec, validBlockContent, revisedContent, restoredContent, assistedBlockTypes } from '../public/blocks.js';
+import { referencedImages } from '../public/illustrations.js';
+import { removePlanFromBackups } from './course-backups.mjs';
 
 const exists = async file => { try { await stat(file); return true; } catch (error) { if (error.code === 'ENOENT') return false; throw error; } };
 const id = value => typeof value === 'string' && /^[a-zA-Z0-9_-]{1,160}$/.test(value) && !['__proto__', 'constructor', 'prototype'].includes(value);
@@ -105,7 +107,7 @@ function readExport(db) {
   return state;
 }
 
-export async function createSqliteStore(directory, options = {}) {
+export async function createSqliteStore(directory) {
   await mkdir(directory, { recursive: true });
   const filename = path.join(directory, 'learning.sqlite');
   if (!(await exists(filename))) {
@@ -193,12 +195,8 @@ export async function createSqliteStore(directory, options = {}) {
     },
     async deletePlan(planId) {
       planDeletionPreview(planId);
-      const snapshot = JSON.stringify(options.withAssets ? await options.withAssets(exportState()) : exportState(), null, options.withAssets ? undefined : 2);
-      const folder = path.join(directory, 'backups');
-      await mkdir(folder, { recursive: true });
-      const backupPath = path.join(folder, `before-delete-${new Date().toISOString().replace(/[:.]/g, '-')}-${randomUUID()}.json`);
-      await writeFile(backupPath, snapshot, { encoding: 'utf8', mode: 0o600, flag: 'wx' });
-      if (await readFile(backupPath, 'utf8') !== snapshot) throw new Error('删除前备份校验失败，学习路线未删除。');
+      const lessonIds = db.prepare('SELECT id FROM lessons WHERE plan_id = ?').all(planId).map(row => row.id);
+      const beforeImages = referencedImages(exportState());
       transaction(db, () => {
         planDeletionPreview(planId);
         const current = db.prepare("SELECT value FROM meta WHERE key = 'active_plan'").get()?.value;
@@ -208,7 +206,10 @@ export async function createSqliteStore(directory, options = {}) {
         db.prepare("UPDATE meta SET value = ? WHERE key = 'active_plan'").run(next);
         for (const [position, row] of db.prepare('SELECT id FROM plans ORDER BY position').all().entries()) db.prepare('UPDATE plans SET position = ? WHERE id = ?').run(position, row.id);
       });
-      return { state: overview(), backupPath };
+      const remainingImages = new Set(referencedImages(exportState()));
+      const imageIds = beforeImages.filter(imageId => !remainingImages.has(imageId));
+      const backups = await removePlanFromBackups(directory, planId);
+      return { state: overview(), lessonIds, imageIds, backups };
     },
     saveLesson(lessonId, content) {
       requireLesson(lessonId);

@@ -57,7 +57,7 @@ async function start() {
   await webSearchStore.initialize();
   speechStore = createSpeechStore(dataDirectory, secrets);
   await speechStore.initialize();
-  learning = await createSqliteStore(dataDirectory, { withAssets: state => imageStore.withAssets(state) });
+  learning = await createSqliteStore(dataDirectory);
   // A separate in-memory session keeps model traffic outside the renderer's
   // localhost-only webRequest policy and uses Chromium's OS trust/proxy setup.
   const modelSession = session.fromPartition('learnflow-model-network');
@@ -88,8 +88,9 @@ async function start() {
   });
   handle('learnflow:save-speech-settings', value => speechStore.saveSettings(value));
   handle('learnflow:check-speech-connection', () => createSpeechModel(speechStore.getConfig(), modelFetch).check());
-  handle('learnflow:prepare-speech', value => speechService.prepare(value));
-  handle('learnflow:generate-speech', value => speechService.generate(value));
+  const speechForLesson = value => { learning.getLesson(value?.lessonId); return value; };
+  handle('learnflow:prepare-speech', value => speechService.prepare(speechForLesson(value)));
+  handle('learnflow:generate-speech', value => speechService.generate(speechForLesson(value)));
   handle('learnflow:get-lesson', id => learning.getLesson(id));
   handle('learnflow:save-plan', value => learning.savePlan(value));
   handle('learnflow:set-active-plan', id => learning.setActivePlan(id));
@@ -97,10 +98,20 @@ async function start() {
     const preview = learning.planDeletionPreview(id);
     const choice = await dialog.showMessageBox(window, {
       type: 'warning', title: '删除学习路线', message: `删除「${preview.title}」？`,
-      detail: `这会同时移除 ${preview.lessons} 节课程、关联的练习进度与答疑记录，以及 ${preview.notes} 张 Wiki 卡片。删除前会在本地 backups 目录保存完整 JSON 备份。`,
+      detail: `这会移除 ${preview.lessons} 节课程、关联进度与答疑、${preview.notes} 张 Wiki 卡片，以及课程独有的配图和已关联语音。历史 JSON 备份会移除这条路线；包含它的旧版 SQLite 快照会删除。无法恢复，请确认。`,
       buttons: ['取消', '删除路线'], defaultId: 0, cancelId: 0, noLink: true
     });
-    return choice.response === 1 ? learning.deletePlan(id) : null;
+    if (choice.response !== 1) return null;
+    const lessonIds = new Set(learning.overview().plans.find(plan => plan.id === id).lessons.map(lesson => lesson.id));
+    if (speechService.isBusy() || [...imageRequests].some(key => lessonIds.has(key.split('/')[0]))) throw new Error('课程素材正在生成，请完成后再删除。');
+    const result = await learning.deletePlan(id);
+    pendingImages.dropLessons(result.lessonIds);
+    const warnings = [...result.backups.failures];
+    if (!result.backups.failures.length) {
+      try { await imageStore.deleteAssets(result.imageIds); } catch (error) { warnings.push(`图片清理失败：${error.message}`); }
+    } else warnings.push('部分备份未清理，配图已保留，避免使备份无法恢复。');
+    try { await speechStore.deleteLessons(result.lessonIds); } catch (error) { warnings.push(`语音清理失败：${error.message}`); }
+    return { state: result.state, warnings, cleanedBackups: result.backups.cleaned };
   });
   handle('learnflow:save-lesson', (id, value) => learning.saveLesson(id, value));
   handle('learnflow:save-outline', (id, value) => learning.saveOutline(id, value));

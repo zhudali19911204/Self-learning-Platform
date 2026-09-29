@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, writeFile, rm, stat } from 'node:fs/promises';
+import { mkdtemp, readFile, writeFile, rm, stat, mkdir, readdir } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
@@ -70,9 +70,10 @@ test('confirmed learning requirements survive save, reopen, export, import and d
     assert.throws(() => store.replaceState(invalid),/格式不正确/);
     store.replaceState(exported);
     assert.deepEqual(store.overview().plans.at(-1).learningBrief,plan.learningBrief);
+    const backup = store.exportState();
     const deleted = await store.deletePlan(plan.id);
     assert.equal(deleted.state.plans.length,1);
-    const backup = JSON.parse(await readFile(deleted.backupPath,'utf8'));
+    assert.equal(deleted.backupPath, undefined);
     assert.deepEqual(backup.plans.at(-1).learningBrief,plan.learningBrief);
     store.replaceState(backup);
     assert.deepEqual(store.overview().plans.at(-1).learningBrief,plan.learningBrief);
@@ -193,7 +194,7 @@ test('practice images and revision history persist, export and restore without c
   } finally { store.close(); }
 });
 
-test('deleting a route creates an importable backup and removes only its related records', async t => {
+test('deleting a route removes its related records and redacts existing backups', async t => {
   const directory = await temporary(t), store = await createSqliteStore(directory);
   try {
     const route = structuredClone(demoPlan);
@@ -207,6 +208,12 @@ test('deleting a route creates an importable backup and removes only its related
     store.appendChat(lessonId, '测试问题', '测试回答');
     store.saveNote({ ...legacy().notes[0], id: 'delete-note', lessonId, source: 'ai' });
     assert.equal(store.planDeletionPreview(route.id).notes, 1);
+    const backupFolder = path.join(directory, 'backups');
+    await mkdir(backupFolder);
+    const backupFile = path.join(backupFolder, 'before-delete-test.json');
+    await writeFile(backupFile, JSON.stringify(store.exportState()));
+    await writeFile(path.join(directory, 'learning.json.bak'), JSON.stringify(store.exportState()));
+    const sqliteSnapshot = await store.backupBeforeImport();
     const deleted = await store.deletePlan(route.id);
     assert.equal(deleted.state.active, demoPlan.id);
     assert.equal(deleted.state.plans.length, 1);
@@ -216,13 +223,14 @@ test('deleting a route creates an importable backup and removes only its related
     assert.equal(exported.notes.length, 0);
     assert.equal(exported.progress[lessonId], undefined);
     await assert.rejects(store.deletePlan(demoPlan.id), /至少保留一条/);
-    const backup = JSON.parse(await readFile(deleted.backupPath, 'utf8'));
-    assert.equal(backup.plans.length, 2);
-    assert.equal(backup.reflections[lessonId], '需要保留在备份中的心得');
-    assert.equal(backup.notes[0].id, 'delete-note');
-    store.replaceState(backup);
-    assert.equal(store.getLesson(lessonId).chats.length, 2);
-    assert.equal(store.overview().plans.length, 2);
+    const backup = JSON.parse(await readFile(backupFile, 'utf8'));
+    assert.equal(backup.plans.length, 1);
+    assert.equal(backup.reflections[lessonId], undefined);
+    assert.equal(backup.notes.length, 0);
+    assert.equal(JSON.parse(await readFile(path.join(directory, 'learning.json.bak'), 'utf8')).plans.length, 1);
+    await assert.rejects(stat(sqliteSnapshot), { code: 'ENOENT' });
+    assert.deepEqual(deleted.backups.failures, []);
+    assert.equal((await readdir(backupFolder)).filter(name => name.startsWith('before-delete-')).length, 1, 'no new deletion backup');
     await assert.rejects(store.deletePlan('missing'), /路线不存在/);
   } finally { store.close(); }
 });

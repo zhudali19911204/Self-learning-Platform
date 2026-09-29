@@ -5,6 +5,7 @@ import path from 'node:path';
 import { speechDefaults, validAudioId } from '../public/speech.js';
 import { normalizeSpeechSettings, audioMime, MAX_AUDIO_BYTES } from '../speech-model.mjs';
 const hash = bytes => createHash('sha256').update(bytes).digest('hex');
+const validLessonId = value => typeof value === 'string' && /^[a-zA-Z0-9_-]{1,160}$/.test(value);
 
 export function createSpeechStore(directory, secrets) {
   let settings = { ...speechDefaults, apiKey: '' }, error = '', cacheError = '', db, queue = Promise.resolve();
@@ -30,7 +31,7 @@ export function createSpeechStore(directory, secrets) {
       } catch (e) { if (e.code !== 'ENOENT') error = '语音配置无法读取或解密，原文件已保留，请检查 speech-settings.json 及其备份。'; }
       try {
         db = new DatabaseSync(path.join(directory, 'speech-cache.sqlite'));
-        db.exec('PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000; CREATE TABLE IF NOT EXISTS speech_cache (cache_key TEXT PRIMARY KEY, asset_id TEXT NOT NULL, created INTEGER NOT NULL);');
+        db.exec('PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000; CREATE TABLE IF NOT EXISTS speech_cache (cache_key TEXT PRIMARY KEY, asset_id TEXT NOT NULL, created INTEGER NOT NULL); CREATE TABLE IF NOT EXISTS speech_usage (lesson_id TEXT NOT NULL, cache_key TEXT NOT NULL, PRIMARY KEY (lesson_id, cache_key)); CREATE INDEX IF NOT EXISTS speech_usage_by_key ON speech_usage(cache_key);');
       } catch {
         try { db?.close(); } catch {} db = null;
         cacheError = '语音缓存无法读取，原文件已保留，请检查 speech-cache.sqlite 及其目录备份。课程仍可正常使用，不会自动重新计费合成。';
@@ -72,6 +73,27 @@ export function createSpeechStore(directory, secrets) {
       }
       db.prepare('INSERT INTO speech_cache(cache_key,asset_id,created) VALUES(?,?,?) ON CONFLICT(cache_key) DO UPDATE SET asset_id=excluded.asset_id,created=excluded.created').run(key, id, Date.now());
       return { id };
+    }),
+    linkLesson: (lessonId, key) => enqueue(async () => {
+      requireCache();
+      if (!validLessonId(lessonId) || !validAudioId(key)) throw new Error('语音课程关联标识无效。');
+      if (db.prepare('SELECT 1 FROM speech_cache WHERE cache_key = ?').get(key)) db.prepare('INSERT OR IGNORE INTO speech_usage VALUES (?, ?)').run(lessonId, key);
+    }),
+    deleteLessons: lessonIds => enqueue(async () => {
+      requireCache();
+      if (!Array.isArray(lessonIds) || !lessonIds.every(validLessonId)) throw new Error('语音课程关联标识无效。');
+      for (const lessonId of lessonIds) {
+        const keys = db.prepare('SELECT cache_key FROM speech_usage WHERE lesson_id = ?').all(lessonId).map(row => row.cache_key);
+        db.prepare('DELETE FROM speech_usage WHERE lesson_id = ?').run(lessonId);
+        for (const key of keys) {
+          if (db.prepare('SELECT 1 FROM speech_usage WHERE cache_key = ?').get(key)) continue;
+          const row = db.prepare('SELECT asset_id FROM speech_cache WHERE cache_key = ?').get(key);
+          if (!row) continue;
+          db.prepare('DELETE FROM speech_cache WHERE cache_key = ?').run(key);
+          if (db.prepare('SELECT 1 FROM speech_cache WHERE asset_id = ?').get(row.asset_id)) continue;
+          try { await unlink(file(row.asset_id)); } catch (error) { if (error.code !== 'ENOENT') throw error; }
+        }
+      }
     }),
     readAsset,
     flush: () => queue,

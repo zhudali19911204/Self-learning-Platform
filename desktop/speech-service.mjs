@@ -5,21 +5,25 @@ const digest = value => createHash('sha256').update(JSON.stringify(value)).diges
 export const speechCacheKey = (config, turn) => digest([config.baseUrl, config.model, turn.voice, turn.text, config.language, config.rate, 'wav', 24000]);
 
 export function createSpeechService(store, fetchImpl = fetch) {
-  const pending = new Map(); let busy = false;
+  const pending = new Map(); let busy = false, activePreparations = 0;
   function prune() { for (const [key, item] of pending) if (item.expires <= Date.now()) pending.delete(key); }
   function turns(value, config) {
     if (!value || typeof value !== 'object' || !value.assignments || typeof value.assignments !== 'object' || Array.isArray(value.assignments)) throw new Error('朗读请求格式无效。');
     return speechRequest(value.text, config, value.assignments);
   }
   async function prepare(value) {
-    prune(); const config = store.getConfig(), result = [];
-    for (const turn of turns(value, config)) {
-      const key = speechCacheKey(config, turn), cached = await store.lookup(key), wait = pending.get(key);
-      let host = '';
-      if (wait) { host = new URL(wait.url).hostname; if (config.apiKey && host.includes(config.apiKey.toLowerCase())) host = '（已隐藏）'; }
-      result.push({ ...turn, key, id: cached?.id || null, pending: !!wait, host });
-    }
-    return { turns: result, cachedCount: result.filter(turn => turn.id).length, pendingCount: result.filter(turn => !turn.id && turn.pending).length, newCount: result.filter(turn => !turn.id && !turn.pending).length, characters: result.filter(turn => !turn.id && !turn.pending).reduce((n, turn) => n + turn.text.length, 0) };
+    activePreparations++;
+    try {
+      prune(); const config = store.getConfig(), result = [];
+      for (const turn of turns(value, config)) {
+        const key = speechCacheKey(config, turn), cached = await store.lookup(key), wait = pending.get(key);
+        if (cached && value.lessonId && store.linkLesson) await store.linkLesson(value.lessonId, key);
+        let host = '';
+        if (wait) { host = new URL(wait.url).hostname; if (config.apiKey && host.includes(config.apiKey.toLowerCase())) host = '（已隐藏）'; }
+        result.push({ ...turn, key, id: cached?.id || null, pending: !!wait, host });
+      }
+      return { turns: result, cachedCount: result.filter(turn => turn.id).length, pendingCount: result.filter(turn => !turn.id && turn.pending).length, newCount: result.filter(turn => !turn.id && !turn.pending).length, characters: result.filter(turn => !turn.id && !turn.pending).reduce((n, turn) => n + turn.text.length, 0) };
+    } finally { activePreparations--; }
   }
   return {
     prepare,
@@ -40,12 +44,14 @@ export function createSpeechService(store, fetchImpl = fetch) {
               pending.set(turn.key, { url, expires: Date.now() + 30 * 60 * 1000 });
             });
             await store.put(turn.key, bytes); pending.delete(turn.key);
+            if (value.lessonId && store.linkLesson) await store.linkLesson(value.lessonId, turn.key);
           } catch (error) {
             return { ...await prepare(value), error: error.code ? '本地音频保存失败，请检查磁盘空间与目录权限。已保存片段保留，不自动重新生成。' : error.message };
           }
         }
         return prepare(value);
       } finally { busy = false; }
-    }
+    },
+    isBusy: () => busy || activePreparations > 0
   };
 }

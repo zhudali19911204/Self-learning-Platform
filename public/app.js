@@ -497,12 +497,12 @@ async function openSpeech(lessonId, blockId) {
   const block = state.blockCourses?.[lessonId]?.blocks.find(item => item.id === blockId);
   const lesson = contentFor(lessonId);
   const raw = block?.content?.text || lesson?.example || '';
-  speechDraft = { text: selected.trim().slice(0, 8000) || listeningText(raw), assignments: {}, plan: null, error: '' };
+  speechDraft = { lessonId, text: selected.trim().slice(0, 8000) || listeningText(raw), assignments: {}, plan: null, error: '' };
   speechBusy = !!speechDraft.text;
   renderSpeechDialog(); $('#speech-dialog').showModal();
   // Local cache lookup is non-generating, even when the text was auto-extracted.
   if (speechDraft.text) {
-    try { speechDraft.plan = await desktop.prepareSpeech({ text: speechDraft.text, assignments: {} }); }
+    try { speechDraft.plan = await desktop.prepareSpeech({ lessonId, text: speechDraft.text, assignments: {} }); }
     catch (error) { speechDraft.error = error.message; }
     finally { speechBusy = false; }
     renderSpeechDialog();
@@ -701,7 +701,7 @@ async function action(name, element) {
       const result = await desktop.deletePlan(id);
       if (!result) return;
       state = result.state; activeLesson = null; activeNote = null; answer = null;
-      navigate('routes'); toast('路线已删除；完整 JSON 备份已保存在本地数据目录的 backups 文件夹。');
+      navigate('routes'); toast(result.warnings?.length ? `路线已删除，但有 ${result.warnings.length} 项文件未清理：${result.warnings.join('；')}` : '路线及关联的图片、语音和历史备份已清理。');
       return;
     }
     const lessonIds = new Set(target.lessons.map(lesson => lesson.id));
@@ -962,12 +962,12 @@ document.addEventListener('submit', async event => {
       previousSpeakers.forEach((speaker, index) => { const voice = values.get(`voice-${index}`); if (voice !== null) Object.defineProperty(assignments, speaker, { value: voice.trim(), enumerable: true, configurable: true, writable: true }); });
       speechDraft.text = values.get('text')?.trim() || ''; speechDraft.assignments = assignments; speechDraft.error = ''; speechDraft.plan = null;
       speechBusy = true; $('#speech-preview-fields').disabled = true;
-      speechDraft.plan = await desktop.prepareSpeech({ text: speechDraft.text, assignments });
+      speechDraft.plan = await desktop.prepareSpeech({ lessonId: speechDraft.lessonId, text: speechDraft.text, assignments });
       speechBusy = false; renderSpeechDialog();
     } else if (form.id === 'speech-generate-form' && desktop) {
       if (!speechDraft?.plan || ($('#speech-material').value ?? speechDraft.text) !== speechDraft.text) throw new Error('材料已修改，请重新预览后再确认生成。');
       speechBusy = true; $('#speech-preview-fields').disabled = true; $('#speech-error').textContent = ''; submit.innerHTML = '正在合成 / 下载，请勿重复提交…';
-      const result = await desktop.generateSpeech({ text: speechDraft.text, assignments: speechDraft.assignments, confirmed: true, mode: speechDraft.plan.pendingCount ? 'download-only' : 'generate' });
+      const result = await desktop.generateSpeech({ lessonId: speechDraft.lessonId, text: speechDraft.text, assignments: speechDraft.assignments, confirmed: true, mode: speechDraft.plan.pendingCount ? 'download-only' : 'generate' });
       speechDraft.plan = result; speechDraft.error = result.error || ''; speechBusy = false; renderSpeechDialog();
     } else if (form.id === 'image-settings-form' && desktop) {
       $('#image-settings-error').textContent = '';

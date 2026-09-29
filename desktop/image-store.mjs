@@ -53,6 +53,12 @@ export function createImageStore(directory, secrets, validateBytes = () => {}) {
       await rename(temp, target); settings = change.next; change.commit(); return safe();
     }),
     put, readAsset,
+    deleteAssets: ids => enqueue(async () => {
+      for (const id of ids) {
+        const target = assetPath(id);
+        try { await unlink(target); } catch (error) { if (error.code !== 'ENOENT') throw error; }
+      }
+    }),
     async withAssets(state) {
       const imageAssets = []; let total = Buffer.byteLength(JSON.stringify(state));
       if (total > 250 * 1024 * 1024) throw new Error('学习数据超过 JSON 备份大小限制，请在应用关闭后备份整个本地数据目录。');

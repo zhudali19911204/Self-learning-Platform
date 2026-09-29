@@ -106,6 +106,25 @@ test('speech settings encrypt an independent key; cache and content-addressed au
   const damaged = Buffer.from(wav); damaged[50] ^= 1; await writeFile(path.join(env.root, 'audio', asset.id + '.wav'), damaged);
   await assert.rejects(reopened.lookup(key), /校验失败/);
 });
+test('deleting a lesson removes only its owned audio; shared and legacy caches remain', async t => {
+  const env = await createStore(t), store = env.store;
+  const own = 'a'.repeat(64), shared = 'b'.repeat(64), legacy = 'c'.repeat(64);
+  const ownAudio = await store.put(own, wavFixture(2));
+  const sameAudio = await store.put(shared, wav);
+  await store.put(legacy, wav);
+  await store.linkLesson('lesson-one', own);
+  await store.linkLesson('lesson-one', shared);
+  await store.linkLesson('lesson-two', shared);
+  await store.deleteLessons(['lesson-one']);
+  assert.equal(await store.lookup(own), null);
+  await assert.rejects(store.readAsset(ownAudio.id), { code: 'ENOENT' });
+  assert.equal((await store.lookup(shared)).id, sameAudio.id);
+  assert.equal((await store.lookup(legacy)).id, sameAudio.id);
+  await store.deleteLessons(['lesson-two']);
+  assert.equal(await store.lookup(shared), null);
+  assert.equal((await store.lookup(legacy)).id, sameAudio.id);
+  await assert.rejects(store.deleteLessons(['../outside']), /标识/);
+});
 test('corrupt speech settings are retained and cannot be overwritten or used for generation', async t => {
   const env = await createStore(t), target = path.join(env.root, 'speech-settings.json');
   await writeFile(target, '{corrupt'); const store = await env.reopen();
