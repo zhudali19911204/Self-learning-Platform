@@ -205,6 +205,7 @@ exports.run = async (window, store, directory) => {
     // Deliberately keep legacy fences in test-only output: they must remain inert code, not drawings.
     const markdownAnswer = ['## 核心结论', '', '**剩余现金 40 元**：收入 100 元，减去支出 60 元。', '', '### 计算步骤', '', '1. 从收支表中找到收入。', '2. 减去支出，得到剩余现金。', '', '> 提示：先确认收入与支出的时间范围一致。', '', '| 项目 | 金额 |', '| --- | ---: |', '| 收入 | 100 |', '| 支出 | 60 |', '', '```flow', '开始 -> 员工提交申请', '员工提交申请 -> 主管审批', '主管审批 -> 判断天数', '判断天数 ->|是（<=3天）| 主管批准', '判断天数 ->|否（>3天）| 部门经理审批', '主管批准 -> 结束1', '部门经理审批 -> 经理判断', '经理判断 ->|批准| 结束2', '经理判断 ->|驳回| 结束3', '```', '', '```chart', 'type: bar', 'title: 示例收支', '收入 | 100', '支出 | 60', '```', '', '```python', 'balance = 100 - 60', 'print(balance)', '```'].join('\n');
     const output = payload.messages[0].content.includes('教学配图编辑') && !input.revisionRequest ? {needed:true,reason:'一张场景图有助于建立直观认识。',prompt:'无文字的日常消费教学插图，强调收入与支出的差异',caption:'图片帮助理解收支场景，不代表精确数值。'}
+      : payload.messages[0].content.includes('学习需求访谈顾问') ? {scope:'focused',known:['希望用 Python 编写文件整理工具'],gaps:[{dimension:'优先整理的文件类型',reason:'决定练习案例'},{dimension:'希望交付的工具形式',reason:'决定验收任务'}]}
       : payload.messages[0].content.includes('自学课程顾问') ? planningQuestionnaire
       : input.daily !== undefined ? {...demoPlan,title:'路线纠正集成测试',lessons:input.repair ? demoPlan.lessons : [demoPlan.lessons[0]]}
       : input.revisionRequest ? {text:markdownAnswer}

@@ -362,6 +362,48 @@ test('new learning clarifies before planning, preserves answers on failure, and 
   assert.equal(restored.run('plan().learningBrief.notes'), '不学习网页开发');
   assert.match(app.node('#app').innerHTML, /查看定制需求与回答/);
 });
+
+test('regenerating a questionnaire keeps the previous questions and answers if analysis fails', async () => {
+  let calls = 0, fail = false;
+  const app = harness(null, async (url) => {
+    if (url === '/api/status') return {ok:true,json:async()=>({mode:'ai'})};
+    calls++;
+    return fail ? {ok:false,json:async()=>({error:'需求分析失败'})} : {ok:true,json:async()=>questionnaire};
+  });
+  app.run("status={mode:'ai'};planner()");
+  await app.submit('plan-form',{goal:'学习 Python 文件整理',level:'零基础',daily:'25',days:'14'});
+  assert.equal(calls,1);
+  app.node('#clarification-form').values={q1:'o1',q2:'o2','detail-q1':'先学习安全预览'};
+  fail=true;
+  await app.run("action('planner-regenerate',{dataset:{}})");
+  assert.equal(calls,2);
+  assert.equal(app.run('plannerDraft.questionnaire.questions.length'),2);
+  assert.equal(app.run('plannerDraft.answers[0].detail'),'先学习安全预览');
+  assert.match(app.node('#planner').innerHTML,/需求分析失败/);
+  fail=false;
+  await app.run("action('planner-regenerate',{dataset:{}})");
+  assert.equal(calls,3);
+  assert.equal(app.run('plannerDraft.answers.length'),0);
+});
+
+test('a learner can request deeper clarification without editing the original goal', async () => {
+  const requests=[];
+  const deep={...questionnaire,questions:Array.from({length:5},(_,index)=>({...questionnaire.questions[index%2],id:`q${index+1}`,question:`深入问题 ${index+1}`}))};
+  const app=harness(null,async(url,options)=>{
+    if(url==='/api/status') return {ok:true,json:async()=>({mode:'ai'})};
+    requests.push(JSON.parse(options.body));
+    return {ok:true,json:async()=>requests.length===1?questionnaire:deep};
+  });
+  app.run("status={mode:'ai'};planner()");
+  await app.submit('plan-form',{goal:'学习 SQL',level:'零基础',daily:'15',days:'30'});
+  assert.match(app.node('#planner').innerHTML,/深入澄清（4–6 题）/);
+  app.node('#clarification-form').values={};
+  await app.run("action('planner-deepen',{dataset:{}})");
+  assert.equal(requests[1].goal,'学习 SQL');
+  assert.equal(requests[1].depth,'deep');
+  assert.equal(app.run('plannerDraft.questionnaire.questions.length'),5);
+  assert.doesNotMatch(app.node('#planner').innerHTML,/data-action="planner-deepen"/);
+});
 test('questionnaire retries keep the goal; returning to edit invalidates answers only when input changes', async () => {
   let calls = 0, failQuestionnaire = true;
   const app = harness(null, async (url) => {

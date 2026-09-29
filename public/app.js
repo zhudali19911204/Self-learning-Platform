@@ -470,10 +470,10 @@ function renderPlanner() {
   if (draft.step === 'goal') {
     body = `<h2 id="planner-title">先说说，你想学什么？</h2><p>还没有明确方向也没关系。描述你的兴趣、遇到的难题，或想完成的事情，AI 会先帮你澄清需求。</p><form id="plan-form"><fieldset class="planner-fields" ${plannerBusy ? 'disabled' : ''}><label for="goal">我的学习需求</label><textarea id="goal" name="goal" maxlength="1000" required placeholder="例如：我想学 AI，但不知道从哪里开始；或我想让日常报表更省时间。">${escape(draft.goal)}</textarea><div class="form-row"><div><label for="level">目前的基础</label><select id="level" name="level">${['零基础', '有一点基础', '希望进阶'].map(level => `<option ${draft.level === level ? 'selected' : ''}>${level}</option>`).join('')}</select></div><div><label for="daily">每天投入</label><select id="daily" name="daily">${[15,25,45,60].map(minutes => `<option value="${minutes}" ${draft.daily === minutes ? 'selected' : ''}>${minutes} 分钟</option>`).join('')}</select></div><div><label for="days">计划周期</label><select id="days" name="days">${[[7,'1 周'],[14,'2 周'],[30,'1 个月'],[90,'3 个月']].map(([days,label]) => `<option value="${days}" ${draft.days === days ? 'selected' : ''}>${label}</option>`).join('')}</select></div></div><button class="btn primary full" type="submit" ${status.mode !== 'ai' ? 'disabled' : ''}>${plannerBusy ? '<span class="spinner"></span>AI 正在分析需求…' : `让 AI 帮我澄清需求 ${icon('spark')}`}</button></fieldset></form>`;
   } else if (draft.step === 'questions') {
-    body = `<h2 id="planner-title">一起确定适合你的方向</h2><p>这份问卷根据你的需求生成。不必懂专业术语，每题可选择方向、自由补充，或让 AI 推荐。</p><div class="planner-summary"><h3>AI 的初步理解</h3><p>${escape(draft.questionnaire.summary)}</p></div><form id="clarification-form"><fieldset class="planner-fields" ${plannerBusy ? 'disabled' : ''}>${draft.questionnaire.questions.map((question, index) => {
+    body = `<h2 id="planner-title">一起确定适合你的方向</h2><p>AI 根据尚未明确、又会影响路线的 ${draft.questionnaire.questions.length} 个问题来澄清需求。每题可以选择方向、自由补充，或让 AI 推荐。</p><div class="planner-summary"><h3>AI 的初步理解</h3><p>${escape(draft.questionnaire.summary)}</p></div><form id="clarification-form"><fieldset class="planner-fields" ${plannerBusy ? 'disabled' : ''}>${draft.questionnaire.questions.map((question, index) => {
       const answer = draft.answers.find(item => item.questionId === question.id) || { optionIds: [], detail: '' };
       return `<fieldset class="clarification-question"><legend>${index + 1}. ${escape(question.question)} <small>${question.type === 'multiple' ? '可多选' : '单选'}</small></legend><p class="question-why">${escape(question.why)}</p><div class="clarification-options">${[...question.options, {id:'unsure',label:'还不确定，请 AI 推荐',description:'规划时会说明建议与假设。'}].map(option => `<label class="clarification-option"><input type="${question.type === 'multiple' ? 'checkbox' : 'radio'}" name="${question.id}" value="${option.id}" ${answer.optionIds.includes(option.id) ? 'checked' : ''}><span><strong>${escape(option.label)}</strong>${option.description ? `<small>${escape(option.description)}</small>` : ''}</span></label>`).join('')}</div><label class="question-detail-label" for="detail-${question.id}">自己的想法或补充（可代替选项）</label><textarea id="detail-${question.id}" name="detail-${question.id}" maxlength="500" rows="2" placeholder="没有合适的选项？可以直接告诉 AI。">${escape(answer.detail)}</textarea></fieldset>`;
-    }).join('')}<div class="planner-actions"><button type="button" class="btn secondary" data-action="planner-back">${icon('back')}修改需求</button><button type="submit" class="btn primary">确认我的选择 ${icon('arrow')}</button></div></fieldset></form>`;
+    }).join('')}<div class="planner-actions"><button type="button" class="btn secondary" data-action="planner-back">${icon('back')}修改需求</button><button type="button" class="btn secondary" data-action="planner-regenerate">重新梳理问题</button>${draft.questionnaire.questions.length < 4 ? '<button type="button" class="btn secondary" data-action="planner-deepen">深入澄清（4–6 题）</button>' : ''}<button type="submit" class="btn primary">确认我的选择 ${icon('arrow')}</button></div><p class="field-hint">重新梳理或深入澄清会再次调用模型；云端可能计费。成功后替换当前问卷和回答，失败则保留。</p></fieldset></form>`;
   } else {
     const brief = learningBriefFrom({ questionnaire: draft.questionnaire, answers: draft.answers, notes: '' });
     body = `<h2 id="planner-title">确认需求，再规划课程</h2><p>AI 将按这些回答倒推学习成果、必要知识和实践任务。若理解有偏差，请返回修改，或在下方补充。</p><div class="planner-original"><strong>原始需求</strong><p>${escape(draft.goal)}</p><small>${escape(draft.level)} · 每天 ${draft.daily} 分钟 · ${draft.days} 天</small></div>${briefHTML(brief)}<form id="plan-confirm-form"><fieldset class="planner-fields" ${plannerBusy ? 'disabled' : ''}><label for="planner-notes">最后补充：想达成的成果、不想学的内容、工具限制等（可选）</label><textarea id="planner-notes" name="notes" maxlength="1000" rows="3" placeholder="例如：只学能用于工作的内容，不学习编程；最终希望独立完成一份分析报告。">${escape(draft.notes)}</textarea><div class="planner-actions"><button type="button" class="btn secondary" data-action="planner-back">${icon('back')}修改回答</button><button type="submit" class="btn primary">${plannerBusy ? '<span class="spinner"></span>正在定制学习路线…' : `确认并生成学习路线 ${icon('spark')}`}</button></div></fieldset></form>`;
@@ -495,16 +495,15 @@ async function submitPlanner(formId, values) {
     if (status.mode !== 'ai') throw new Error('请先连接 AI 模型，再生成澄清问卷或学习路线。');
     plannerBusy = true;
     if (formId === 'plan-form') {
-      const next = { goal: (values.get('goal') || '').trim(), level: values.get('level'), daily: Number(values.get('daily')), days: Number(values.get('days')) };
+      const next = { goal: (values.get('goal') || '').trim(), level: values.get('level'), daily: Number(values.get('daily')), days: Number(values.get('days')), depth: values.get('depth') === 'deep' ? 'deep' : 'adaptive' };
       if (!next.goal) throw new Error('请先描述你想学习的内容。');
       const unchanged = plannerDraft.questionnaireFor === JSON.stringify(next);
       Object.assign(plannerDraft, next);
       if (unchanged && plannerDraft.questionnaire) { plannerDraft.step = 'questions'; return; }
-      plannerDraft.questionnaire = null; plannerDraft.answers = []; plannerDraft.notes = '';
       renderPlanner();
       const questionnaire = await api('plan-clarify', next);
       if (!validQuestionnaire(questionnaire)) throw new Error('模型返回的问卷格式不正确，请重新生成。');
-      plannerDraft.questionnaire = questionnaire; plannerDraft.questionnaireFor = JSON.stringify(next); plannerDraft.step = 'questions';
+      plannerDraft.questionnaire = questionnaire; plannerDraft.questionnaireFor = JSON.stringify(next); plannerDraft.answers = []; plannerDraft.notes = ''; plannerDraft.step = 'questions';
     } else if (formId === 'plan-confirm-form') {
       plannerDraft.notes = (values.get('notes') || '').trim();
       const clarification = { questionnaire: plannerDraft.questionnaire, answers: plannerDraft.answers, notes: plannerDraft.notes };
@@ -601,6 +600,13 @@ async function action(name, element) {
   }
   if (name === 'planner') return planner();
   if (name === 'close-planner') { if (!plannerBusy) $('#planner').close(); return; }
+  if (['planner-regenerate', 'planner-deepen'].includes(name)) {
+    if (plannerBusy || plannerDraft.step !== 'questions') return;
+    plannerDraft.answers = collectPlannerAnswers(new FormData($('#clarification-form')));
+    if (!window.confirm(`${name === 'planner-deepen' ? '深入澄清并生成 4–6 题' : '重新分析需求并生成一份新问卷'}？成功后会替换当前问卷和回答；云端模型可能计费。`)) return;
+    plannerDraft.questionnaireFor = null;
+    return submitPlanner('plan-form', new Map([['goal', plannerDraft.goal], ['level', plannerDraft.level], ['daily', plannerDraft.daily], ['days', plannerDraft.days], ['depth', name === 'planner-deepen' ? 'deep' : plannerDraft.depth || 'adaptive']]));
+  }
   if (name === 'planner-back') {
     if (plannerBusy) return;
     if (plannerDraft.step === 'questions') { plannerDraft.answers = collectPlannerAnswers(new FormData($('#clarification-form'))); plannerDraft.step = 'goal'; }

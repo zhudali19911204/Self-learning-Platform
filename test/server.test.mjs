@@ -65,23 +65,73 @@ test('private cached audio supports bounded byte ranges, HEAD and playback witho
 
 test('AI clarification is topic-specific, bounded, repaired once, and uses application-owned identifiers', async t => {
   let calls = 0, sent;
+  const assessment = { scope:'focused', known:['要用 Python 编写工具'], gaps:[
+    {dimension:'具体工作场景',reason:'决定采用哪些实际案例'},
+    {dimension:'可验收成果',reason:'决定最终实践任务'}
+  ] };
   const app = await serve(t, {model:'test',fetchImpl:async (_url,init) => {
     sent = JSON.parse(init.body); calls++;
-    return Response.json({message:{content:JSON.stringify(calls === 1 ? {summary:'缺问题',questions:[]} : {...questionnaire,questions:questionnaire.questions.map(question => ({...question,id:'model-id'}))})}});
+    const value = calls === 1 ? {scope:'focused',known:[],gaps:[]} : calls === 2 ? assessment : calls === 3 ? {summary:'缺问题',questions:[]} : {...questionnaire,questions:questionnaire.questions.map(question => ({...question,id:'model-id'}))};
+    return Response.json({message:{content:JSON.stringify(value)}});
   }});
   const response = await app.post('/api/plan-clarify', input);
   assert.equal(response.status, 200);
   const result = await response.json();
   assert.ok(validQuestionnaire(result));
   assert.deepEqual(result.questions.map(question => question.id), ['q1','q2']);
-  assert.equal(calls, 2);
-  assert.match(sent.messages[0].content, /不机械套用/);
+  assert.equal(calls, 4);
+  assert.match(sent.messages[0].content, /恰好 2 个/);
+  assert.match(sent.messages[0].content, /避免泛泛询问/);
   assert.match(sent.messages[0].content, /不要默认替用户选择/);
   assert.equal(JSON.parse(sent.messages[1].content).goal, input.goal);
+  assert.equal(JSON.parse(sent.messages[1].content).assessment.gaps.length, 2);
   assert.equal((await app.post('/api/plan-clarify',{...input,goal:''})).status,400);
-  assert.equal(calls,2);
+  assert.equal(calls,4);
   const invalid = await serve(t,{model:'test',fetchImpl:mock({summary:'缺问题',questions:[]})});
   assert.equal((await invalid.post('/api/plan-clarify',input)).status,502);
+});
+
+test('broad goals produce more targeted questions, and a recurring three-question answer is repaired', async t => {
+  let calls = 0;
+  const assessment = {scope:'exploratory',known:['想学习数据分析'],gaps:['使用场景','想做出的成果','常用工具','练习材料','学习边界'].map(dimension => ({dimension,reason:'这会改变课程案例和学习顺序'}))};
+  const questions = Array.from({length:5},(_,index)=>({...questionnaire.questions[index % 2],question:`第 ${index + 1} 个方向应该如何确定？`}));
+  const app = await serve(t,{model:'test',fetchImpl:async (_url,init)=>{
+    calls++;
+    const sent=JSON.parse(init.body);
+    if(calls===2) {
+      assert.match(sent.messages[0].content,/恰好 5 个/);
+      assert.equal(JSON.parse(sent.messages[1].content).assessment.gaps.length,5);
+    }
+    if(calls===3) assert.match(sent.messages[0].content,/实际返回 3 个/);
+    const output=calls===1 ? assessment : {summary:'方向仍需确认',questions:calls===2 ? questions.slice(0,3) : questions};
+    return Response.json({message:{content:JSON.stringify(output)}});
+  }});
+  const response=await app.post('/api/plan-clarify',{...input,goal:'想学数据分析'});
+  assert.equal(response.status,200);
+  const result=await response.json();
+  assert.equal(result.questions.length,5);
+  assert.deepEqual(result.questions.map(item=>item.id),['q1','q2','q3','q4','q5']);
+  assert.equal(calls,3);
+});
+
+test('explicit deep clarification requests four or more gaps even when the first assessment is focused', async t => {
+  let calls=0;
+  const focused={scope:'focused',known:['目标具体'],gaps:['场景','成果'].map(dimension=>({dimension,reason:'影响课程'}))};
+  const exploratory={scope:'exploratory',known:['目标具体'],gaps:['场景','成果','环境','边界'].map(dimension=>({dimension,reason:'影响课程'}))};
+  const questions=Array.from({length:4},(_,index)=>({...questionnaire.questions[index%2],question:`深入问题 ${index+1}`}));
+  const app=await serve(t,{model:'test',fetchImpl:async(_url,init)=>{
+    calls++;
+    const sent=JSON.parse(init.body);
+    assert.equal(JSON.parse(sent.messages[1].content).depth,'deep');
+    if(calls===2) assert.match(sent.messages[0].content,/深入澄清需要 4–6 个关键缺口/);
+    return Response.json({message:{content:JSON.stringify(calls===1?focused:calls===2?exploratory:{summary:'继续确认需求',questions})}});
+  }});
+  const response=await app.post('/api/plan-clarify',{...input,depth:'deep'});
+  assert.equal(response.status,200);
+  assert.equal((await response.json()).questions.length,4);
+  assert.equal(calls,3);
+  assert.equal((await app.post('/api/plan-clarify',{...input,depth:'invalid'})).status,400);
+  assert.equal(calls,3);
 });
 test('personalized plans prioritize confirmed answers, preserve original goals, and validate choices before model calls', async t => {
   let calls = 0, sent;
