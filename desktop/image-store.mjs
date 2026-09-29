@@ -3,12 +3,14 @@ import path from 'node:path';
 import { randomUUID, createHash } from 'node:crypto';
 import { imageDefaults, normalizeImageSettings, imageMime, MAX_IMAGE_BYTES } from '../image-model.mjs';
 import { validImageId, referencedImages } from '../public/illustrations.js';
+import { createModelProfiles } from './model-profiles.mjs';
 const digest = bytes => createHash('sha256').update(bytes).digest('hex');
 export function createImageStore(directory, secrets, validateBytes = () => {}) {
   let settings = { ...imageDefaults, apiKey: '' }, settingsError = '', queue = Promise.resolve();
+  const profiles = createModelProfiles({ defaults: imageDefaults, selector: 'protocol', allowed: ['compatible', 'dashscope'], normalize: normalizeImageSettings, secrets });
   const enqueue = task => { const operation = queue.then(task); queue = operation.catch(() => {}); return operation; };
   const assetPath = id => { if (!validImageId(id)) throw new Error('图片标识无效。'); return path.join(directory, 'images', `${id}.img`); };
-  const safe = () => ({ ...Object.fromEntries(Object.keys(imageDefaults).map(key => [key, settings[key]])), hasApiKey: !!settings.apiKey, error: settingsError });
+  const safe = () => ({ ...Object.fromEntries(Object.keys(imageDefaults).map(key => [key, settings[key]])), hasApiKey: !!settings.apiKey, profiles: profiles.safe(), error: settingsError });
   function validate(bytes) { imageMime(bytes); validateBytes(bytes); }
   async function readAsset(id) {
     const target = assetPath(id);
@@ -30,11 +32,11 @@ export function createImageStore(directory, secrets, validateBytes = () => {}) {
   }
   return {
     async initialize() {
+      settings = await profiles.load(null);
       try {
         const value = JSON.parse(await readFile(path.join(directory, 'image-settings.json'), 'utf8'));
         if (value.version !== 1) throw new Error();
-        const apiKey = value.encryptedApiKey ? await secrets.decrypt(value.encryptedApiKey) : '';
-        settings = normalizeImageSettings({ ...value, apiKey, keyAction: apiKey ? 'replace' : 'clear' });
+        settings = await profiles.load(value);
       } catch (error) { if (error.code !== 'ENOENT') settingsError = '图片配置无法读取或解密，原文件已保留。请检查 image-settings.json 及其 .bak 后重启。'; }
       return safe();
     },
@@ -42,14 +44,13 @@ export function createImageStore(directory, secrets, validateBytes = () => {}) {
     getConfig: () => settingsError ? { ...imageDefaults } : { ...settings },
     saveSettings: input => enqueue(async () => {
       if (settingsError) throw new Error(settingsError);
-      const next = normalizeImageSettings(input, settings);
-      const { apiKey, ...fields } = next;
-      const value = { version: 1, ...fields, encryptedApiKey: apiKey ? await secrets.encrypt(apiKey) : '' };
+      const change = await profiles.prepare(input, settings);
+      const value = { version: 1, ...change.value };
       await mkdir(directory, { recursive: true });
       const target = path.join(directory, 'image-settings.json'), temp = `${target}.${randomUUID()}.tmp`;
       await writeFile(temp, JSON.stringify(value, null, 2), { flag: 'wx', mode: 0o600 });
       try { await copyFile(target, target + '.bak'); } catch (error) { if (error.code !== 'ENOENT') throw error; }
-      await rename(temp, target); settings = next; return safe();
+      await rename(temp, target); settings = change.next; change.commit(); return safe();
     }),
     put, readAsset,
     async withAssets(state) {

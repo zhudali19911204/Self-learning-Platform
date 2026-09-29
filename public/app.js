@@ -56,6 +56,7 @@ let webSearchSettings = null, webSearchSaveResult = '';
 let speechSettings = null, speechConnectionResult = '', speechBusy = false, speechDraft = null, speechPlaylist = [];
 // Unsaved configuration stays in memory only, including newly typed keys.
 const modelFormDrafts = new Map();
+const modelServiceDrafts = new Map();
 const modelFormIds = ['desktop-settings-form', 'image-settings-form', 'speech-settings-form', 'web-search-settings-form'];
 let modelSettingsSaving = false;
 function rememberModelDrafts(changedId) {
@@ -73,6 +74,9 @@ function restoreModelDrafts() {
   for (const [id, draft] of modelFormDrafts) {
     const form = $('#' + id);
     if (!form?.elements) continue;
+    const selector = id === 'desktop-settings-form' ? 'provider' : id === 'image-settings-form' ? 'protocol' : null;
+    const selected = selector && draft.fields.find(field => field.name === selector)?.value;
+    if (selected) { updateProfileKeyField(form, savedModelProfile(id, selected)); form.dataset.profile = selected; }
     for (const field of draft.fields) {
       const input = form.elements.namedItem(field.name);
       if (!input) continue;
@@ -86,6 +90,52 @@ function restoreModelDrafts() {
     const check = form.parentElement.querySelector('[data-action$="connection"]');
     if (check) check.disabled = true;
   }
+}
+function savedModelProfile(formId, selected) {
+  const image = formId === 'image-settings-form', settings = image ? imageSettings : desktopSettings;
+  const selector = image ? 'protocol' : 'provider';
+  const base = image
+    ? { enabled: false, protocol: selected, model: '', baseUrl: '', size: '1024x1024', responseFormat: 'auto', timeoutMs: 180000, localOnly: true, downloadHosts: '', hasApiKey: false }
+    : { provider: selected, model: '', baseUrl: '', jsonMode: 'auto', timeoutMs: 120000, maxTokens: 8192, localOnly: true, hasApiKey: false };
+  const saved = settings?.profiles && Object.hasOwn(settings.profiles, selected) ? settings.profiles[selected] : settings?.[selector] === selected ? settings : null;
+  return { ...base, ...saved };
+}
+function updateProfileKeyField(form, cfg) {
+  const host = form.querySelector('.model-key-field');
+  if (!host) return;
+  const image = form.id === 'image-settings-form';
+  host.innerHTML = modelKeyField(image ? 'image-model-key' : 'model-key', image ? 'image-key-action' : 'key-action', cfg);
+}
+function switchModelProfile(form) {
+  if (!form?.elements) return;
+  const image = form.id === 'image-settings-form', selector = image ? 'protocol' : 'provider';
+  const selected = form.elements.namedItem(selector).value;
+  const previous = form.dataset.profile;
+  if (modelSettingsSaving) { form.elements.namedItem(selector).value = previous; toast('配置正在保存，请稍后再切换服务。'); return; }
+  if (previous) {
+    const fields = Array.from(form.elements).filter(field => field.name).map(field => ({ name: field.name, value: field.name === selector ? previous : field.value, checked: field.checked }));
+    modelServiceDrafts.set(`${form.id}:${previous}`, { fields, advancedOpen: !!form.querySelector('.model-advanced')?.open });
+  }
+  const cfg = savedModelProfile(form.id, selected), draft = modelServiceDrafts.get(`${form.id}:${selected}`);
+  updateProfileKeyField(form, cfg);
+  const values = { ...cfg, timeout: cfg.timeoutMs / 1000, apiKey: '', keyAction: 'keep' };
+  const fields = draft?.fields || Array.from(form.elements).filter(field => field.name).map(field => ({ name: field.name, value: values[field.name] ?? '', checked: values[field.name] === true }));
+  for (const field of fields) {
+    const input = form.elements.namedItem(field.name); if (!input) continue;
+    if (input.type === 'checkbox') input.checked = field.checked;
+    else input.value = field.value;
+  }
+  form.dataset.profile = selected;
+  if (draft && form.querySelector('.model-advanced')) form.querySelector('.model-advanced').open = draft.advancedOpen;
+  if (image) updateImageProtocolHints();
+  dirtyModelForm(form);
+  const message = draft ? '已恢复此服务的未保存参数；点击保存后生效。' : cfg.model || cfg.baseUrl || cfg.hasApiKey ? '已恢复此服务保存的参数；点击保存后生效，密钥不回显。' : '此服务尚无保存参数，请填写后保存。';
+  if (image) { imageConnectionResult = message; $('#image-connection-result').textContent = message; }
+  else { connectionResult = message; $('#connection-result').textContent = message; }
+}
+function clearSavedModelDraft(form) {
+  const selector = form.id === 'image-settings-form' ? 'protocol' : 'provider';
+  modelServiceDrafts.delete(`${form.id}:${form.elements?.namedItem(selector)?.value}`);
 }
 function modelKeyField(inputId, actionId, cfg) {
   return `<label for="${inputId}">API Key <small>可选</small></label><div class="api-key-control"><input type="hidden" id="${actionId}" name="keyAction" value="keep"><input id="${inputId}" name="apiKey" type="password" autocomplete="new-password" maxlength="4096" placeholder="${cfg.hasApiKey ? '已保存 · 留空保留，填写替换' : '有就填写，没有可留空'}">${cfg.hasApiKey ? `<button type="button" class="key-clear-button" data-action="clear-model-key" data-input="${inputId}" data-key-action="${actionId}" aria-label="清除本模型已保存的 API Key">清除</button>` : ''}</div><p class="field-hint key-hint">${cfg.hasApiKey ? '旧密钥不回显；清除需点击“清除”后保存。' : '无需选择密钥操作，填写后直接保存。'}</p>`;
@@ -351,19 +401,19 @@ function desktopSettingsPage() {
   const cfg = desktopSettings || { provider: 'ollama', model: '', baseUrl: '', jsonMode: 'auto', timeoutMs: 120000, maxTokens: 8192, localOnly: true };
   const providers = [['ollama', 'Ollama · 本地'], ['lmstudio', 'LM Studio · 本地'], ['vllm', 'vLLM · 自部署'], ['deepseek', 'DeepSeek · 云端'], ['qwen', '通义千问 · 云端'], ['compatible', '自定义兼容接口']];
   return `<section class="page-intro"><div><div class="eyebrow">YOUR LOCAL LEARNING SPACE</div><h1>模型与数据设置</h1><p>文字、图片、语音在同一页配置，各自保存后立即生效，无需重启。</p></div>${pill('桌面版 · 本地存储', 'success')}</section>
-  <p class="settings-key-note">API Key 有就填写，没有可留空。已保存的密钥不回显，留空保留；三种模型独立保存密钥，不自动互相沿用。密钥加密保存在本机，不写入学习备份。</p>
+  <p class="settings-key-note">文字模型按服务、图片模型按接口协议分别记住参数，切回时自动恢复，点击保存后才生效。API Key 有就填写，没有可留空；已保存的密钥不回显，留空保留，不跨服务沿用。三种模型独立保存密钥，加密保存在本机，不写入学习备份。</p>
   <div class="model-settings-grid"><section class="panel model-settings-card"><div class="model-card-heading">${icon('brain')}<h2>LLM 文字模型</h2></div><p class="model-card-description">规划课程、讲解知识和 AI 答疑。</p>${pill(status.mode === 'ai' ? (status.providerLabel || 'AI') + ' · ' + status.model : '尚未配置可用模型', 'purple')}
   ${cfg.error ? `<div class="notice error">${escape(cfg.error)}</div>` : ''}
-  <form id="desktop-settings-form" class="desktop-form">
+  <form id="desktop-settings-form" class="desktop-form" data-profile="${escape(cfg.provider)}">
     <label for="model-provider">模型服务</label><select id="model-provider" name="provider">${providers.map(([id, label]) => `<option value="${id}" ${cfg.provider === id ? 'selected' : ''}>${label}</option>`).join('')}</select>
     <label for="model-name">模型名称</label><input id="model-name" name="model" maxlength="200" value="${escape(cfg.model)}" placeholder="本地已安装的模型名，或服务商的模型 ID">
     <label for="model-url">接口根地址 <small>留空使用服务预设</small></label><input id="model-url" name="baseUrl" maxlength="2000" value="${escape(cfg.baseUrl)}" placeholder="例如 http://127.0.0.1:11434">
     <label class="check-label"><input type="checkbox" name="localOnly" ${cfg.localOnly ? 'checked' : ''}>仅使用本机模型</label>
     <p class="field-hint">云端或局域网模型请关闭此项。</p>
-    ${modelKeyField('model-key', 'key-action', cfg)}
+    <div class="model-key-field">${modelKeyField('model-key', 'key-action', cfg)}</div>
     <details class="model-advanced"><summary>高级设置</summary><div class="model-advanced-content">
     <div class="form-row"><div><label for="json-mode">JSON 模式</label><select id="json-mode" name="jsonMode">${[['auto','自动'],['on','开启'],['off','仅提示词']].map(([v,l]) => `<option value="${v}" ${cfg.jsonMode === v ? 'selected' : ''}>${l}</option>`).join('')}</select></div><div><label for="model-timeout">超时（秒）</label><input id="model-timeout" type="number" name="timeout" min="1" max="600" required value="${cfg.timeoutMs / 1000}"></div><div><label for="model-tokens">输出上限</label><input id="model-tokens" type="number" name="maxTokens" min="128" max="32768" required value="${cfg.maxTokens}"></div></div>
-    <p class="field-hint">仅本机模式只允许 localhost、127.0.0.1 或 ::1；模型需先在本机安装并启动。关闭后，相关课程与笔记可能发送到远端服务。更换服务或地址不会自动沿用旧密钥。</p></div></details>
+    <p class="field-hint">仅本机模式只允许 localhost、127.0.0.1 或 ::1；模型需先在本机安装并启动。关闭后，相关课程与笔记可能发送到远端服务。不跨服务或新地址沿用密钥；切回已有存档且地址未变时，可留空保留该服务的密钥。</p></div></details>
     <p id="settings-error" class="inline-error" role="alert"></p><div id="remote-permission" hidden class="notice"><p>此操作会关闭“仅使用本机模型”。配置仍保存在本机；使用 AI 时，相关内容将发送到你配置的远端服务。</p><button type="button" class="btn secondary full" data-action="allow-remote-save">允许远端连接并保存</button></div><button type="submit" class="btn primary full" ${cfg.error ? 'disabled' : ''}>保存模型配置 ${icon('check')}</button>
   </form>
   ${button('测试已保存的模型连接', 'test-connection', 'secondary full', status.mode === 'ai' ? '' : 'disabled', 'bolt')}
@@ -400,13 +450,13 @@ function imageProtocolHints(protocol) {
 function imageSettingsPanel() {
   const cfg = imageSettings || { enabled: false, protocol: 'compatible', model: '', baseUrl: '', size: '1024x1024', responseFormat: 'auto', timeoutMs: 180000, localOnly: true, downloadHosts: '' };
   const native = cfg.protocol === 'dashscope', hints = imageProtocolHints(cfg.protocol);
-  return `<section class="panel image-settings-panel model-settings-card"><div class="model-card-heading">${icon('spark')}<h2>图片生成模型</h2></div><p class="model-card-description">生成教学配图，确认后才生成。</p>${cfg.error ? `<div class="notice error">${escape(cfg.error)}</div>` : ''}<form id="image-settings-form" class="desktop-form">
+  return `<section class="panel image-settings-panel model-settings-card"><div class="model-card-heading">${icon('spark')}<h2>图片生成模型</h2></div><p class="model-card-description">生成教学配图，确认后才生成。</p>${cfg.error ? `<div class="notice error">${escape(cfg.error)}</div>` : ''}<form id="image-settings-form" class="desktop-form" data-profile="${escape(cfg.protocol)}">
   <label class="check-label"><input type="checkbox" name="enabled" ${cfg.enabled ? 'checked' : ''}>启用课程配图</label>
   <label for="image-protocol">图片接口协议</label><select id="image-protocol" name="protocol"><option value="compatible" ${!native ? 'selected' : ''}>通用兼容接口</option><option value="dashscope" ${native ? 'selected' : ''}>阿里百炼原生接口</option></select>
   <label for="image-model-name">图片模型名称</label><input id="image-model-name" name="model" maxlength="200" value="${escape(cfg.model)}" placeholder="服务实际提供的文生图模型 ID，不能填聊天模型">
   <label for="image-model-url">接口根地址</label><input id="image-model-url" name="baseUrl" maxlength="2000" value="${escape(cfg.baseUrl)}" placeholder="${escape(hints.url)}">
   <label class="check-label"><input type="checkbox" name="localOnly" ${cfg.localOnly ? 'checked' : ''}>仅本机图片服务</label><p class="field-hint">云端请关闭此项，使用 HTTPS 地址。</p>
-  ${modelKeyField('image-model-key', 'image-key-action', cfg)}
+  <div class="model-key-field">${modelKeyField('image-model-key', 'image-key-action', cfg)}</div>
   <details class="model-advanced"><summary>高级设置 · 尺寸与下载</summary><div class="model-advanced-content"><p id="image-protocol-hint" class="field-hint">${escape(hints.service)}</p>
   <div class="form-row"><div><label for="image-size">尺寸（宽x高）</label><input id="image-size" name="size" value="${escape(cfg.size)}" maxlength="20" required></div><div><label for="image-response-format">返回格式</label><select id="image-response-format" name="responseFormat" ${native ? 'disabled' : ''}>${[['auto','自动（不传参数）'],['b64_json','Base64'],['url','图片 URL']].map(([v,l]) => `<option value="${v}" ${(native ? v === 'auto' : cfg.responseFormat === v) ? 'selected' : ''}>${l}</option>`).join('')}</select></div><div><label for="image-timeout">超时（秒）</label><input id="image-timeout" name="timeout" type="number" min="1" max="600" value="${cfg.timeoutMs / 1000}" required></div></div><p id="image-size-hint" class="field-hint">${escape(hints.size)}</p>
   <label for="image-download-hosts">额外允许的图片下载域名（可选）</label><input id="image-download-hosts" name="downloadHosts" maxlength="2000" value="${escape(cfg.downloadHosts)}" placeholder="可信精确域名，用英文逗号分隔"><p id="image-download-hint" class="field-hint">${escape(hints.downloads)}</p><p class="field-hint">图片提示词会发送到图片服务；配图分析会将当前模块正文发送到文字模型。不会自动生成或自动重试；云端生成可能计费。图片保存在本机，随完整学习备份导出。</p></div></details>
@@ -831,7 +881,7 @@ document.addEventListener('cancel', event => {
   if (event.target.id === 'illustration-dialog' && illustrationBusy) event.preventDefault();
 }, true);
 document.addEventListener('input', event => {
-  dirtyModelForm(event.target.closest?.('form'));
+  if (!['model-provider', 'image-protocol'].includes(event.target.id)) dirtyModelForm(event.target.closest?.('form'));
   if (!plannerBusy && event.target.closest?.('#planner')) {
     if (event.target.id === 'goal') plannerDraft.goal = event.target.value;
     if (event.target.id === 'planner-notes') plannerDraft.notes = event.target.value;
@@ -854,21 +904,10 @@ document.addEventListener('change', event => {
     }
   }
   if (desktop && event.target.id === 'model-provider') {
-    $('#model-url').value = ''; $('#model-name').value = ''; $('#model-key').value = ''; $('#key-action').value = ['deepseek', 'qwen'].includes(event.target.value) ? 'replace' : 'clear';
-    $('#settings-error').textContent = '';
-    $('#remote-permission').hidden = true;
-    $('#connection-result').textContent = '已切换服务，请填写模型名称并保存。';
-    $('[data-action="test-connection"]').disabled = true;
+    switchModelProfile($('#desktop-settings-form')); return;
   }
   if (desktop && event.target.id === 'image-protocol') {
-    updateImageProtocolHints(event.target.value);
-    $('#image-response-format').value = 'auto';
-    $('#image-model-key').value = '';
-    $('#image-key-action').value = $('#image-settings-form [name=localOnly]').checked ? 'clear' : 'replace';
-    $('#image-settings-error').textContent = '';
-    imageConnectionResult = '接口协议已切换，请核对根地址、重新填写密钥并保存。';
-    $('#image-connection-result').textContent = imageConnectionResult;
-    $('[data-action="check-image-connection"]').disabled = true;
+    switchModelProfile($('#image-settings-form')); return;
   }
   dirtyModelForm(event.target.closest?.('form'));
 });
@@ -934,6 +973,7 @@ document.addEventListener('submit', async event => {
       $('#image-settings-error').textContent = '';
       submit.innerHTML = '<span class="spinner"></span>正在保存到本机…';
       imageSettings = await desktop.saveImageSettings({ enabled: values.get('enabled') === 'on', protocol: values.get('protocol') || 'compatible', model: values.get('model'), baseUrl: values.get('baseUrl'), localOnly: values.get('localOnly') === 'on', ...modelKeyValues(values), size: values.get('size'), responseFormat: values.get('protocol') === 'dashscope' ? 'auto' : values.get('responseFormat'), timeoutMs: Number(values.get('timeout')) * 1000, downloadHosts: values.get('downloadHosts') });
+      clearSavedModelDraft(form);
       modelFormDrafts.delete(form.id);
       const rootAdjusted = values.get('baseUrl')?.trim().replace(/\/+$/, '') !== imageSettings.baseUrl;
       imageConnectionResult = rootAdjusted && imageSettings.protocol === 'dashscope' ? '图片配置已保存。已将根地址调整为同域名的 /api/v1，未更换服务商或密钥。保存不调用模型；可检查服务，实际生成仍需手动确认。' : '图片配置已保存。可检查服务，或在讲解、案例与动手实践右上角查看配图建议。'; render(); toast('图片模型配置已保存在本机。');
@@ -974,6 +1014,7 @@ document.addEventListener('submit', async event => {
         return;
       }
       desktopSettings = result.settings; status = result.status; connectionResult = '配置已保存并生效，可测试模型连接。';
+      clearSavedModelDraft(form);
       modelFormDrafts.delete(form.id);
       render(); toast('模型配置已保存在本机。');
     } else if (form.id === 'revision-form') {

@@ -75,7 +75,7 @@ exports.run = async (window, store, directory) => {
   assert.equal(await evaluate("document.querySelector('#model-name').value"), 'desktop-smoke-model');
   await writeFile(path.join(directory, '..', 'unified-settings-smoke.png'), (await window.webContents.capturePage()).toPNG());
   // Reproduce the reported conflict using a cloud preset, without making cloud requests.
-  await evaluate("document.querySelector('#model-provider').value = 'deepseek'; document.querySelector('#model-provider').dispatchEvent(new Event('change', {bubbles:true})); document.querySelector('#model-name').value = 'smoke-cloud-model'; document.querySelector('#model-key').value = 'smoke-cloud-key-not-real'; document.querySelector('#model-key').dispatchEvent(new Event('input', {bubbles:true})); document.querySelector('#desktop-settings-form').requestSubmit()");
+  await evaluate("document.querySelector('#model-provider').value = 'deepseek'; document.querySelector('#model-provider').dispatchEvent(new Event('change', {bubbles:true})); document.querySelector('#model-name').value = 'smoke-cloud-model'; document.querySelector('#desktop-settings-form [name=localOnly]').checked = true; document.querySelector('#model-key').value = 'smoke-cloud-key-not-real'; document.querySelector('#model-key').dispatchEvent(new Event('input', {bubbles:true})); document.querySelector('#desktop-settings-form').requestSubmit()");
   await wait("document.querySelector('#remote-permission')?.hidden === false");
   assert.match(await evaluate("document.querySelector('#settings-error').textContent"), /仅使用本机模型/);
   assert.equal(store.getSettings().provider, 'ollama', 'rejected draft must not change saved configuration');
@@ -94,6 +94,24 @@ exports.run = async (window, store, directory) => {
   assert.equal(cloud.settings.hasApiKey, true);
   await evaluate("document.querySelector('[data-page=settings]').click()");
   // Cover the same issue for self-hosted services on another LAN machine.
+  await evaluate("document.querySelector('#model-provider').value='ollama';document.querySelector('#model-provider').dispatchEvent(new Event('change',{bubbles:true}))");
+  assert.equal(await evaluate("document.querySelector('#model-name').value"), 'desktop-smoke-model');
+  assert.equal(await evaluate("document.querySelector('#desktop-settings-form [name=localOnly]').checked"), true);
+  assert.equal(await evaluate("document.querySelector('#model-key').value"), '');
+  assert.equal(store.getSettings().provider, 'deepseek', 'selection alone must not activate another service');
+  await evaluate("document.querySelector('#desktop-settings-form').requestSubmit()");
+  await wait("document.querySelector('#connection-result')?.textContent.includes('配置已保存并生效')");
+  assert.equal(store.getSettings().provider, 'ollama');
+  await evaluate("document.querySelector('#model-provider').value='deepseek';document.querySelector('#model-provider').dispatchEvent(new Event('change',{bubbles:true}))");
+  assert.equal(await evaluate("document.querySelector('#model-name').value"), 'smoke-cloud-model');
+  assert.equal(await evaluate("document.querySelector('#desktop-settings-form [name=localOnly]').checked"), false);
+  assert.equal(await evaluate("document.querySelector('#model-key').value"), '');
+  assert.match(await evaluate("document.querySelector('#model-key').placeholder"), /已保存/);
+  await evaluate("document.querySelector('#desktop-settings-form').requestSubmit()");
+  await wait("document.querySelector('#connection-result')?.textContent.includes('配置已保存并生效')");
+  assert.equal(store.getSettings().provider, 'deepseek'); assert.equal(store.getSettings().hasApiKey, true);
+  assert.ok(!JSON.stringify(await evaluate('window.learnflowDesktop.load()')).includes('smoke-cloud-key-not-real'));
+  console.log('MODEL_PROFILE_SMOKE', JSON.stringify({passed:true,checks:['switch-restores-parameters','selection-does-not-activate','local-and-cloud-key-isolation','saved-key-reused-with-empty-input','reload-retains-service-profiles']}));
   await evaluate("document.querySelector('#model-provider').value = 'vllm'; document.querySelector('#model-provider').dispatchEvent(new Event('change', {bubbles:true})); document.querySelector('#model-name').value = 'smoke-lan-model'; document.querySelector('#model-url').value = 'http://192.168.1.2:8000/v1'; document.querySelector('[name=localOnly]').checked = true; document.querySelector('#desktop-settings-form').requestSubmit()");
   await wait("document.querySelector('#remote-permission')?.hidden === false");
   assert.equal(store.getSettings().provider, 'deepseek');
@@ -408,7 +426,7 @@ exports.run = async (window, store, directory) => {
     assert.equal(await evaluate("document.querySelector('[data-action=check-image-connection]').disabled"),true);
     // Reproduce the exact reported Token Plan root, saving only a fake key.
     // Do not click connection or generation until the service is local again.
-    await evaluate("document.querySelector('#image-model-name').value='wan2.7-image-pro'; document.querySelector('#image-model-url').value='https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1'; document.querySelector('#image-settings-form [name=localOnly]').checked=false; document.querySelector('#image-key-action').value='replace'; document.querySelector('#image-model-key').value='smoke-token-plan-key-not-real'; document.querySelector('#image-size').value='1024x1024'; document.querySelector('#image-settings-form').requestSubmit()");
+    await evaluate("document.querySelector('#image-settings-form [name=enabled]').checked=true; document.querySelector('#image-model-name').value='wan2.7-image-pro'; document.querySelector('#image-model-url').value='https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1'; document.querySelector('#image-settings-form [name=localOnly]').checked=false; document.querySelector('#image-key-action').value='replace'; document.querySelector('#image-model-key').value='smoke-token-plan-key-not-real'; document.querySelector('#image-size').value='1024x1024'; document.querySelector('#image-settings-form').requestSubmit()");
     await wait("document.querySelector('#image-connection-result')?.textContent.includes('同域名的 /api/v1')");
     const tokenSaved=(await evaluate('window.learnflowDesktop.load()')).imageSettings;
     assert.equal(tokenSaved.baseUrl,'https://token-plan.cn-beijing.maas.aliyuncs.com/api/v1');

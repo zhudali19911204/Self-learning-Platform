@@ -122,6 +122,32 @@ test('web search save failures remain on the same form and preserve the consent 
   assert.equal(app.run('webSearchSettings.enabled'), true); assert.equal(calls, 2);
 });
 
+test('LLM provider selection restores saved parameters and drafts without changing the backend or exposing stored keys', async t => {
+  const local = { provider: 'ollama', model: 'local-model', baseUrl: 'http://localhost:11434', localOnly: true, jsonMode: 'auto', timeoutMs: 120000, maxTokens: 8192, hasApiKey: false };
+  const cloud = { provider: 'qwen', model: 'qwen-test', baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1', localOnly: false, jsonMode: 'off', timeoutMs: 90000, maxTokens: 4096, hasApiKey: true };
+  let calls = 0, input;
+  const app = realSettingsHarness({ load: async () => ({ settings: { ...local, profiles: { ollama: local, qwen: cloud } }, status: { mode: 'ai', provider: 'ollama' } }),
+    saveSettings: async value => { calls++; input = value; return { settings: { ...cloud, profiles: { ollama: local, qwen: cloud } }, status: { mode: 'ai', provider: 'qwen' } }; } });
+  t.after(() => app.close()); await app.ready(); app.run("navigate('settings')");
+  const doc = app.document;
+  doc.querySelector('#model-name').value = 'local-draft'; doc.querySelector('#model-key').value = 'local-draft-key';
+  doc.querySelector('#model-provider').value = 'qwen'; await app.fire('input', doc.querySelector('#model-provider')); await app.fire('change', doc.querySelector('#model-provider'));
+  assert.equal(doc.querySelector('#model-name').value, cloud.model); assert.equal(doc.querySelector('#model-url').value, cloud.baseUrl);
+  assert.equal(doc.querySelector('#model-timeout').value, '90'); assert.equal(doc.querySelector('#model-tokens').value, '4096');
+  assert.equal(doc.querySelector('#json-mode').value, 'off'); assert.equal(doc.querySelector('#desktop-settings-form [name=localOnly]').checked, false);
+  assert.equal(doc.querySelector('#model-key').value, ''); assert.match(doc.querySelector('#model-key').placeholder, /已保存/);
+  assert.equal(calls, 0); assert.equal(app.run('desktopSettings.provider'), 'ollama');
+  doc.querySelector('#model-provider').value = 'ollama'; await app.fire('change', doc.querySelector('#model-provider'));
+  assert.equal(doc.querySelector('#model-name').value, 'local-draft'); assert.equal(doc.querySelector('#model-key').value, 'local-draft-key');
+  doc.querySelector('#model-provider').value = 'qwen'; await app.fire('change', doc.querySelector('#model-provider'));
+  app.run('render()'); assert.equal(doc.querySelector('#model-key').value, ''); assert.match(doc.querySelector('#model-key').placeholder, /已保存/);
+  await app.fire('submit', doc.querySelector('#desktop-settings-form'));
+  assert.equal(calls, 1); assert.equal(input.provider, 'qwen'); assert.equal(input.keyAction, 'keep'); assert.equal(input.apiKey, '');
+  assert.equal(doc.querySelector('#model-key').value, ''); assert.ok(!doc.querySelector('#app').innerHTML.includes('local-draft-key'));
+  doc.querySelector('#model-provider').value = 'ollama'; await app.fire('change', doc.querySelector('#model-provider'));
+  assert.equal(doc.querySelector('#model-key').value, 'local-draft-key');
+});
+
 test('AI speech previews do not synthesize; confirmation preserves the course and cached playback never calls a model', async () => {
   let posts = 0, plays = 0, pauses = 0;
   const text = 'Sarah: Hello, Mark.\nMark: Good morning.';
@@ -334,19 +360,24 @@ test('native image settings submit the protocol and automatic format while keepi
   assert.match(html,/Token Plan/);assert.ok(!html.includes('secret-image-key'));
 });
 
-test('changing image protocol preserves the draft and requires saving before a connection check', async () => {
-  const app=harness(null,null,{load:async()=>({settings:{},status:{mode:'ai'}})});await Promise.resolve();
-  app.node('#image-model-url').value='https://old.example/compatible-mode/v1';
-  app.node('#image-model-name').value='wan2.7-image-pro';app.node('#image-model-key').value='old-draft-key';
-  app.node('#image-settings-form [name=localOnly]').checked=false;
-  app.change('image-protocol','dashscope');
-  assert.equal(app.node('#image-model-url').value,'https://old.example/compatible-mode/v1');
-  assert.equal(app.node('#image-model-name').value,'wan2.7-image-pro');
-  assert.equal(app.node('#image-model-key').value,'');assert.equal(app.node('#image-key-action').value,'replace');
-  assert.equal(app.node('#image-response-format').disabled,true);assert.equal(app.node('#image-response-format').value,'auto');
-  assert.equal(app.node('[data-action="check-image-connection"]').disabled,true);
-  assert.match(app.node('#image-protocol-hint').textContent,/\/api\/v1/);
-  app.change('image-protocol','compatible');assert.equal(app.node('#image-response-format').disabled,false);
+test('changing image protocol restores saved parameters and preserves separate unsaved drafts without sharing keys', async t => {
+  const native = { enabled: true, protocol: 'dashscope', model: 'wan2.7-image-pro', baseUrl: 'https://dashscope.aliyuncs.com/api/v1', size: '2K', responseFormat: 'auto', timeoutMs: 240000, localOnly: false, downloadHosts: 'cdn.example.org', hasApiKey: true };
+  const app = realSettingsHarness({ load: async () => ({ settings: {}, status: { mode: 'ai' }, imageSettings: { enabled: false, protocol: 'compatible', model: 'local-image', baseUrl: 'http://localhost:8001/v1', size: '768x768', responseFormat: 'b64_json', timeoutMs: 180000, localOnly: true, downloadHosts: '', profiles: { dashscope: native } } }) });
+  t.after(() => app.close()); await app.ready(); app.run("navigate('settings')");
+  const doc = app.document;
+  doc.querySelector('#image-model-name').value = 'local-draft'; doc.querySelector('#image-model-key').value = 'local-draft-key';
+  doc.querySelector('#image-protocol').value = 'dashscope'; await app.fire('change', doc.querySelector('#image-protocol'));
+  assert.equal(doc.querySelector('#image-model-name').value, native.model); assert.equal(doc.querySelector('#image-model-key').value, '');
+  assert.equal(doc.querySelector('#image-size').value, '2K'); assert.equal(doc.querySelector('#image-timeout').value, '240');
+  assert.equal(doc.querySelector('#image-response-format').disabled, true); assert.equal(doc.querySelector('#image-response-format').value, 'auto');
+  assert.equal(doc.querySelector('#image-settings-form [name=localOnly]').checked, false);
+  assert.ok(doc.querySelector('#image-settings-form [data-action=clear-model-key]'));
+  assert.equal(app.run('imageSettings.protocol'), 'compatible', 'selection must not activate the backend');
+  doc.querySelector('#image-protocol').value = 'compatible'; await app.fire('change', doc.querySelector('#image-protocol'));
+  assert.equal(doc.querySelector('#image-model-name').value, 'local-draft'); assert.equal(doc.querySelector('#image-model-key').value, 'local-draft-key');
+  assert.equal(doc.querySelector('#image-response-format').disabled, false); assert.equal(doc.querySelector('#image-response-format').value, 'b64_json');
+  app.run('render()'); assert.equal(doc.querySelector('#image-model-key').value, 'local-draft-key');
+  assert.equal(doc.querySelector('[data-action=check-image-connection]').disabled, true);
 });
 
 test('saving an aliased native image root explains the same-provider adjustment rather than forbidding Token Plan', async () => {

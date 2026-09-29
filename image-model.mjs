@@ -74,7 +74,7 @@ export function normalizeImageSettings(input, previous = imageDefaults) {
     if (!string(input.apiKey, 4096) || !input.apiKey.trim() || /[\r\n]/.test(input.apiKey)) fail('请填写有效的图片模型 API Key。');
     next.apiKey = input.apiKey.trim();
   }
-  if (next.enabled && next.protocol === 'dashscope' && url && !loopback(url.hostname) && !next.apiKey) fail('百炼云端原生接口需要独立 API Key；切换协议或地址后请重新填写，不会沿用旧密钥。');
+  if (next.enabled && next.protocol === 'dashscope' && url && !loopback(url.hostname) && !next.apiKey) fail('百炼云端原生接口需要独立 API Key；此协议和地址尚无已保存的密钥，请填写后保存，不会沿用其他服务的密钥。');
   return next;
 }
 export const MAX_IMAGE_BYTES = 12 * 1024 * 1024;

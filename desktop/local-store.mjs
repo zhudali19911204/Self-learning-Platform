@@ -5,6 +5,7 @@ import { resolveConfig } from '../llm.mjs';
 import { validPlan, validLesson } from '../server.mjs';
 import { validBlockCourse } from '../public/blocks.js';
 import { validLearningBrief } from '../public/planning.js';
+import { createModelProfiles } from './model-profiles.mjs';
 
 export const defaults = { provider: 'ollama', model: '', baseUrl: '', jsonMode: 'auto', timeoutMs: 120000, maxTokens: 8192, localOnly: true };
 const id = v => typeof v === 'string' && /^[a-zA-Z0-9_-]{1,160}$/.test(v) && !['__proto__', 'constructor', 'prototype'].includes(v);
@@ -60,6 +61,7 @@ export function createLocalStore(directory, secrets) {
   let queue = Promise.resolve();
   let settings = { ...defaults, apiKey: '' };
   let settingsError = '';
+  const profiles = createModelProfiles({ defaults, selector: 'provider', allowed: ['ollama', 'lmstudio', 'vllm', 'deepseek', 'qwen', 'compatible'], normalize: normalizeSettings, secrets });
   const enqueue = task => { const operation = queue.then(task); queue = operation.catch(() => {}); return operation; };
   async function read(name) {
     try {
@@ -76,16 +78,15 @@ export function createLocalStore(directory, secrets) {
     try { await copyFile(target, target + '.bak'); } catch (e) { if (e.code !== 'ENOENT') throw e; }
     await rename(temp, target);
   }
-  const safeSettings = () => ({ ...Object.fromEntries(Object.keys(defaults).map(key => [key, settings[key]])), hasApiKey: !!settings.apiKey, error: settingsError });
+  const safeSettings = () => ({ ...Object.fromEntries(Object.keys(defaults).map(key => [key, settings[key]])), hasApiKey: !!settings.apiKey, profiles: profiles.safe(), error: settingsError });
   return {
     async initialize() {
       try {
         const stored = await read('settings.json');
         if (stored) {
           if (stored.version !== 1) throw new Error();
-          const apiKey = stored.encryptedApiKey ? await secrets.decrypt(stored.encryptedApiKey) : '';
-          settings = normalizeSettings({ ...stored, apiKey, keyAction: apiKey ? 'replace' : 'clear' });
         }
+        settings = await profiles.load(stored);
       } catch { settingsError = '本地模型配置无法读取或密钥无法解密。原文件已保留，请检查 settings.json 及其 .bak 备份后重启应用。'; }
       return safeSettings();
     },
@@ -97,11 +98,9 @@ export function createLocalStore(directory, secrets) {
     saveSettings(input) {
       return enqueue(async () => {
         if (settingsError) throw new Error(settingsError);
-        const next = normalizeSettings(input, settings);
-        const encryptedApiKey = next.apiKey ? await secrets.encrypt(next.apiKey) : '';
-        const { apiKey, ...publicFields } = next;
-        await atomic('settings.json', { version: 1, ...publicFields, encryptedApiKey });
-        settings = next;
+        const change = await profiles.prepare(input, settings);
+        await atomic('settings.json', { version: 1, ...change.value });
+        settings = change.next; change.commit();
         return safeSettings();
       });
     },
