@@ -123,6 +123,16 @@ async function start() {
   handle('learnflow:save-reflection', (id, value) => learning.saveReflection(id, value));
   handle('learnflow:append-chat', (id, question, answer) => learning.appendChat(id, question, answer));
   handle('learnflow:save-note', value => learning.saveNote(value));
+  handle('learnflow:delete-note', async id => {
+    const preview = learning.noteDeletionPreview(id);
+    const choice = await dialog.showMessageBox(window, {
+      type: 'warning', title: '删除知识卡片', message: `删除「${preview.title}」？`,
+      detail: '这会删除这张卡片的 Markdown 文件、数据库记录及知识目录条目，不删除来源课程或其他卡片。历史备份仍可能保留旧副本；应用内无法撤销，请确认。',
+      buttons: ['取消', '删除卡片'], defaultId: 0, cancelId: 0, noLink: true
+    });
+    if (choice.response !== 1) return null;
+    return learning.deleteNote(id, preview.updated);
+  });
   handle('learnflow:card-markdown', id => learning.cardMarkdown(id));
   const imageRequests = new Set();
   const commonsImages = createCommonsImages(modelFetch);

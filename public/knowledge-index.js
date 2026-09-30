@@ -4,6 +4,18 @@ export const knowledgeTopic = value => String(value || '未分类').split(/[\\/]
 
 // Stable, deliberately broad shelves. Unknown courses stay visible for review.
 export const knowledgeDomains = ['技术与开发', '数据与分析', '人工智能', '语言与沟通', '商业与管理', '设计与创作', '科学与通识', '生活与兴趣', '待归类'];
+// Fixed graph colors for every top-level shelf. Adding cards or sorting shelves must not change them.
+export const knowledgeDomainColors = Object.freeze({
+  '技术与开发': '#60a5fa',
+  '数据与分析': '#e6a34f',
+  '人工智能': '#a78bfa',
+  '语言与沟通': '#78bd63',
+  '商业与管理': '#52b5b0',
+  '设计与创作': '#e17d94',
+  '科学与通识': '#7788c4',
+  '生活与兴趣': '#b49c69',
+  '待归类': '#9ca3af'
+});
 const domainRules = [
   ['人工智能', /大模型|人工智能|机器学习|深度学习|智能体|提示词|神经网络|transformer|\b(?:llm|gpt|rag|ai)\b/i],
   ['数据与分析', /数据分析|数据库|数据处理|数据可视化|统计|报表|商业智能|\b(?:sql|power\s*(?:bi|query)|dax|excel|tableau)\b/i],

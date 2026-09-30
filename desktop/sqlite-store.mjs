@@ -377,6 +377,34 @@ export async function createSqliteStore(directory) {
       if ((indexed && !onDisk) || (!indexed && onDisk) || (indexed && onDisk && !isDeepStrictEqual(noteFromRow(indexed), onDisk))) throw new Error('知识卡片文件已在应用外修改，请重启应用后再编辑。');
       saveKnowledgeCard(directory, normalized, saved => insertNote(db, saved), old?.topic);
     },
+    noteDeletionPreview(noteId) {
+      if (!id(noteId)) throw new Error('知识卡片 ID 无效。');
+      const row = db.prepare('SELECT * FROM notes WHERE id = ?').get(noteId);
+      if (!row) throw new Error('知识卡片不存在。');
+      const note = noteFromRow(row);
+      const onDisk = readKnowledgeCard(directory, noteId, note.topic);
+      if (!onDisk || !isDeepStrictEqual(note, onDisk)) throw new Error('知识卡片文件已在应用外修改，请重启应用核对后再删除。');
+      return { id: note.id, title: note.title, updated: note.updated };
+    },
+    deleteNote(noteId, expectedUpdated) {
+      const preview = this.noteDeletionPreview(noteId);
+      if (preview.updated !== expectedUpdated) throw new Error('知识卡片已更新，请重新打开后再删除。');
+      const note = noteFromRow(db.prepare('SELECT * FROM notes WHERE id = ?').get(noteId));
+      const generation = db.prepare("SELECT value FROM meta WHERE key = 'knowledge_generation'").get().value;
+      const count = db.prepare('SELECT COUNT(*) AS count FROM notes').get().count;
+      try {
+        removeKnowledgeCards(directory, [noteId], generation, count - 1);
+        const removed = db.prepare('DELETE FROM notes WHERE id = ? AND updated = ?').run(noteId, expectedUpdated);
+        if (removed.changes !== 1) throw new Error('知识卡片已更新，请重新打开后再删除。');
+      } catch (error) {
+        try {
+          if (!readKnowledgeCard(directory, noteId, note.topic)) saveKnowledgeCard(directory, note, saved => insertNote(db, saved), note.topic);
+          removeKnowledgeCards(directory, [], generation, count);
+        } catch (restoreError) { throw new Error(`卡片删除失败，自动恢复也未完成，请重启核对数据：${restoreError.message}`); }
+        throw error;
+      }
+      return { id: noteId };
+    },
     async backupBeforeImport() {
       syncKnowledgeIndex(db, directory);
       const folder = path.join(directory, 'backups'); await mkdir(folder, { recursive: true });

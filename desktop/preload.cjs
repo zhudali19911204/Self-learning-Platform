@@ -20,6 +20,7 @@ contextBridge.exposeInMainWorld('learnflowDesktop', Object.freeze({
   saveReflection: (id, value) => invoke('learnflow:save-reflection', id, value),
   appendChat: (id, question, answer) => invoke('learnflow:append-chat', id, question, answer),
   saveNote: value => invoke('learnflow:save-note', value),
+  deleteNote: id => invoke('learnflow:delete-note', id),
   cardMarkdown: id => invoke('learnflow:card-markdown', id),
   saveSettings: value => invoke('learnflow:save-settings', value),
   saveImageSettings: value => invoke('learnflow:save-image-settings', value),

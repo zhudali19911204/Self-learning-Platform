@@ -181,6 +181,44 @@ test('manual knowledge category survives SQLite and YAML without moving the orig
   } finally { store.close(); }
 });
 
+test('deleting one card removes its Markdown, database row and catalog entry but keeps its lesson', async t => {
+  const directory = await temporary(t);
+  const store = await createSqliteStore(directory);
+  const note = legacy().notes[0];
+  try {
+    store.saveNote(note);
+    store.saveNote({ ...note, id: 'other-note', title: '另一张卡片' });
+    const file = cardPathFor(directory, note);
+    assert.deepEqual(store.noteDeletionPreview(note.id), { id: note.id, title: note.title, updated: note.updated });
+    assert.throws(() => store.deleteNote(note.id, note.updated + 1), /已更新/);
+    assert.ok(await stat(file));
+    assert.deepEqual(store.deleteNote(note.id, note.updated), { id: note.id });
+    await assert.rejects(stat(file), { code: 'ENOENT' });
+    assert.deepEqual(store.overview().notes.map(card => card.id), ['other-note']);
+    const catalog = JSON.parse(await readFile(path.join(directory, 'knowledge', 'catalog.json'), 'utf8'));
+    assert.deepEqual(catalog.cards.map(card => card.id), ['other-note']);
+    assert.ok(store.getLesson('p1').lesson);
+    assert.throws(() => store.noteDeletionPreview(note.id), /不存在/);
+  } finally { store.close(); }
+  const reopened = await createSqliteStore(directory);
+  try { assert.deepEqual(reopened.overview().notes.map(card => card.id), ['other-note']); }
+  finally { reopened.close(); }
+});
+
+test('deletion refuses externally edited Markdown and leaves the card untouched', async t => {
+  const directory = await temporary(t), note = legacy().notes[0];
+  const store = await createSqliteStore(directory);
+  try {
+    store.saveNote(note);
+    const file = cardPathFor(directory, note);
+    await writeFile(file, serializeKnowledgeCard({ ...note, content: '应用外新内容', updated: 3456 }));
+    assert.throws(() => store.noteDeletionPreview(note.id), /应用外修改/);
+    assert.throws(() => store.deleteNote(note.id, note.updated), /应用外修改/);
+    assert.ok(await stat(file));
+    assert.equal(store.overview().notes.length, 1);
+  } finally { store.close(); }
+});
+
 test('flat card files migrate into topic folders without losing externally edited YAML or Markdown', async t => {
   const directory = await temporary(t), note = legacy().notes[0];
   let store = await createSqliteStore(directory);

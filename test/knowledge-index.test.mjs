@@ -1,8 +1,18 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { knowledgeCatalog, knowledgeDomain, retrieveKnowledge, validKnowledgeOrganization } from '../public/knowledge-index.js';
+import { knowledgeCatalog, knowledgeDomain, knowledgeDomainColors, knowledgeDomains, retrieveKnowledge, validKnowledgeOrganization } from '../public/knowledge-index.js';
 
 const card = (id, overrides = {}) => ({ id, title: `通用卡片 ${id}`, summary: '普通学习内容', content: '普通正文', tags: ['通用'], topic: '未分类', courseTitle: '课程', lessonId: 'lesson', updated: Number(id.replace(/\D/g, '')) || 1, ...overrides });
+
+test('every predefined top-level directory has its own fixed graph color', () => {
+  assert.deepEqual(Object.keys(knowledgeDomainColors), knowledgeDomains);
+  const colors = Object.values(knowledgeDomainColors);
+  assert.equal(new Set(colors).size, knowledgeDomains.length);
+  assert.ok(colors.every(color => /^#[0-9a-f]{6}$/i.test(color)));
+  assert.equal(knowledgeDomainColors['技术与开发'], '#60a5fa');
+  assert.equal(knowledgeDomainColors['人工智能'], '#a78bfa');
+  assert.equal(knowledgeDomainColors['语言与沟通'], '#78bd63');
+});
 
 test('AI organization must cover every card once and cannot create single-card themes', () => {
   const ids = ['a', 'b', 'c'];

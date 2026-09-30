@@ -91,10 +91,12 @@ export function courseKnowledgeTree(notes, plans = []) {
   return root;
 }
 
-export function knowledgeGraph(notes, maxCards = 240) {
+export function knowledgeGraph(notes, maxCards = 240, plans = []) {
   const cards = [...notes].sort((a, b) => (Number(b.updated) || 0) - (Number(a.updated) || 0) || compare(a.id, b.id)).slice(0, maxCards);
   const byId = new Map(cards.map(card => [card.id, card]));
+  const coursesByLesson = new Map(plans.flatMap(plan => (plan.lessons || []).map(lesson => [lesson.id, plan])));
   const topics = new Map();
+  const topicDomains = new Map();
   const nodes = [];
   const edges = [];
   const edgeKeys = new Set();
@@ -111,6 +113,7 @@ export function knowledgeGraph(notes, maxCards = 240) {
   };
   for (const card of cards) {
     const path = knowledgeTopic(card.topic);
+    const domain = knowledgeDomain(coursesByLesson.get(card.lessonId) || { title: card.courseTitle || '' });
     let parent = '';
     for (const segment of path.split('/')) {
       const current = parent ? `${parent}/${segment}` : segment;
@@ -119,10 +122,16 @@ export function knowledgeGraph(notes, maxCards = 240) {
         if (parent) addEdge(topicNode(parent), topicNode(current), 'hierarchy');
       }
       topics.get(current).count++;
+      if (!topicDomains.has(current)) topicDomains.set(current, new Map());
+      const counts = topicDomains.get(current);
+      counts.set(domain, (counts.get(domain) || 0) + 1);
       parent = current;
     }
-    nodes.push({ id: cardNode(card.id), kind: 'card', cardId: card.id, label: card.title, topic: path, group: path.split('/')[0] });
+    nodes.push({ id: cardNode(card.id), kind: 'card', cardId: card.id, label: card.title, topic: path, group: path.split('/')[0], domain });
     addEdge(topicNode(path), cardNode(card.id), 'membership');
+  }
+  for (const topic of topics.values()) {
+    topic.domain = [...topicDomains.get(topic.topic)].sort((left, right) => right[1] - left[1] || compare(left[0], right[0]))[0][0];
   }
   nodes.unshift(...topics.values());
   for (const card of cards) {

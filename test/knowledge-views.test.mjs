@@ -87,6 +87,29 @@ test('graph distinguishes declared relations, topic membership and tentative sha
   assert.deepEqual(knowledgeGraph(notes), graph, 'same notes produce stable layout');
 });
 
+test('graph colors can follow the course root domain instead of raw YAML topics', () => {
+  const plans = [
+    { id: 'git', title: 'Windows Git 入门', lessons: [{ id: 'git-lesson' }] },
+    { id: 'ai', title: '人工智能入门', lessons: [{ id: 'ai-lesson' }] },
+    { id: 'jp', title: '日语五十音学习', lessons: [{ id: 'jp-lesson' }] }
+  ];
+  const notes = [
+    card('install', 'Git安装', { lessonId: 'git-lesson' }),
+    card('verify', '未分类', { lessonId: 'git-lesson' }),
+    card('llm', '下一个词预测', { lessonId: 'ai-lesson' }),
+    card('vowel', '五十音图元音', { lessonId: 'jp-lesson' })
+  ];
+  const graph = knowledgeGraph(notes, 240, plans);
+  const cards = new Map(graph.nodes.filter(node => node.kind === 'card').map(node => [node.cardId, node]));
+  assert.equal(cards.get('install').domain, '技术与开发');
+  assert.equal(cards.get('verify').domain, '技术与开发');
+  assert.equal(cards.get('llm').domain, '人工智能');
+  assert.equal(cards.get('vowel').domain, '语言与沟通');
+  assert.equal(new Set(graph.nodes.map(node => node.domain)).size, 3);
+  assert.equal(graph.nodes.find(node => node.id === 'topic:未分类').domain, '技术与开发');
+  assert.ok(graph.edges.some(edge => edge.source === 'topic:未分类' && edge.target === 'card:verify'));
+});
+
 test('graph rendering limit is explicit while filtered input can reveal an older card', () => {
   const notes = Array.from({ length: 245 }, (_, index) => card(`card-${index}`, '学习', { updated: index }));
   const graph = knowledgeGraph(notes);
