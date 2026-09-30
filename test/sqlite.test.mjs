@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, writeFile, rm, stat, mkdir, readdir } from 'node:fs/promises';
+import { mkdtemp, readFile, writeFile, rm, stat, mkdir, readdir, copyFile, rename } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
@@ -8,6 +8,7 @@ import { createSqliteStore } from '../desktop/sqlite-store.mjs';
 import { demoPlan, demoLessons } from '../public/demo.js';
 import { learningBriefFrom } from '../public/planning.js';
 import { clarification } from '../test-support/planning.mjs';
+import { cardPathFor, normalizeKnowledgeCard, parseKnowledgeCard, serializeKnowledgeCard } from '../desktop/knowledge-cards.mjs';
 
 async function temporary(t) {
   const directory = await mkdtemp(path.join(tmpdir(), 'learnflow-sqlite-test-'));
@@ -43,7 +44,9 @@ test('legacy JSON migrates without modifying its bytes; lessons load individuall
     const exported = store.exportState();
     assert.deepEqual(exported.plans, original.plans);
     assert.deepEqual(exported.progress, original.progress);
-    assert.deepEqual(exported.notes, original.notes);
+    assert.deepEqual(exported.notes, original.notes.map(normalizeKnowledgeCard));
+    const file = await readFile(cardPathFor(directory, exported.notes[0]), 'utf8');
+    assert.deepEqual(parseKnowledgeCard(file, 'note-1.md'), exported.notes[0]);
     assert.deepEqual(exported.reflections, original.reflections);
     assert.deepEqual(exported.chats, original.chats);
     assert.equal(exported.lessons.p1.intro, original.lessons.p1.intro);
@@ -56,7 +59,7 @@ test('legacy JSON migrates without modifying its bytes; lessons load individuall
   try { assert.equal(reopened.getLesson('p1').lesson.intro, '只更新这一门课'); }
   finally { reopened.close(); }
 });
-test('confirmed learning requirements survive save, reopen, export, import and deletion without a schema upgrade', async t => {
+test('confirmed learning requirements survive save, reopen, export, import and deletion', async t => {
   const directory = await temporary(t);
   let store = await createSqliteStore(directory);
   const plan = {...structuredClone(demoPlan),id:'tailored-route',source:'ai',learningBrief:learningBriefFrom(clarification),lessons:demoPlan.lessons.map((lesson,index) => ({...lesson,id:`tailored-${index}`}))};
@@ -79,7 +82,7 @@ test('confirmed learning requirements survive save, reopen, export, import and d
     assert.deepEqual(store.overview().plans.at(-1).learningBrief,plan.learningBrief);
   } finally { store.close(); }
   const database = new DatabaseSync(path.join(directory,'learning.sqlite'),{readOnly:true});
-  try { assert.equal(database.prepare('PRAGMA user_version').get().user_version,2); }
+  try { assert.equal(database.prepare('PRAGMA user_version').get().user_version,3); }
   finally { database.close(); }
 });
 
@@ -100,6 +103,127 @@ test('v1 SQLite upgrades with a verified snapshot and keeps existing course cont
     try { assert.equal(snapshot.prepare('PRAGMA user_version').get().user_version, 1); }
     finally { snapshot.close(); }
   } finally { upgraded.close(); }
+});
+
+test('v2 SQLite card rows migrate to verified YAML Markdown files without losing text', async t => {
+  const directory = await temporary(t);
+  const first = await createSqliteStore(directory);
+  first.saveNote(legacy().notes[0]); first.close();
+  const db = new DatabaseSync(path.join(directory, 'learning.sqlite'));
+  db.exec("ALTER TABLE notes DROP COLUMN metadata_json; DELETE FROM meta WHERE key = 'knowledge_generation'; PRAGMA user_version = 2");
+  db.close();
+  const migrated = await createSqliteStore(directory);
+  try {
+    assert.equal(migrated.exportState().notes[0].content, '我记录的知识');
+    const file = await readFile(cardPathFor(directory, migrated.exportState().notes[0]), 'utf8');
+    const card = parseKnowledgeCard(file, 'note-1.md');
+    assert.equal(card.summary, '摘要');
+    assert.equal(card.topic, '未分类');
+    assert.deepEqual(card.sourceLessons, ['p1']);
+    const backups = await readdir(path.join(directory, 'backups'));
+    assert.ok(backups.some(name => name.startsWith('before-schema-v3-') && name.endsWith('.sqlite')));
+  } finally { migrated.close(); }
+});
+
+test('Markdown YAML metadata is canonical on reopen and invalid edits do not overwrite the database', async t => {
+  const directory = await temporary(t), filename = cardPathFor(directory, legacy().notes[0]);
+  let store = await createSqliteStore(directory);
+  store.saveNote(legacy().notes[0]); store.close();
+  const edited = { ...normalizeKnowledgeCard(legacy().notes[0]), topic: '编程/Python', useWhen: ['需要解释打印输出时'], avoidWhen: ['需要存储用户输入时'], aliases: ['输出'], related: ['another-card'], status: 'reviewed', content: '在外部 Markdown 编辑器中更新的正文' };
+  await writeFile(filename, serializeKnowledgeCard(edited));
+  store = await createSqliteStore(directory);
+  try {
+    const card = store.exportState().notes[0];
+    assert.equal(card.content, edited.content);
+    assert.deepEqual(card.useWhen, edited.useWhen);
+    assert.deepEqual(card.avoidWhen, edited.avoidWhen);
+    assert.deepEqual(card.related, edited.related);
+    assert.equal(card.status, 'reviewed');
+    assert.equal(card.topic, '编程/Python');
+  } finally { store.close(); }
+  const moved = cardPathFor(directory, edited);
+  await writeFile(moved, '---\nid: note-1\nthis: [broken\n---\n正文');
+  await assert.rejects(createSqliteStore(directory), /知识卡片.*读取失败/);
+  const db = new DatabaseSync(path.join(directory, 'learning.sqlite'), { readOnly: true });
+  try { assert.equal(db.prepare("SELECT content FROM notes WHERE id = 'note-1'").get().content, edited.content); }
+  finally { db.close(); }
+  assert.match(await readFile(moved, 'utf8'), /this: \[broken/);
+});
+
+test('saving a card updates its Markdown and refuses to overwrite an external edit', async t => {
+  const directory = await temporary(t), filename = cardPathFor(directory, legacy().notes[0]);
+  const store = await createSqliteStore(directory);
+  try {
+    store.saveNote(legacy().notes[0]);
+    const next = { ...store.overview().notes[0], title: '更新后的标题', content: '第二版正文', updated: 2345 };
+    store.saveNote(next);
+    assert.equal(parseKnowledgeCard(await readFile(filename, 'utf8'), 'note-1.md').content, '第二版正文');
+    assert.equal(store.cardMarkdown('note-1'), await readFile(filename, 'utf8'));
+    await writeFile(filename, serializeKnowledgeCard({ ...next, content: '外部编辑内容', updated: 3456 }));
+    assert.throws(() => store.saveNote({ ...next, content: '应用中的旧草稿', updated: 4567 }), /应用外修改/);
+    assert.equal(store.exportState().notes[0].content, '外部编辑内容');
+  } finally { store.close(); }
+});
+
+test('manual knowledge category survives SQLite and YAML without moving the original topic file', async t => {
+  const directory = await temporary(t), note = legacy().notes[0];
+  const store = await createSqliteStore(directory);
+  try {
+    store.saveNote(note);
+    const filename = cardPathFor(directory, note);
+    store.saveNote({ ...store.overview().notes[0], category: '基础概念', updated: 2345 });
+    assert.equal(cardPathFor(directory, store.overview().notes[0]), filename);
+    assert.equal(store.overview().notes[0].category, '基础概念');
+    const source = await readFile(filename, 'utf8');
+    assert.match(source, /knowledge_category: 基础概念/);
+    assert.equal(parseKnowledgeCard(source, 'note-1.md').category, '基础概念');
+    assert.equal(store.exportState().notes[0].category, '基础概念');
+  } finally { store.close(); }
+});
+
+test('flat card files migrate into topic folders without losing externally edited YAML or Markdown', async t => {
+  const directory = await temporary(t), note = legacy().notes[0];
+  let store = await createSqliteStore(directory);
+  store.saveNote(note); store.close();
+  const nested = cardPathFor(directory, note), flat = path.join(directory, 'knowledge', 'cards', 'note-1.md');
+  const edited = { ...normalizeKnowledgeCard(note), topic: '编程/Python', aliases: ['输出'], content: '## 外部修改\n\n保留原文。' };
+  await writeFile(nested, serializeKnowledgeCard(edited));
+  await rename(nested, flat);
+  store = await createSqliteStore(directory);
+  try {
+    const migrated = store.overview().notes[0];
+    assert.equal(migrated.topic, '编程/Python');
+    assert.equal(migrated.content, edited.content);
+    assert.deepEqual(migrated.aliases, ['输出']);
+    assert.equal(parseKnowledgeCard(await readFile(cardPathFor(directory, migrated), 'utf8'), 'note-1.md').content, edited.content);
+    const catalog = JSON.parse(await readFile(path.join(directory, 'knowledge', 'catalog.json'), 'utf8'));
+    assert.equal(catalog.cards[0].id, 'note-1');
+    assert.equal(catalog.topics.some(topic => topic.path === '编程/Python'), true);
+    assert.equal(JSON.stringify(catalog).includes('保留原文'), false, 'the catalog stores metadata, not full card bodies');
+    await assert.rejects(stat(flat), { code: 'ENOENT' });
+    const moved = { ...migrated, topic: '开发工具/Git', updated: Date.now() };
+    store.saveNote(moved);
+    const movedCatalog = JSON.parse(await readFile(path.join(directory, 'knowledge', 'catalog.json'), 'utf8'));
+    assert.equal(movedCatalog.cards[0].topic, '开发工具/Git');
+    assert.equal((await readFile(cardPathFor(directory, moved), 'utf8')).includes('开发工具/Git'), true);
+    await assert.rejects(stat(cardPathFor(directory, migrated)), { code: 'ENOENT' });
+    assert.equal(store.exportState().notes[0].content, edited.content);
+  } finally { store.close(); }
+});
+
+test('startup recovers the prior card directory after an interrupted topic-folder swap', async t => {
+  const directory = await temporary(t);
+  let store = await createSqliteStore(directory);
+  store.saveNote(legacy().notes[0]); store.close();
+  const cards = path.join(directory, 'knowledge', 'cards');
+  const previous = path.join(directory, 'knowledge', '.cards-00000000-0000-0000-0000-000000000001.previous');
+  await rename(cards, previous);
+  store = await createSqliteStore(directory);
+  try {
+    assert.equal(store.overview().notes[0].content, '我记录的知识');
+    assert.equal((await readFile(cardPathFor(directory, legacy().notes[0]), 'utf8')).includes('我记录的知识'), true);
+    await assert.rejects(stat(previous), { code: 'ENOENT' });
+  } finally { store.close(); }
 });
 
 test('outlines and blocks save independently and survive export/import', async t => {
@@ -207,6 +331,8 @@ test('deleting a route removes its related records and redacts existing backups'
     store.saveReflection(lessonId, '需要保留在备份中的心得');
     store.appendChat(lessonId, '测试问题', '测试回答');
     store.saveNote({ ...legacy().notes[0], id: 'delete-note', lessonId, source: 'ai' });
+    store.saveNote(legacy().notes[0]);
+    const retainedCard = await readFile(cardPathFor(directory, legacy().notes[0]), 'utf8');
     assert.equal(store.planDeletionPreview(route.id).notes, 1);
     const backupFolder = path.join(directory, 'backups');
     await mkdir(backupFolder);
@@ -214,25 +340,45 @@ test('deleting a route removes its related records and redacts existing backups'
     await writeFile(backupFile, JSON.stringify(store.exportState()));
     await writeFile(path.join(directory, 'learning.json.bak'), JSON.stringify(store.exportState()));
     const sqliteSnapshot = await store.backupBeforeImport();
+    const schemaSnapshot = path.join(backupFolder, 'before-schema-v3-test.sqlite');
+    const knowledgeSnapshot = path.join(backupFolder, 'before-knowledge-v1-test.sqlite');
+    await copyFile(sqliteSnapshot, schemaSnapshot); await copyFile(sqliteSnapshot, knowledgeSnapshot);
     const deleted = await store.deletePlan(route.id);
     assert.equal(deleted.state.active, demoPlan.id);
     assert.equal(deleted.state.plans.length, 1);
     assert.equal(store.getLesson('p1').lesson.intro, demoLessons.p1.intro);
     assert.throws(() => store.getLesson(lessonId), /课程不存在/);
     const exported = store.exportState();
-    assert.equal(exported.notes.length, 0);
+    assert.equal(exported.notes.length, 1);
+    assert.equal(exported.notes[0].id, 'note-1');
+    const afterDeleteCatalog = JSON.parse(await readFile(path.join(directory, 'knowledge', 'catalog.json'), 'utf8'));
+    assert.equal(afterDeleteCatalog.count, 1);
+    assert.deepEqual(afterDeleteCatalog.cards.map(card => card.id), ['note-1']);
+    assert.equal(await readFile(cardPathFor(directory, legacy().notes[0]), 'utf8'), retainedCard);
+    await assert.rejects(stat(cardPathFor(directory, { ...legacy().notes[0], id: 'delete-note' })), { code: 'ENOENT' });
     assert.equal(exported.progress[lessonId], undefined);
     await assert.rejects(store.deletePlan(demoPlan.id), /至少保留一条/);
     const backup = JSON.parse(await readFile(backupFile, 'utf8'));
     assert.equal(backup.plans.length, 1);
     assert.equal(backup.reflections[lessonId], undefined);
-    assert.equal(backup.notes.length, 0);
+    assert.equal(backup.notes.length, 1);
     assert.equal(JSON.parse(await readFile(path.join(directory, 'learning.json.bak'), 'utf8')).plans.length, 1);
     await assert.rejects(stat(sqliteSnapshot), { code: 'ENOENT' });
+    await assert.rejects(stat(schemaSnapshot), { code: 'ENOENT' });
+    await assert.rejects(stat(knowledgeSnapshot), { code: 'ENOENT' });
     assert.deepEqual(deleted.backups.failures, []);
     assert.equal((await readdir(backupFolder)).filter(name => name.startsWith('before-delete-')).length, 1, 'no new deletion backup');
     await assert.rejects(store.deletePlan('missing'), /路线不存在/);
   } finally { store.close(); }
+});
+
+test('topic folder names stay inside the card root even for unsafe YAML topic text', async t => {
+  const directory = await temporary(t);
+  const target = cardPathFor(directory, { ...legacy().notes[0], topic: '../../CON:<bad>|name' });
+  const root = path.resolve(directory, 'knowledge', 'cards');
+  assert.equal(path.resolve(target).startsWith(root + path.sep), true);
+  assert.equal(path.basename(target), 'note-1.md');
+  assert.equal(target.includes('<bad>'), false);
 });
 
 test('targeted progress, reflection, note and chat updates persist without whole-state replacement', async t => {

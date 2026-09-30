@@ -6,6 +6,10 @@ import { createMarkdownRenderer } from './markdown.js';
 import { validQuestionnaire, validClarification, learningBriefFrom } from './planning.js';
 import { validIllustration, validImageProposal } from './illustrations.js';
 import { speechDefaults, speechVoices, listeningText, speechTurns, speechRequest, validAudioId } from './speech.js';
+import { validKnowledgeSource, validKnowledgeDraft, localKnowledgeDraft, knowledgeTags, knowledgeConditions } from './knowledge-draft.js';
+import { knowledgeCatalog, knowledgeDomain, knowledgeTopic, retrieveKnowledge, validKnowledgeOrganization } from './knowledge-index.js';
+import { courseKnowledgeTree, knowledgeGraph, filterKnowledgeGraph } from './knowledge-views.js';
+import { createGraphMotion, stepGraphMotion } from './graph-motion.js';
 
 const renderMarkdown = createMarkdownRenderer(Marked, DOMPurify);
 
@@ -46,7 +50,13 @@ try {
     state = value;
   }
 } catch { storageWarning = '本地记录暂时无法读取；当前以临时会话打开，不会覆盖旧记录。可导出新记录备份。'; }
-let page = 'home', activeLesson = null, activeNote = null, lessonTab = 'read', query = '', answer = null;
+let page = 'home', activeLesson = null, activeNote = null, lessonTab = 'read', query = '', topicFilter = '', answer = null;
+let knowledgeView = 'tree', selectedGraphId = '', graphViewport = null;
+let graphDrag = null;
+const folderOverrides = new Map();
+let graphMotion = null, graphFrame = 0, pendingGraph = null, graphPositions = new Map();
+let graphPaused = Boolean(window.matchMedia?.('(prefers-reduced-motion: reduce)').matches);
+let graphTagFilter = '', graphStatusFilter = '', graphTypeFilter = 'all', graphRelationFilter = 'all', graphOrphansOnly = false, graphLocalTwoHop = false, graphSpacing = 1;
 let readingReturn = null;
 let status = { mode: 'loading' };
 let connectionResult = '';
@@ -54,6 +64,8 @@ let revisionBusy = false;
 let imageSettings = null, imageConnectionResult = '', illustrationBusy = false, illustrationDraft = null;
 let webSearchSettings = null, webSearchSaveResult = '';
 let speechSettings = null, speechConnectionResult = '', speechBusy = false, speechDraft = null, speechPlaylist = [];
+let knowledgeDraft = null, knowledgeBusy = false;
+let knowledgeOrganize = null, knowledgeOrganizeBusy = false;
 // Unsaved configuration stays in memory only, including newly typed keys.
 const modelFormDrafts = new Map();
 const modelServiceDrafts = new Map();
@@ -257,6 +269,7 @@ function switchLessonTab(target, focusQuestion = false) {
   }
 }
 function render() {
+  stopGraphMotion(); pendingGraph = null;
   rememberModelDrafts();
   const titles = { home: '学习概览', routes: '我的学习路线', study: '学习工作台', practice: '练习与巩固', wiki: '我的知识库', settings: '设置与数据' };
   $('#app').innerHTML = `<aside class="sidebar">
@@ -269,6 +282,40 @@ function render() {
   <div class="workspace"><header class="topbar"><div class="breadcrumb">我的空间 <span>/</span> <strong>${titles[page]}</strong></div><div class="topbar-right"><span class="mode"><i class="${status.mode === 'ai' ? 'live' : ''}"></i>${status.mode === 'ai' ? escape((status.providerLabel || 'AI') + ' 已配置') : status.mode === 'loading' ? '正在连接' : status.mode === 'offline' ? '服务未连接' : status.mode === 'error' ? '模型配置需检查' : '示例体验模式'}</span><button class="icon-button" data-page="wiki" aria-label="搜索知识库">${icon('search')}</button><div class="avatar small">知</div></div></header>
   <main id="main">${storageWarning ? `<div class="notice error">${escape(storageWarning)}</div>` : ''}${({ home, routes, study, practice, wiki, settings }[page])()}</main><footer>知行 Learnflow <span>从知道，到做到。</span></footer></div>`;
   restoreModelDrafts();
+  decorateKnowledgeActions();
+  decorateGraphToolbar();
+  startGraphMotion(pendingGraph);
+}
+function decorateKnowledgeActions() {
+  if (page !== 'study' || !activeLesson) return;
+  if (typeof document.createElement !== 'function') return;
+  const lesson = contentFor(activeLesson);
+  if (!lesson) return;
+  const host = $('.lesson-content');
+  if (!host?.querySelector) return;
+  if (lessonTab === 'read') {
+    const toolbar = document.createElement('div');
+    toolbar.className = 'knowledge-entry-toolbar';
+    toolbar.innerHTML = button('用本课内容制作知识卡片', 'create-note', 'secondary', `data-id="${escape(activeLesson)}"`, 'brain');
+    host.querySelector('.tabs')?.after(toolbar);
+    if (!state.blockCourses?.[activeLesson]) {
+      host.querySelectorAll('.reading-section').forEach((section, index) => {
+        const slot = document.createElement('div');
+        slot.className = 'knowledge-section-action';
+        slot.innerHTML = button('提炼这段知识', 'create-note', 'secondary', `data-id="${escape(activeLesson)}" data-section="${index}"`, 'brain');
+        section.append(slot);
+      });
+    }
+  }
+  if (lessonTab === 'notes') {
+    const reflection = host.querySelector('.reflection');
+    if (!reflection) return;
+    reflection.querySelectorAll('[data-action="create-note"], .notice, [data-action="quiz"]').forEach(node => node.remove());
+    const slot = document.createElement('div');
+    slot.className = 'knowledge-notes-actions';
+    slot.innerHTML = `<p>学习过程中就能生成卡片；不需要先完成练习。同一课可以保存多张。</p>${button('生成本课知识卡片', 'create-note', 'primary', `data-id="${escape(activeLesson)}"`, 'brain')}${state.notes.filter(note => note.lessonId === activeLesson).map(note => `<button class="citation" data-action="open-note" data-id="${escape(note.id)}">${icon('book')}${escape(note.title)}</button>`).join('')}`;
+    reflection.append(slot);
+  }
 }
 function home() {
   const p = plan(), next = nextLesson();
@@ -278,7 +325,7 @@ function home() {
   <section class="hero"><div class="hero-copy">${pill('你的 AI 学习伙伴', 'hero-pill')}<h2>不止学会，<br>更要成为自己的知识。</h2><p>为你规划路径，陪你练习思考，<br>将每一次收获，连接成你的第二大脑。</p>${button('探索我的学习路线', 'routes', 'dark')}<div class="hero-caption"><span class="mini-dot"></span>目标驱动 <span>·</span> 学练结合 <span>·</span> 知识沉淀</div></div><div class="hero-art" aria-hidden="true"><div class="orbit orbit-one"></div><div class="orbit orbit-two"></div><div class="orb-center">${icon('brain')}<span>我的知识宇宙</span></div><div class="float-card float-top"><span class="float-icon lavender">${icon('route')}</span><div><small>找到你的方向</small><strong>个性化学习路线</strong></div><b>↗</b></div><div class="float-card float-left"><span class="float-icon peach">${icon('bolt')}</span><div><small>在实践中理解</small><strong>让知识发生</strong></div></div><div class="float-card float-bottom"><span class="float-icon green">${icon('book')}</span><div><small>连接每一次收获</small><strong>你的第二大脑</strong></div><span class="check-bubble">✓</span></div><span class="star star-one">✦</span><span class="star star-two">✧</span><span class="orb-dot dot-one"></span><span class="orb-dot dot-two"></span></div></section>
   <section class="stats" aria-label="学习统计">${[['route', '学习路线', state.plans.length, '条探索中的路径', 'lavender'], ['check', '已完成课程', allCompleted, '次从不懂到掌握', 'green'], ['bolt', '练习提交', attempts, '次认真思考', 'peach'], ['brain', '知识卡片', state.notes.length, '份属于你的积累', 'blue']].map(([symbol, label, value, detail, color]) => `<div class="stat"><div class="stat-top"><span>${label}</span><span class="stat-icon ${color}">${icon(symbol)}</span></div><strong>${value}<small>${label === '学习路线' ? '条' : label === '知识卡片' ? '张' : '次'}</small></strong><p>${detail}</p></div>`).join('')}</section>
   <div class="dashboard-columns"><section><div class="section-heading"><h2>继续你的学习<span>KEEP GOING</span></h2><button class="text-button" data-page="routes">全部路线 ${icon('arrow')}</button></div><article class="course-card"><div class="course-top"><span class="course-icon">Py<span>✦</span></span><div>${pill(p.source === 'demo' ? '示例课程' : 'AI 定制', 'purple')} ${pill(p.level)}</div><button class="icon-button" data-page="routes" aria-label="查看课程路线">${icon('arrow')}</button></div><h3>${escape(p.title)}</h3><p>${escape(p.description)}</p><div class="progress-label"><span>学习进度</span><strong>${completed()} / ${p.lessons.length} 节</strong></div><div class="progress-bar"><span style="width:${percent()}%"></span></div><div class="next-up"><span class="next-marker">${icon('book')}</span><div><small>${completed() === p.lessons.length ? '回顾所学' : '接下来学习'}</small><strong>${escape(next.title)}</strong></div><span>${next.minutes} 分钟</span></div>${button(completed() ? '继续学习' : '开始第一课', 'open-lesson', 'primary full', `data-id="${next.id}"`)}</article></section>
-  <section><div class="section-heading"><h2>知识在这里生长<span>YOUR SECOND BRAIN</span></h2></div><article class="knowledge-preview">${state.notes.length ? `<div class="knowledge-heading">${icon('brain')}最近收获</div>${state.notes.slice(-3).reverse().map(n => `<button class="note-preview" data-action="open-note" data-id="${n.id}"><span class="note-glyph">${icon('book')}</span><div><strong>${escape(n.title)}</strong><small>${escape(n.tags.slice(0, 2).join(' · '))} · ${date(n.updated)}</small></div>${icon('arrow')}</button>`).join('')}` : `<div class="seed-illustration">${icon('leaf')}<span>+ 第一颗知识种子</span></div><h3>学过的，不再只是路过。</h3><p>完成课程后，将概念、实践和心得<br>整理成可以反复使用的知识卡片。</p><div class="sample-note"><span>未来的知识卡片</span><strong>核心概念 + 实践经验 + 我的思考</strong><div>${pill('可编辑')} ${pill('可关联')} ${pill('可检索')}</div></div>`}<button class="text-button purple-text" data-page="wiki">打开我的知识库 ${icon('arrow')}</button></article></section></div>
+  <section><div class="section-heading"><h2>知识在这里生长<span>YOUR SECOND BRAIN</span></h2></div><article class="knowledge-preview">${state.notes.length ? `<div class="knowledge-heading">${icon('brain')}最近收获</div>${state.notes.slice(-3).reverse().map(n => `<button class="note-preview" data-action="open-note" data-id="${n.id}"><span class="note-glyph">${icon('book')}</span><div><strong>${escape(n.title)}</strong><small>${escape(n.tags.slice(0, 2).join(' · '))} · ${date(n.updated)}</small></div>${icon('arrow')}</button>`).join('')}` : `<div class="seed-illustration">${icon('leaf')}<span>+ 第一颗知识种子</span></div><h3>学过的，不再只是路过。</h3><p>学习过程中随时提炼概念与心得，<br>整理成可以反复使用的知识卡片。</p><div class="sample-note"><span>未来的知识卡片</span><strong>核心概念 + 实践经验 + 我的思考</strong><div>${pill('可编辑')} ${pill('可关联')} ${pill('可检索')}</div></div>`}<button class="text-button purple-text" data-page="wiki">打开我的知识库 ${icon('arrow')}</button></article></section></div>
   <div class="bottom-note">${icon('spark')} 学习的终点，不是记住答案，而是拥有解决问题的能力。</div>`;
 }
 function routes() {
@@ -306,7 +353,7 @@ function blockPart(block, index, lessonId, teaching = false) {
   const attrs = `data-id="${escape(lessonId)}" data-block="${escape(block.id)}"`;
   const editable = assistedBlockTypes.includes(block.type) && block.content;
   const imageAction = (editable ? speechButton(lessonId, block.id) : '') + (editable && desktop ? button(block.content.illustration ? '调整配图' : block.content.imageProposal ? '查看建议配图' : 'AI 配图建议', 'request-illustration', 'secondary', attrs, 'spark') : '');
-  const actions = editable ? `<div class="revision-actions">${imageAction}${button(block.type === 'reading' ? '换个讲法' : block.type === 'practice' ? '换个任务' : '换个例子', 'request-revision', 'secondary', attrs, '')}${block.content.revisions?.length ? button('恢复上一版', 'restore-block', 'secondary', attrs, 'back') : ''}</div>` : '';
+  const actions = block.content && block.type !== 'quiz' ? `<div class="revision-actions">${button('生成知识卡片', 'create-note', 'secondary', attrs, 'brain')}${editable ? `${imageAction}${button(block.type === 'reading' ? '换个讲法' : block.type === 'practice' ? '换个任务' : '换个例子', 'request-revision', 'secondary', attrs, '')}${block.content.revisions?.length ? button('恢复上一版', 'restore-block', 'secondary', attrs, 'back') : ''}` : ''}</div>` : '';
   const figure = desktop && validIllustration(block.content?.illustration) ? `<figure class="course-illustration"><img src="/course-images/${block.content.illustration.id}" alt="${escape(block.content.illustration.caption)}" loading="lazy"><figcaption>${escape(block.content.illustration.caption)}<small>${['commons', 'web'].includes(block.content.illustration.source) ? `网络资料 · ${block.content.illustration.source === 'commons' ? 'Wikimedia Commons' : '百炼网页搜图'} · ${escape(block.content.illustration.author)} · ${escape(block.content.illustration.license)} <button type="button" class="text-button" data-action="${block.content.illustration.source === 'commons' ? 'open-commons-source' : 'open-image-source'}" data-url="${escape(block.content.illustration.sourceUrl)}">查看来源与许可</button>` : 'AI 生成教学示意 · 请结合正文核验，勿用于精确测量或数据判断'}</small></figcaption></figure>` : '';
   return `<section class="${teaching ? `teaching-part teaching-${block.type}` : 'reading-section content-block'}" data-block-id="${escape(block.id)}"><div class="teaching-part-heading"><span class="pill purple">${String(index + 1).padStart(2, '0')} · ${labels[block.type]}</span>${actions}</div><h2 class="block-title">${escape(block.title)}</h2><p class="block-objective">${escape(block.objective)}</p>${block.content ? block.type === 'quiz' ? `<p>已生成 ${block.content.questions.length} 道练习题。${button('去练习', 'quiz', 'secondary')}</p>` : `<div class="block-text markdown-content">${renderMarkdown(block.content.text)}</div>${figure}` : `<div class="block-pending"><span>此模块尚未生成，可以按需展开。</span>${button('生成这一块', 'generate-block', 'secondary', attrs, 'spark')}</div>`}</section>`;
 }
@@ -336,6 +383,13 @@ function updateNotePreview(draft) {
   $('#note-preview-title').textContent = value.title;
   $('#note-preview-summary').innerHTML = renderMarkdown(value.summary);
   $('#note-preview-content').innerHTML = value.content?.trim() ? renderMarkdown(value.content) : '<p class="markdown-empty">还没有正文，请切换到编辑模式补充。</p>';
+  const useWhen = value.useWhen || knowledgeConditions($('#note-use')?.value);
+  const avoidWhen = value.avoidWhen || knowledgeConditions($('#note-avoid')?.value);
+  const boundaries = $('#note-preview-boundaries');
+  if (boundaries) boundaries.innerHTML = knowledgeBoundaries(useWhen, avoidWhen);
+}
+function knowledgeBoundaries(useWhen = [], avoidWhen = []) {
+  return `${useWhen.length ? `<h3>什么时候使用</h3><ul>${useWhen.map(item => `<li>${escape(item)}</li>`).join('')}</ul>` : ''}${avoidWhen.length ? `<h3>什么时候不能用</h3><ul>${avoidWhen.map(item => `<li>${escape(item)}</li>`).join('')}</ul>` : ''}`;
 }
 function studyBlocks(meta, p, record) {
   const course = state.blockCourses[meta.id], lesson = lessonFromBlocks(course);
@@ -364,11 +418,145 @@ function wiki() {
   if (activeNote) {
     const n = state.notes.find(n => n.id === activeNote); if (n) return noteEditor(n); activeNote = null;
   }
-  const filtered = state.notes.filter(n => `${n.title} ${n.content} ${n.tags.join(' ')}`.toLowerCase().includes(query.toLowerCase()));
-  return `<section class="page-intro"><div><div class="eyebrow">YOUR PERSONAL KNOWLEDGE GARDEN</div><h1>把所学，连成自己的世界。</h1><p>积累不只是收藏。让每个概念，都能被再次找到和使用。</p></div>${button('导出知识库', 'export-wiki', 'secondary', state.notes.length ? '' : 'disabled', 'export')}</section><section class="wiki-banner"><div><span class="eyebrow">MY SECOND BRAIN</span><h2>你的第二大脑，从 ${state.notes.length} 张卡片生长。</h2><p>课程要点、实践经验、个人思考，都在这里相遇。</p></div>${icon('brain')}</section><div class="wiki-toolbar"><label class="search-field">${icon('search')}<input id="wiki-search" type="search" placeholder="搜索标题、正文或标签…" value="${escape(query)}" aria-label="搜索知识库"></label><span>共 ${state.notes.length} 张卡片</span></div><div class="wiki-layout"><section id="note-results">${noteList(filtered)}</section><aside class="ask-panel"><div class="ask-heading">${icon('spark')}和你的知识对话</div><p>${status.mode === 'ai' ? 'AI 会阅读你的笔记，基于已有内容回答，并列出引用。' : '示例模式可检索相关笔记；接入云端或本地 LLM 后可基于知识库问答。'}</p><form id="ask-form"><label class="sr-only" for="wiki-question">向知识库提问</label><textarea id="wiki-question" name="question" required maxlength="1000" placeholder="例如：变量和字符串有什么区别？" ${state.notes.length ? '' : 'disabled'}></textarea><button type="submit" class="btn primary full" ${state.notes.length ? '' : 'disabled'}>${status.mode === 'ai' ? '向知识库提问' : '检索相关笔记'} ${icon('arrow')}</button></form><div id="wiki-answer" aria-live="polite">${answerHTML()}</div><div class="ask-footnote">${icon('book')}${state.notes.length ? '回答依据来自你保存的知识卡片。' : '完成一节课并生成卡片后，即可开始。'}</div></aside></div>`;
+  return `<section class="page-intro"><div><div class="eyebrow">YOUR PERSONAL KNOWLEDGE GARDEN</div><h1>把所学，连成自己的世界。</h1><p>积累不只是收藏。让每个概念，都能被再次找到和使用。</p></div>${button('导出知识库', 'export-wiki', 'secondary', state.notes.length ? '' : 'disabled', 'export')}</section><div class="wiki-layout"><section class="wiki-explorer"><div class="wiki-view-switch" role="tablist" aria-label="知识库展示方式"><button type="button" role="tab" data-action="switch-wiki-view" data-view="chat" aria-selected="${knowledgeView === 'chat'}">知识问答</button><button type="button" role="tab" data-action="switch-wiki-view" data-view="tree" aria-selected="${knowledgeView === 'tree'}">树状目录</button><button type="button" role="tab" data-action="switch-wiki-view" data-view="graph" aria-selected="${knowledgeView === 'graph'}">关联图谱</button></div><div class="wiki-toolbar"><label class="search-field">${icon('search')}<input id="wiki-search" type="search" placeholder="搜索标题、正文或标签…" value="${escape(query)}" aria-label="搜索知识库"></label><span class="wiki-match-count">共 ${state.notes.length} 张卡片</span></div><section id="note-results" role="tabpanel" aria-label="${knowledgeViewLabel()}">${knowledgeResults()}</section></section></div>`;
+}
+function knowledgeViewLabel() {
+  return { tree: '树状目录', chat: '知识问答', graph: '关联图谱' }[knowledgeView];
+}
+function knowledgeConversation() {
+  return `<section class="ask-panel knowledge-conversation"><div class="ask-heading">${icon('spark')}知识问答</div><p>${status.mode === 'ai' ? '先按知识目录筛选相关卡片，再由 AI 根据卡片原文回答并列出引用。' : '示例模式按目录与关键词检索；接入模型后可基于相关卡片问答。'}</p><form id="ask-form"><label class="sr-only" for="wiki-question">向知识库提问</label><textarea id="wiki-question" name="question" required maxlength="1000" placeholder="例如：变量和字符串有什么区别？" ${state.notes.length ? '' : 'disabled'}></textarea><button type="submit" class="btn primary full" ${state.notes.length ? '' : 'disabled'}>${status.mode === 'ai' ? '向知识库提问' : '检索相关笔记'} ${icon('arrow')}</button></form><div id="wiki-answer" aria-live="polite">${answerHTML()}</div><div class="ask-footnote">${icon('book')}${state.notes.length ? '仅引用本次检索到的相关卡片；没找到时会明确说明。' : '生成一张卡片后，即可开始检索。'}</div></section>`;
+}
+function filteredKnowledgeNotes(includeTopic = knowledgeView === 'graph') {
+  const term = query.toLocaleLowerCase();
+  const courses = new Map(state.plans.flatMap(course => course.lessons.map(lesson => [lesson.id, course])));
+  return state.notes.filter(note => {
+    const course = courses.get(note.lessonId);
+    return (!includeTopic || !topicFilter || knowledgeTopic(note.topic) === topicFilter || knowledgeTopic(note.topic).startsWith(topicFilter + '/')) && `${note.title} ${note.summary} ${note.content} ${note.tags.join(' ')} ${note.topic || ''} ${note.category || ''} ${course?.title || note.courseTitle || ''} ${knowledgeDomain(course || { title: note.courseTitle })} ${(note.aliases || []).join(' ')}`.toLocaleLowerCase().includes(term);
+  });
+}
+function knowledgeDirectory(notes) {
+  const tree = courseKnowledgeTree(notes, state.plans);
+  if (!tree.count) return noteList([]);
+  const folder = (item, depth) => {
+    const expanded = query ? true : folderOverrides.get(item.key) ?? depth < 2;
+    const cards = (item.cards || []).map(note => `<button type="button" class="wiki-tree-card" data-action="open-note" data-id="${escape(note.id)}">${icon('book')}<span><strong>${escape(note.title)}</strong><span class="wiki-tree-card-summary markdown-content">${renderMarkdown(note.summary || '')}</span></span>${icon('arrow')}</button>`).join('');
+    const canOrganize = item.kind === 'course' && status.mode === 'ai' && item.noteIds.filter(id => !state.notes.find(note => note.id === id)?.category).length >= 2 && item.noteIds.length <= 80;
+    return `<div class="wiki-tree-folder wiki-tree-${item.kind}"><div class="wiki-tree-folder-heading"><button type="button" class="wiki-tree-row wiki-tree-folder-toggle" data-action="toggle-folder" data-folder="${escape(item.key)}" data-name="${escape(item.name)}" aria-expanded="${expanded}" aria-label="${expanded ? '折叠' : '展开'} ${escape(item.name)}"><span class="wiki-tree-expander" aria-hidden="true">${expanded ? '▾' : '▸'}</span><span class="wiki-tree-topic">${escape(item.name)}</span><span class="wiki-tree-count">${item.count}</span></button>${canOrganize ? `<button type="button" class="wiki-organize-trigger" data-action="open-organize" data-course="${escape(item.key)}">AI 整理建议</button>` : ''}</div><div class="wiki-tree-children" ${expanded ? '' : 'hidden'}>${item.children.map(child => folder(child, depth + 1)).join('')}${cards}</div></div>`;
+  };
+  return `<nav class="wiki-directory" aria-label="知识目录"><div class="wiki-directory-heading"><strong>知识目录 · ${tree.count} 张卡片</strong><small>领域 → 课程 → 主题 → 卡片；打开卡片并切换到编辑，可调整“知识库归类”</small></div><div class="wiki-tree">${tree.children.map(child => folder(child, 0)).join('')}</div></nav>`;
+}
+function knowledgeResults() {
+  if (knowledgeView === 'chat') return knowledgeConversation();
+  const filtered = filteredKnowledgeNotes();
+  if (knowledgeView === 'tree') return knowledgeDirectory(filtered);
+  const filter = topicFilter ? `<div class="wiki-active-filter">当前主题：${escape(topicFilter)} <button type="button" data-action="filter-topic" data-topic="">清除主题筛选</button></div>` : '';
+  return filter + knowledgeGraphView(filtered.filter(note => (!graphTagFilter || (note.tags || []).includes(graphTagFilter)) && (!graphStatusFilter || (note.status || 'draft') === graphStatusFilter)));
+}
+function refreshKnowledgeResults() {
+  stopGraphMotion(); pendingGraph = null;
+  const results = $('#note-results');
+  if (results) { results.innerHTML = knowledgeResults(); results.setAttribute('aria-label', knowledgeViewLabel()); }
+  const count = $('.wiki-match-count');
+  if (count) count.textContent = query || topicFilter ? `显示 ${filteredKnowledgeNotes().length} / ${state.notes.length} 张卡片` : `共 ${state.notes.length} 张卡片`;
+  decorateGraphToolbar(); startGraphMotion(pendingGraph);
+}
+function knowledgeGraphView(notes) {
+  const graph = filterKnowledgeGraph(knowledgeGraph(notes), { relation: graphRelationFilter, type: graphTypeFilter, orphansOnly: graphOrphansOnly, localTwoHop: graphLocalTwoHop, selectedId: selectedGraphId });
+  pendingGraph = graph;
+  const byId = new Map(graph.nodes.map(node => [node.id, node]));
+  const selected = byId.get(selectedGraphId);
+  const neighbors = new Set(selected ? graph.edges.filter(edge => edge.source === selected.id || edge.target === selected.id).flatMap(edge => [edge.source, edge.target]) : []);
+  const box = graphViewport && graphViewport.totalWidth === graph.width && graphViewport.totalHeight === graph.height ? graphViewport : { x: 0, y: 0, width: graph.width, height: graph.height, totalWidth: graph.width, totalHeight: graph.height };
+  const lines = graph.edges.map(edge => { const from = byId.get(edge.source), to = byId.get(edge.target); return `<line class="graph-edge graph-edge-${edge.type}${selected && !(neighbors.has(from.id) && neighbors.has(to.id)) ? ' dimmed' : ''}" x1="${from.x}" y1="${from.y}" x2="${to.x}" y2="${to.y}"><title>${escape({ membership: '属于主题', hierarchy: '主题层级', related: '明确相关', prerequisites: '前置知识', contrasts: '对比知识', suggested: '共同标签·候选关联' }[edge.type])}</title></line>`; }).join('');
+  const groups = [...new Set(graph.nodes.map(node => node.group))].sort((a, b) => a.localeCompare(b, 'zh-CN'));
+  const colors = ['#60a5fa', '#78bd63', '#ba75c3', '#e6a34f', '#52b5b0', '#e17d94'];
+  const semantic = new Set(graph.edges.filter(edge => edge.source.startsWith('card:') && edge.target.startsWith('card:')).flatMap(edge => [edge.source, edge.target]));
+  const points = graph.nodes.map(node => `<a href="#" class="graph-node graph-node-${node.kind}${node.kind === 'card' && !semantic.has(node.id) ? ' graph-isolated' : ''}${selected && node.id !== selected.id && !neighbors.has(node.id) ? ' dimmed' : ''}${node.id === selectedGraphId ? ' selected' : ''}" style="--node-color:${colors[groups.indexOf(node.group) % colors.length]}" data-action="select-graph-node" data-id="${escape(node.id)}" aria-label="${escape(node.kind === 'topic' ? `主题：${node.topic}` : `卡片：${node.label}`)}"><title>${escape(node.kind === 'topic' ? `主题：${node.topic}，${node.count} 张卡片` : `${node.label} · ${node.topic}`)}</title><circle cx="${node.x}" cy="${node.y}" r="${node.kind === 'topic' ? 10 : 6}"></circle><text x="${node.x + 11}" y="${node.y + 4}">${escape(node.label.length > 12 ? node.label.slice(0, 11) + '…' : node.label)}</text></a>`).join('');
+  const selectedCard = selected?.kind === 'card' ? state.notes.find(note => note.id === selected.cardId) : null;
+  const related = selected ? graph.edges.filter(edge => edge.source === selected.id || edge.target === selected.id).filter(edge => !['membership', 'hierarchy'].includes(edge.type)).slice(0, 8) : [];
+  return `<div class="knowledge-graph${graph.shownCards > 30 ? ' graph-dense' : ''}"><div class="knowledge-graph-header"><div><strong>知识关联图谱</strong><small>${graph.shownCards} 张卡片 · ${graph.edges.length} 条连线${graph.totalCards > graph.shownCards ? ` · 仅显示最近 ${graph.shownCards} 张；可搜索或按主题缩小范围` : ''}</small></div><div class="graph-controls"><button type="button" data-action="graph-zoom-in" aria-label="放大图谱">＋</button><button type="button" data-action="graph-zoom-out" aria-label="缩小图谱">－</button><button type="button" data-action="graph-reset">重置</button></div></div><div class="knowledge-graph-canvas"><svg id="knowledge-graph-svg" viewBox="${box.x} ${box.y} ${box.width} ${box.height}" data-graph-width="${graph.width}" data-graph-height="${graph.height}" role="group" aria-label="可缩放和拖动的知识关联图谱">${lines}${points}</svg></div><div class="graph-legend"><span class="graph-legend-topic">主题与归属</span><span class="graph-legend-related">明确关联</span><span class="graph-legend-prerequisites">前置知识</span><span class="graph-legend-contrasts">对比知识</span><span class="graph-legend-suggested">共同标签（候选）</span></div><div class="graph-selection">${selected ? `<strong>${escape(selected.kind === 'topic' ? selected.topic : selectedCard?.title || selected.label)}</strong><p>${selected.kind === 'topic' ? `${selected.count} 张卡片归入这一主题。` : escape(selectedCard?.summary || '暂无摘要。')}</p>${selected.kind === 'topic' ? `<button type="button" class="btn secondary" data-action="filter-topic" data-topic="${escape(selected.topic)}">查看这个主题</button>` : `<button type="button" class="btn primary" data-action="open-note" data-id="${escape(selected.cardId)}">打开知识卡片</button>`}${related.length ? `<div class="graph-related">${related.map(edge => { const other = byId.get(edge.source === selected.id ? edge.target : edge.source); return other?.kind === 'card' ? `<button type="button" data-action="select-graph-node" data-id="${escape(other.id)}">${escape(other.label)} <small>${edge.type === 'suggested' ? '共同标签·候选' : edge.type === 'prerequisites' ? '前置知识' : edge.type === 'contrasts' ? '对比知识' : '明确相关'}</small></button>` : ''; }).join('')}</div>` : ''}` : '<p>点击节点查看卡片和关联；拖动画布、滚轮或右上角按钮可缩放。</p>'}</div></div>`;
+}
+function setGraphViewport(svg, x, y, width, height) {
+  graphViewport = { x, y, width, height, totalWidth: Number(svg.dataset.graphWidth), totalHeight: Number(svg.dataset.graphHeight) };
+  svg.setAttribute('viewBox', `${x} ${y} ${width} ${height}`);
+}
+function zoomKnowledgeGraph(factor) {
+  const svg = $('#knowledge-graph-svg');
+  if (!svg) return;
+  const [x, y, width, height] = svg.getAttribute('viewBox').split(/\s+/).map(Number);
+  const nextWidth = Math.max(Number(svg.dataset.graphWidth) * .22, Math.min(Number(svg.dataset.graphWidth) * 3, width * factor));
+  const nextHeight = height * nextWidth / width;
+  setGraphViewport(svg, x + (width - nextWidth) / 2, y + (height - nextHeight) / 2, nextWidth, nextHeight);
+}
+function decorateGraphToolbar() {
+  const host = $('.knowledge-graph');
+  if (!host || typeof host.querySelector !== 'function' || typeof host.insertAdjacentHTML !== 'function' || host.querySelector('.graph-toolbar')) return;
+  const topics = knowledgeCatalog(state.notes).topics;
+  const tags = [...new Set(state.notes.flatMap(note => note.tags || []))].sort((a, b) => a.localeCompare(b, 'zh-CN'));
+  const option = (value, label, selected) => `<option value="${escape(value)}" ${selected ? 'selected' : ''}>${escape(label)}</option>`;
+  host.insertAdjacentHTML('afterbegin', `<div class="graph-toolbar">
+    <label class="graph-search"><span class="sr-only">搜索图谱卡片</span><input id="graph-search" type="search" value="${escape(query)}" placeholder="搜索标题或内容…"></label>
+    <label><span class="sr-only">图谱主题</span><select id="graph-topic">${option('', '全部目录', !topicFilter)}${topics.map(topic => option(topic.path, `${'　'.repeat(Math.min(3, topic.path.split('/').length - 1))}${topic.path.split('/').at(-1)} (${topic.count})`, topicFilter === topic.path)).join('')}</select></label>
+    <label><span class="sr-only">图谱类型</span><select id="graph-type">${option('all', '全部类型', graphTypeFilter === 'all')}${option('card', '知识卡片', graphTypeFilter === 'card')}${option('topic', '主题目录', graphTypeFilter === 'topic')}</select></label>
+    <label><span class="sr-only">卡片状态</span><select id="graph-status">${option('', '全部状态', !graphStatusFilter)}${option('draft', '草稿', graphStatusFilter === 'draft')}${option('reviewed', '已核验', graphStatusFilter === 'reviewed')}</select></label>
+    <label><span class="sr-only">知识标签</span><select id="graph-tag">${option('', '全部标签', !graphTagFilter)}${tags.map(tag => option(tag, tag, graphTagFilter === tag)).join('')}</select></label>
+    <label><span class="sr-only">关系类型</span><select id="graph-relation">${option('all', '全部关系', graphRelationFilter === 'all')}${option('declared', '明确关系', graphRelationFilter === 'declared')}${option('suggested', '标签候选', graphRelationFilter === 'suggested')}</select></label>
+    <button type="button" data-action="graph-orphans" aria-pressed="${graphOrphansOnly}">孤立节点</button>
+    <button type="button" data-action="graph-local" aria-pressed="${graphLocalTwoHop}" ${selectedGraphId.startsWith('card:') ? '' : 'disabled'}>局部 2 跳</button>
+    <button type="button" data-action="graph-fit">适应画布</button><button type="button" data-action="graph-refresh">刷新布局</button>
+    <button type="button" data-action="graph-pause" aria-pressed="${graphPaused}">${graphPaused ? '继续运动' : '暂停运动'}</button>
+    <details class="graph-settings"><summary>图谱设置</summary><label>节点间距 <input id="graph-spacing" type="range" min="0.6" max="1.8" step="0.1" value="${graphSpacing}"></label><small>密集图默认隐藏卡片名称，悬停或选中时显示。</small></details>
+  </div>`);
+}
+function paintGraphMotion() {
+  if (!graphMotion?.svg?.isConnected) return;
+  for (const node of graphMotion.nodes) {
+    const element = graphMotion.nodeElements.get(node.id);
+    if (!element) continue;
+    element.querySelector('circle')?.setAttribute('cx', node.x.toFixed(1));
+    element.querySelector('circle')?.setAttribute('cy', node.y.toFixed(1));
+    element.querySelector('text')?.setAttribute('x', (node.x + 11).toFixed(1));
+    element.querySelector('text')?.setAttribute('y', (node.y + 4).toFixed(1));
+  }
+  graphMotion.edges.forEach((edge, index) => {
+    const element = graphMotion.lineElements[index];
+    if (!element) return;
+    const source = graphMotion.nodes[edge.source], target = graphMotion.nodes[edge.target];
+    element.setAttribute('x1', source.x.toFixed(1)); element.setAttribute('y1', source.y.toFixed(1));
+    element.setAttribute('x2', target.x.toFixed(1)); element.setAttribute('y2', target.y.toFixed(1));
+  });
+}
+function animateGraphMotion() {
+  graphFrame = 0;
+  if (!graphMotion || graphPaused || document.hidden || !graphMotion.svg.isConnected) return;
+  const movement = stepGraphMotion(graphMotion, graphSpacing);
+  paintGraphMotion();
+  if (graphMotion.alpha > .025 || movement > .08) graphFrame = window.requestAnimationFrame?.(animateGraphMotion) || 0;
+}
+function stopGraphMotion() {
+  if (graphFrame) window.cancelAnimationFrame?.(graphFrame);
+  graphFrame = 0;
+  if (graphMotion) graphPositions = new Map(graphMotion.nodes.map(node => [node.id, { x: node.x, y: node.y }]));
+  graphMotion = null;
+}
+function startGraphMotion(graph) {
+  const svg = $('#knowledge-graph-svg');
+  if (!graph || !svg || typeof svg.querySelectorAll !== 'function') return;
+  if (!graph.nodes.length) {
+    svg.insertAdjacentHTML?.('afterend', '<p class="graph-empty">当前筛选没有可显示的节点。请修改上方搜索或筛选条件。</p>');
+    return;
+  }
+  const hadPositions = graphPositions.size > 0;
+  graphMotion = createGraphMotion(graph, graphPositions);
+  graphMotion.alpha = hadPositions ? .25 : .95;
+  graphMotion.svg = svg;
+  graphMotion.nodeElements = new Map([...svg.querySelectorAll('.graph-node')].map(element => [element.dataset.id, element]));
+  graphMotion.lineElements = [...svg.querySelectorAll('.graph-edge')];
+  paintGraphMotion();
+  if (!graphPaused && !document.hidden) graphFrame = window.requestAnimationFrame?.(animateGraphMotion) || 0;
 }
 function noteList(notes) {
-  return notes.length ? `<div class="note-grid">${notes.map(n => `<button class="wiki-card" data-action="open-note" data-id="${n.id}"><div class="wiki-card-top"><span class="note-glyph">${icon('book')}</span><small>${date(n.updated)}</small></div><h3>${escape(n.title)}</h3><div class="note-card-summary markdown-content">${renderMarkdown(n.summary)}</div><div class="tags">${n.tags.map(t => pill(t)).join('')}</div><div class="wiki-card-bottom">来自课程学习 ${icon('arrow')}</div></button>`).join('')}</div>` : `<div class="empty-state"><div class="empty-icon">${icon(query ? 'search' : 'leaf')}</div><h3>${query ? '还没有找到匹配的知识' : '给未来的自己，留下一份收获。'}</h3><p>${query ? '试试更短的关键词，或搜索一个知识标签。' : '学完一节课、完成练习，就能生成你的第一张知识卡片。'}</p>${query ? '' : button('开始学习', 'start', 'primary')}</div>`;
+  return notes.length ? `<div class="note-grid">${notes.map(n => `<button class="wiki-card" data-action="open-note" data-id="${n.id}"><div class="wiki-card-top"><span class="note-glyph">${icon('book')}</span><small>${date(n.updated)}</small></div><h3>${escape(n.title)}</h3><div class="note-card-summary markdown-content">${renderMarkdown(n.summary)}</div><div class="tags">${n.tags.map(t => pill(t)).join('')}</div><div class="wiki-card-bottom">来自课程学习 ${icon('arrow')}</div></button>`).join('')}</div>` : `<div class="empty-state"><div class="empty-icon">${icon(query ? 'search' : 'leaf')}</div><h3>${query ? '还没有找到匹配的知识' : '给未来的自己，留下一份收获。'}</h3><p>${query ? '试试更短的关键词，或搜索一个知识标签。' : '阅读课程时即可提炼知识卡片，不用先完成练习。'}</p>${query ? '' : button('开始学习', 'start', 'primary')}</div>`;
 }
 function answerHTML() {
   if (!answer) return '';
@@ -377,8 +565,8 @@ function answerHTML() {
 function noteEditor(n) {
   const related = state.notes.filter(o => o.id !== n.id && o.tags.some(t => n.tags.includes(t))).slice(0, 5);
   return `<div class="study-top"><button class="text-button" data-action="close-note">${icon('back')}全部知识卡片</button>${pill(n.source === 'ai' ? 'AI 整理 · 可编辑' : '课程要点整理', 'purple')}</div><div class="note-editor-layout"><form id="note-form" data-id="${n.id}" class="note-editor"><div class="note-view-toolbar"><div class="eyebrow">A NOTE TO YOUR FUTURE SELF</div><div class="note-view-switch" role="group" aria-label="知识卡片显示模式"><button type="button" id="note-read-switch" data-action="note-view" data-mode="read" aria-pressed="true">阅读</button><button type="button" id="note-edit-switch" data-action="note-view" data-mode="edit" aria-pressed="false">编辑 Markdown</button></div></div>
-    <section id="note-preview-view"><h1 id="note-preview-title">${escape(n.title)}</h1><div id="note-preview-summary" class="note-reading-summary markdown-content">${renderMarkdown(n.summary)}</div><div id="note-preview-content" class="note-reading-content markdown-content">${renderMarkdown(n.content)}</div></section>
-    <div id="note-source-view" hidden><label for="note-title">标题</label><input id="note-title" name="title" value="${escape(n.title)}" maxlength="160" required><label for="note-summary">一句话摘要</label><textarea id="note-summary" name="summary" maxlength="500" required>${escape(n.summary)}</textarea><label for="note-content">知识正文 <small>使用 Markdown 编写，切换阅读可预览未保存修改</small></label><textarea id="note-content" class="note-body" name="content" maxlength="20000" required>${escape(n.content)}</textarea><label for="note-tags">标签 <small>用中文或英文逗号分隔，最多 6 个</small></label><input id="note-tags" name="tags" value="${escape(n.tags.join('，'))}" maxlength="200" required></div>
+    <section id="note-preview-view"><h1 id="note-preview-title">${escape(n.title)}</h1><div id="note-preview-summary" class="note-reading-summary markdown-content">${renderMarkdown(n.summary)}</div><div id="note-preview-content" class="note-reading-content markdown-content">${renderMarkdown(n.content)}</div><div id="note-preview-boundaries" class="knowledge-boundaries">${knowledgeBoundaries(n.useWhen || [], n.avoidWhen || [])}</div></section>
+    <div id="note-source-view" hidden><label for="note-title">标题</label><input id="note-title" name="title" value="${escape(n.title)}" maxlength="160" required><label for="note-summary">一句话摘要</label><textarea id="note-summary" name="summary" maxlength="500" required>${escape(n.summary)}</textarea><label for="note-topic">原始知识主题 <small>保留已有 Markdown 归档位置</small></label><input id="note-topic" name="topic" value="${escape(n.topic || '未分类')}" maxlength="160" required><label for="note-category">知识库归类 <small>可选；留空自动归类，填写后归入本课程的指定主题，不移动原始文件目录</small></label><input id="note-category" name="category" value="${escape(n.category || '')}" maxlength="80" placeholder="例如：安装与环境验证"><label for="note-content">知识正文 <small>使用 Markdown 编写，切换阅读可预览未保存修改</small></label><textarea id="note-content" class="note-body" name="content" maxlength="20000" required>${escape(n.content)}</textarea><label for="note-tags">标签 <small>用中文或英文逗号分隔，最多 6 个</small></label><input id="note-tags" name="tags" value="${escape(n.tags.join('，'))}" maxlength="200" required><label for="note-use">什么时候使用 <small>每行一项，资料不足可留空</small></label><textarea id="note-use" name="useWhen">${escape((n.useWhen || []).join('\n'))}</textarea><label for="note-avoid">什么时候不能用 <small>每行一项，资料不足可留空</small></label><textarea id="note-avoid" name="avoidWhen">${escape((n.avoidWhen || []).join('\n'))}</textarea></div>
     <div class="editor-actions"><button id="note-save" class="btn primary" type="submit" hidden>保存修改 ${icon('check')}</button>${button('导出 Markdown', 'export-note', 'secondary', `data-id="${n.id}"`, 'export')}</div><p class="field-hint">阅读视图可预览未保存的编辑；修改后请切回编辑并保存。导出的是已保存的 Markdown 源文。</p></form><aside class="tip-card"><h3>知识的来处</h3><p>${escape(n.courseTitle)}</p><small>更新于 ${date(n.updated)}</small>${button('回到来源课程', 'source-lesson', 'secondary full', `data-id="${n.lessonId}"`, 'book')}<hr><h3>关联知识</h3><p>依据共同标签连接。</p>${related.length ? related.map(r => `<button class="citation" data-action="open-note" data-id="${r.id}">${icon('book')}${escape(r.title)}</button>`).join('') : '<p>继续积累，相似主题的卡片会在这里相遇。</p>'}</aside></div>`;
 }
 function settings() {
@@ -609,18 +797,69 @@ async function openLesson(id, tab = 'read') {
   }
   readingReturn = null; activeLesson = id; lessonTab = tab; navigate('study');
 }
-async function createNote(id) {
-  const existing = state.notes.find(n => n.lessonId === id);
-  if (existing) { activeNote = existing.id; navigate('wiki'); return; }
-  if (!progress(id).completed) throw new Error('请先通过本课随堂练习。');
-  const meta = lessonById(id), lesson = contentFor(id), p = state.plans.find(p => p.lessons.some(l => l.id === id));
-  const reflection = state.reflections[id] || '';
-  let result;
-  if (p.source === 'ai') result = await api('wiki', { title: meta.title, lesson, reflection });
-  else result = { summary: lesson.takeaways[0], content: `## 核心概念\n\n${lesson.takeaways.map(t => '- ' + t).join('\n')}\n\n## 详细解释\n\n${lesson.sections.map(s => '### ' + s.heading + '\n\n' + s.body).join('\n\n')}\n\n## 具体示例\n\n${lesson.kind === 'blocks' ? lesson.example : '```python\n' + lesson.example + '\n```'}\n\n## 实践任务\n\n${lesson.challenge}\n\n## 易错点与解析\n\n${lesson.questions.map(q => '### ' + q.prompt + '\n\n' + q.explanation).join('\n\n')}\n\n## 我的心得\n\n> 个人记录，未经核验。\n\n${reflection || '还没有记录心得，可在这里补充。'}` };
-  if (state.notes.some(n => n.lessonId === id)) return;
-  const n = { id: crypto.randomUUID(), lessonId: id, courseTitle: p.title, title: meta.title, tags: [...meta.tags], source: p.source, updated: Date.now(), ...result };
-  state.notes.push(n); persist('saveNote', n); activeNote = n.id; navigate('wiki'); toast('已生成知识卡片，可以继续补充你的理解。');
+function knowledgeSource(id, blockId = '', sectionIndex = '') {
+  const meta = lessonById(id), course = state.blockCourses?.[id], lesson = contentFor(id);
+  const route = state.plans.find(item => item.lessons.some(entry => entry.id === id));
+  if (!meta || !route || !lesson) throw new Error('请先生成课程内容。');
+  let sourceTitle = meta.title, sourceText = '';
+  if (blockId) {
+    const block = course?.blocks.find(item => item.id === blockId);
+    if (!block?.content?.text || block.type === 'quiz') throw new Error('这一块尚未生成可提炼的正文。');
+    sourceTitle = block.title; sourceText = block.content.text;
+  } else if (sectionIndex !== '') {
+    const section = lesson.sections[Number(sectionIndex)];
+    if (!section) throw new Error('这段课程内容不存在。');
+    sourceTitle = section.heading; sourceText = section.body;
+  } else if (course) {
+    sourceText = course.blocks.filter(block => block.type !== 'quiz' && block.content?.text).map(block => `## ${block.title}\n\n${block.content.text}`).join('\n\n');
+  } else {
+    sourceText = [lesson.intro, ...lesson.sections.map(section => `## ${section.heading}\n\n${section.body}`), `## 具体示例\n\n${lesson.example}`, `## 实践任务\n\n${lesson.challenge}`].join('\n\n');
+  }
+  const source = { courseTitle: route.title, lessonTitle: meta.title, objective: meta.objective, sourceTitle, sourceText: sourceText.slice(0, 12000), tags: meta.tags.slice(0, 6) };
+  if (!validKnowledgeSource(source)) throw new Error('当前课程内容不足，无法制作知识卡片。');
+  return source;
+}
+function renderKnowledgeDraft() {
+  if (!knowledgeDraft) return;
+  const { source, result, error } = knowledgeDraft;
+  const matches = state.notes.filter(note => note.lessonId === knowledgeDraft.lessonId && (note.title === result?.title || note.tags.some(tag => result?.tags.includes(tag)))).slice(0, 5);
+  $('#knowledge-draft-dialog').innerHTML = `<div class="modal-heading"><h2 id="knowledge-draft-title">制作知识卡片</h2><button type="button" class="icon-button" data-action="close-knowledge-draft" aria-label="关闭">${icon('close')}</button></div>
+    <p class="field-hint">来源：${escape(source.lessonTitle)} · ${escape(source.sourceTitle)}。${knowledgeDraft.origin === 'ai' ? 'AI 草稿需核验，生成可能消耗模型额度。' : '当前使用课程摘录草稿，请自行核对和提炼。'}</p>
+    ${knowledgeBusy && !result ? '<div class="notice">正在提炼草稿，请稍候…</div>' : ''}${error ? `<p class="inline-error" role="alert">${escape(error)}</p>` : ''}
+    ${result ? `<form id="knowledge-draft-form">
+      <label for="draft-title">知识点标题</label><input id="draft-title" name="title" maxlength="160" required value="${escape(result.title)}">
+      <label for="draft-summary">知识描述</label><textarea id="draft-summary" name="summary" maxlength="500" required>${escape(result.summary)}</textarea>
+      <label for="draft-topic">主题目录 <small>例如：编程/Python</small></label><input id="draft-topic" name="topic" maxlength="160" required value="${escape(result.topic || result.tags[0] || '未分类')}">
+      <label for="draft-content">正文 · Markdown</label><textarea id="draft-content" name="content" maxlength="20000" required>${escape(result.content)}</textarea>
+      <div class="knowledge-draft-columns"><div><label for="draft-use">什么时候使用 · 每行一项</label><textarea id="draft-use" name="useWhen" maxlength="6011" placeholder="资料不足可留空">${escape(result.useWhen.join('\n'))}</textarea></div><div><label for="draft-avoid">什么时候不能用 · 每行一项</label><textarea id="draft-avoid" name="avoidWhen" maxlength="6011" placeholder="资料不足可留空">${escape(result.avoidWhen.join('\n'))}</textarea></div></div>
+      <label for="draft-tags">标签 · 逗号分隔</label><input id="draft-tags" name="tags" maxlength="245" required value="${escape(result.tags.join('，'))}">
+      ${matches.length ? `<div class="notice">本课已有相近卡片：${matches.map(note => escape(note.title)).join('、')}。请确认没有重复后再保存。</div>` : ''}
+      <div class="revision-dialog-actions"><button type="button" class="btn secondary" data-action="close-knowledge-draft">取消</button><button type="submit" class="btn primary">确认保存卡片 ${icon('check')}</button></div>
+    </form>` : ''}`;
+}
+async function createNote(id, blockId = '', sectionIndex = '') {
+  if (knowledgeBusy) return;
+  const source = knowledgeSource(id, blockId, sectionIndex);
+  const route = state.plans.find(item => item.lessons.some(entry => entry.id === id));
+  knowledgeDraft = { lessonId: id, source, origin: route?.source === 'ai' && status.mode === 'ai' ? 'ai' : 'demo', result: null, error: '' };
+  const dialog = $('#knowledge-draft-dialog');
+  knowledgeBusy = true; renderKnowledgeDraft(); dialog.showModal();
+  try {
+    const result = knowledgeDraft.origin === 'ai' ? await api('wiki-draft', source) : localKnowledgeDraft(source);
+    if (!validKnowledgeDraft(result)) throw new Error('模型返回的卡片草稿不完整，请重新尝试。');
+    if (!knowledgeDraft || knowledgeDraft.lessonId !== id) return;
+    knowledgeDraft.result = result;
+  } catch (error) { if (knowledgeDraft) knowledgeDraft.error = error.message; }
+  finally { knowledgeBusy = false; if (knowledgeDraft) renderKnowledgeDraft(); }
+}
+function renderKnowledgeOrganize() {
+  if (!knowledgeOrganize) return;
+  const draft = knowledgeOrganize;
+  const proposed = new Map((draft.result?.groups || []).flatMap(group => group.ids.map(id => [id, group.name])));
+  $('#knowledge-organize-dialog').innerHTML = `<div class="modal-heading"><h2 id="knowledge-organize-title">整理课程知识目录</h2><button type="button" class="icon-button" data-action="close-organize" aria-label="关闭" ${knowledgeOrganizeBusy ? 'disabled' : ''}>${icon('close')}</button></div>
+    <p class="field-hint">课程：${escape(draft.courseTitle)}。仅整理 ${draft.cards.length} 张尚未手动归类的卡片；已有手动分类保持不变。AI 建议可能计费，确认前不会保存，也不会移动 Markdown 文件。</p>
+    ${draft.error ? `<p class="inline-error" role="alert">${escape(draft.error)}</p>` : ''}
+    ${draft.result ? `<form id="knowledge-organize-form"><div class="knowledge-organize-list">${draft.cards.map(card => `<label class="knowledge-organize-item"><span><strong>${escape(card.title)}</strong><small>${escape(card.summary)}</small></span><input name="category:${escape(card.id)}" maxlength="40" required value="${escape(draft.selections?.get(card.id) || proposed.get(card.id) || '课程要点')}" aria-label="${escape(card.title)}的知识主题"></label>`).join('')}</div><p class="field-hint">可以先修改每张卡片的主题；相同名称会归入同一主题。保存失败时已成功保存的卡片不会回滚，重试会跳过它们。</p><div class="revision-dialog-actions"><button type="button" class="btn secondary" data-action="close-organize" ${knowledgeOrganizeBusy ? 'disabled' : ''}>取消</button><button type="submit" class="btn primary" ${knowledgeOrganizeBusy ? 'disabled' : ''}>确认应用归类 ${icon('check')}</button></div></form>` : `<div class="knowledge-organize-list">${draft.cards.map(card => `<div class="knowledge-organize-item"><strong>${escape(card.title)}</strong><small>${escape(card.summary)}</small></div>`).join('')}</div><button type="button" class="btn primary full" data-action="generate-organize" ${knowledgeOrganizeBusy ? 'disabled' : ''}>${knowledgeOrganizeBusy ? '正在生成建议…' : '生成 AI 整理建议（可能计费）'}</button>`}`;
 }
 async function download(name, content, type) {
   if (desktop) { await pendingSave; const saved = await desktop.exportFile(name, content); if (saved) toast('文件已导出。'); return; }
@@ -847,8 +1086,60 @@ async function action(name, element) {
     block.content = desktop ? await desktop.restoreBlock(id, block.id, block.content.text) : restoredContent(block.type, block.content);
     if (!desktop) save(); render(); toast('已恢复上一版内容。'); return;
   }
-  if (name === 'create-note') return createNote(id);
+  if (name === 'create-note') return createNote(id, element.dataset.block || '', element.dataset.section ?? '');
+  if (name === 'close-knowledge-draft') { if (!knowledgeBusy) { $('#knowledge-draft-dialog').close(); knowledgeDraft = null; } return; }
   if (name === 'open-note') { activeNote = id; return navigate('wiki'); }
+  if (name === 'open-organize') {
+    if (knowledgeOrganizeBusy || status.mode !== 'ai') return;
+    const course = courseKnowledgeTree(state.notes, state.plans).children.flatMap(domain => domain.children).find(item => item.key === element.dataset.course);
+    if (!course) throw new Error('课程目录已变化，请刷新后重试。');
+    const cards = course.noteIds.map(noteId => state.notes.find(note => note.id === noteId)).filter(note => note && !note.category);
+    if (cards.length < 2 || cards.length > 80) throw new Error('AI 整理仅支持本课程 2–80 张尚未手动归类的卡片。');
+    knowledgeOrganize = { courseTitle: course.name, cards: cards.map(({ id, title, summary, tags, updated }) => ({ id, title, summary, tags, updated })), existingThemes: course.children.map(theme => theme.name).filter(name => name !== '课程要点').slice(0, 12), result: null, error: '' };
+    renderKnowledgeOrganize(); $('#knowledge-organize-dialog').showModal(); return;
+  }
+  if (name === 'close-organize') { if (!knowledgeOrganizeBusy) { $('#knowledge-organize-dialog').close(); knowledgeOrganize = null; } return; }
+  if (name === 'generate-organize') {
+    if (!knowledgeOrganize || knowledgeOrganizeBusy || knowledgeOrganize.result) return;
+    knowledgeOrganizeBusy = true; knowledgeOrganize.error = ''; renderKnowledgeOrganize();
+    try {
+      const result = await api('knowledge-organize', { courseTitle: knowledgeOrganize.courseTitle, existingThemes: knowledgeOrganize.existingThemes, cards: knowledgeOrganize.cards.map(({ id, title, summary, tags }) => ({ id, title, summary, tags })) });
+      if (!validKnowledgeOrganization(result, knowledgeOrganize.cards.map(card => card.id))) throw new Error('模型返回的归类不完整，请重试。');
+      knowledgeOrganize.result = result;
+    } catch (error) { knowledgeOrganize.error = error.message; }
+    finally { knowledgeOrganizeBusy = false; if (knowledgeOrganize) renderKnowledgeOrganize(); }
+    return;
+  }
+  if (name === 'switch-wiki-view') {
+    knowledgeView = ['tree', 'chat', 'graph'].includes(element.dataset.view) ? element.dataset.view : 'tree';
+    graphViewport = null;
+    document.querySelectorAll('.wiki-view-switch [role="tab"]').forEach(tab => tab.setAttribute('aria-selected', String(tab.dataset.view === knowledgeView)));
+    refreshKnowledgeResults(); return;
+  }
+  if (name === 'toggle-folder') {
+    const expanded = element.getAttribute('aria-expanded') !== 'true';
+    folderOverrides.set(element.dataset.folder, expanded);
+    element.setAttribute('aria-expanded', String(expanded));
+    element.setAttribute('aria-label', `${expanded ? '折叠' : '展开'} ${element.dataset.name}`);
+    element.querySelector('.wiki-tree-expander').textContent = expanded ? '▾' : '▸';
+    element.closest('.wiki-tree-folder').querySelector('.wiki-tree-children').hidden = !expanded; return;
+  }
+  if (name === 'filter-topic') { topicFilter = element.dataset.topic || ''; selectedGraphId = ''; graphLocalTwoHop = false; graphViewport = null; refreshKnowledgeResults(); return; }
+  if (name === 'select-graph-node') { selectedGraphId = id; refreshKnowledgeResults(); return; }
+  if (name === 'graph-orphans') { graphOrphansOnly = !graphOrphansOnly; graphLocalTwoHop = false; selectedGraphId = ''; graphViewport = null; refreshKnowledgeResults(); return; }
+  if (name === 'graph-local') { if (!selectedGraphId.startsWith('card:')) return; graphLocalTwoHop = !graphLocalTwoHop; graphOrphansOnly = false; graphViewport = null; refreshKnowledgeResults(); return; }
+  if (name === 'graph-pause') {
+    graphPaused = !graphPaused;
+    element.setAttribute('aria-pressed', String(graphPaused)); element.textContent = graphPaused ? '继续运动' : '暂停运动';
+    if (graphPaused && graphFrame) { window.cancelAnimationFrame?.(graphFrame); graphFrame = 0; }
+    if (!graphPaused && graphMotion && !graphFrame) { graphMotion.alpha = Math.max(graphMotion.alpha, .25); graphFrame = window.requestAnimationFrame?.(animateGraphMotion) || 0; }
+    return;
+  }
+  if (name === 'graph-fit') { graphViewport = null; const svg = $('#knowledge-graph-svg'); if (svg) svg.setAttribute('viewBox', `0 0 ${svg.dataset.graphWidth} ${svg.dataset.graphHeight}`); return; }
+  if (name === 'graph-refresh') { stopGraphMotion(); graphPositions.clear(); graphViewport = null; refreshKnowledgeResults(); return; }
+  if (name === 'graph-zoom-in') { zoomKnowledgeGraph(.78); return; }
+  if (name === 'graph-zoom-out') { zoomKnowledgeGraph(1.28); return; }
+  if (name === 'graph-reset') { graphViewport = null; refreshKnowledgeResults(); return; }
   if (name === 'close-note') { activeNote = null; return render(); }
   if (name === 'note-view') {
     const mode = element.dataset.mode;
@@ -863,7 +1154,7 @@ async function action(name, element) {
   if (name === 'source-lesson') { const p = state.plans.find(p => p.lessons.some(l => l.id === id)); if (p) { state.active = p.id; persist('setActivePlan', p.id); return openLesson(id); } }
   if (name === 'export-data') { if (desktop) { await pendingSave; if (await desktop.exportBackup()) toast('完整学习备份已导出。'); return; } return download('learnflow-backup.json', JSON.stringify(state, null, 2), 'application/json'); }
   if (name === 'export-wiki') return download('我的知识库.md', state.notes.map(markdown).join('\n---\n\n'), 'text/markdown;charset=utf-8');
-  if (name === 'export-note') { const n = state.notes.find(n => n.id === id); return download(n.title.replace(/[<>:"/\\|?*]/g, '-') + '.md', markdown(n), 'text/markdown;charset=utf-8'); }
+  if (name === 'export-note') { const n = state.notes.find(n => n.id === id); if (desktop) await pendingSave; return download(n.title.replace(/[<>:"/\\|?*]/g, '-') + '.md', desktop ? await desktop.cardMarkdown(id) : markdown(n), 'text/markdown;charset=utf-8'); }
 }
 document.addEventListener('click', async event => {
   const element = event.target.closest('[data-page], [data-action]'); if (!element || element.disabled) return;
@@ -879,6 +1170,7 @@ document.addEventListener('cancel', event => {
   if (event.target.id === 'revise-block-dialog' && revisionBusy) event.preventDefault();
   if (event.target.id === 'planner' && plannerBusy) event.preventDefault();
   if (event.target.id === 'illustration-dialog' && illustrationBusy) event.preventDefault();
+  if (event.target.id === 'knowledge-draft-dialog' && knowledgeBusy) event.preventDefault();
 }, true);
 document.addEventListener('input', event => {
   if (!['model-provider', 'image-protocol'].includes(event.target.id)) dirtyModelForm(event.target.closest?.('form'));
@@ -888,9 +1180,69 @@ document.addEventListener('input', event => {
     if (event.target.id.startsWith('detail-')) plannerDraft.answers = collectPlannerAnswers(new FormData($('#clarification-form')));
   }
   if (event.target.dataset.reflection) { state.reflections[event.target.dataset.reflection] = event.target.value; persist('saveReflection', event.target.dataset.reflection, event.target.value); if ($('#reflection-preview')) $('#reflection-preview').innerHTML = reflectionPreview(event.target.value); }
-  if (event.target.id === 'wiki-search') { query = event.target.value; $('#note-results').innerHTML = noteList(state.notes.filter(n => `${n.title} ${n.content} ${n.tags.join(' ')}`.toLowerCase().includes(query.toLowerCase()))); }
+  if (event.target.id === 'wiki-search') { query = event.target.value; graphViewport = null; selectedGraphId = ''; graphLocalTwoHop = false; refreshKnowledgeResults(); }
+  if (event.target.id === 'graph-search') {
+    query = event.target.value; const caret = event.target.selectionStart;
+    const search = $('#wiki-search'); if (search) search.value = query;
+    graphViewport = null; selectedGraphId = ''; graphLocalTwoHop = false; refreshKnowledgeResults();
+    const next = $('#graph-search'); next?.focus(); if (Number.isInteger(caret)) next?.setSelectionRange(caret, caret);
+  }
+  if (event.target.id === 'graph-spacing') {
+    graphSpacing = Math.max(.6, Math.min(1.8, Number(event.target.value) || 1));
+    if (graphMotion) { graphMotion.alpha = Math.max(graphMotion.alpha, .55); if (!graphPaused && !graphFrame) graphFrame = window.requestAnimationFrame?.(animateGraphMotion) || 0; }
+  }
+});
+document.addEventListener('wheel', event => {
+  if (!event.target.closest?.('.knowledge-graph-canvas')) return;
+  event.preventDefault();
+  zoomKnowledgeGraph(event.deltaY < 0 ? .9 : 1.1);
+}, { passive: false });
+document.addEventListener('pointerdown', event => {
+  const svg = event.target.closest?.('#knowledge-graph-svg');
+  if (!svg) return;
+  const target = event.target.closest?.('.graph-node');
+  if (target && graphMotion) {
+    const node = graphMotion.nodes[graphMotion.byId.get(target.dataset.id)];
+    if (!node) return;
+    node.fixed = true;
+    graphDrag = { kind: 'node', svg, node, x: event.clientX, y: event.clientY };
+    return;
+  }
+  graphDrag = { kind: 'canvas', svg, x: event.clientX, y: event.clientY };
+  svg.classList.add('dragging');
+});
+document.addEventListener('pointermove', event => {
+  if (!graphDrag || !graphDrag.svg.isConnected) return;
+  const { svg } = graphDrag;
+  if (graphDrag.kind === 'node') {
+    const point = svg.createSVGPoint(); point.x = event.clientX; point.y = event.clientY;
+    const position = point.matrixTransform(svg.getScreenCTM().inverse());
+    graphDrag.node.x = position.x; graphDrag.node.y = position.y;
+    graphDrag.node.vx = graphDrag.node.vy = 0;
+    paintGraphMotion(); return;
+  }
+  const [x, y, width, height] = svg.getAttribute('viewBox').split(/\s+/).map(Number);
+  const rect = svg.getBoundingClientRect();
+  if (!rect.width || !rect.height) return;
+  setGraphViewport(svg, x - (event.clientX - graphDrag.x) * width / rect.width, y - (event.clientY - graphDrag.y) * height / rect.height, width, height);
+  graphDrag.x = event.clientX; graphDrag.y = event.clientY;
+});
+document.addEventListener('pointerup', () => {
+  if (graphDrag?.kind === 'node') {
+    graphDrag.node.fixed = false;
+    if (graphMotion) { graphMotion.alpha = Math.max(graphMotion.alpha, .5); if (!graphPaused && !graphFrame) graphFrame = window.requestAnimationFrame?.(animateGraphMotion) || 0; }
+  }
+  graphDrag?.svg.classList.remove('dragging'); graphDrag = null;
+});
+document.addEventListener('visibilitychange', () => {
+  if (!document.hidden && graphMotion && !graphPaused && !graphFrame) graphFrame = window.requestAnimationFrame?.(animateGraphMotion) || 0;
 });
 document.addEventListener('change', event => {
+  if (event.target.id === 'graph-topic') { topicFilter = event.target.value; selectedGraphId = ''; graphLocalTwoHop = false; graphViewport = null; refreshKnowledgeResults(); return; }
+  if (event.target.id === 'graph-tag') { graphTagFilter = event.target.value; selectedGraphId = ''; graphLocalTwoHop = false; graphViewport = null; refreshKnowledgeResults(); return; }
+  if (event.target.id === 'graph-type') { graphTypeFilter = event.target.value; selectedGraphId = ''; graphLocalTwoHop = false; graphViewport = null; refreshKnowledgeResults(); return; }
+  if (event.target.id === 'graph-status') { graphStatusFilter = event.target.value; selectedGraphId = ''; graphLocalTwoHop = false; graphViewport = null; refreshKnowledgeResults(); return; }
+  if (event.target.id === 'graph-relation') { graphRelationFilter = event.target.value; selectedGraphId = ''; graphLocalTwoHop = false; graphViewport = null; refreshKnowledgeResults(); return; }
   if (!plannerBusy && event.target.closest?.('#planner')) {
     if (event.target.id === 'level') plannerDraft.level = event.target.value;
     if (['daily','days'].includes(event.target.id)) plannerDraft[event.target.id] = Number(event.target.value);
@@ -915,6 +1267,8 @@ document.addEventListener('submit', async event => {
   event.preventDefault(); const form = event.target; const values = new FormData(form);
   if (['illustration-form', 'commons-search-form', 'commons-select-form'].includes(form.id) && illustrationBusy) return;
   if (['speech-preview-form', 'speech-generate-form'].includes(form.id) && speechBusy) return;
+  if (form.id === 'knowledge-draft-form' && knowledgeBusy) return;
+  if (form.id === 'knowledge-organize-form' && knowledgeOrganizeBusy) return;
   if (['plan-form', 'clarification-form', 'plan-confirm-form'].includes(form.id)) return submitPlanner(form.id, values);
   if (modelFormIds.includes(form.id)) {
     if (modelSettingsSaving) return;
@@ -1054,19 +1408,71 @@ document.addEventListener('submit', async event => {
       state.chats[id] = [...history, { role: 'user', content: question }, { role: 'assistant', content: reply.answer }].slice(-20);
       persist('appendChat', id, question, reply.answer);
       if (page === 'study' && activeLesson === id && lessonTab === 'chat') { render(); $('.chat-history')?.scrollIntoView({ behavior: 'smooth', block: 'end' }); }
+    } else if (form.id === 'knowledge-draft-form') {
+      if (!knowledgeDraft?.result) throw new Error('请先生成卡片草稿。');
+      knowledgeBusy = true;
+      const tags = knowledgeTags(values.get('tags'));
+      const result = { title: String(values.get('title') || '').trim(), summary: String(values.get('summary') || '').trim(), content: String(values.get('content') || '').trim(), tags, topic: String(values.get('topic') || knowledgeDraft.result.topic || tags[0] || '未分类').trim(), useWhen: knowledgeConditions(values.get('useWhen')), avoidWhen: knowledgeConditions(values.get('avoidWhen')) };
+      knowledgeDraft.result = result;
+      if (!validKnowledgeDraft(result)) throw new Error('请填写标题、描述、正文和 1–6 个标签，并检查字段长度。');
+      const created = Date.now();
+      if (!result.topic || result.topic.length > 160) throw new Error('主题目录名称不正确。');
+      const n = { id: crypto.randomUUID(), lessonId: knowledgeDraft.lessonId, courseTitle: knowledgeDraft.source.courseTitle, ...result, source: knowledgeDraft.origin, created, updated: created, sourceLessons: [knowledgeDraft.lessonId], status: 'draft' };
+      if (desktop) { await pendingSave; if (storageWarning) throw new Error(storageWarning); await desktop.saveNote(n); }
+      state.notes.push(n);
+      if (!desktop) save();
+      knowledgeBusy = false; knowledgeDraft = null; $('#knowledge-draft-dialog').close();
+      activeNote = n.id; navigate('wiki'); toast('知识卡片已保存，可继续编辑。');
+    } else if (form.id === 'knowledge-organize-form') {
+      if (!knowledgeOrganize?.result) throw new Error('请先生成整理建议。');
+      knowledgeOrganizeBusy = true;
+      knowledgeOrganize.selections = new Map(knowledgeOrganize.cards.map(card => [card.id, String(values.get(`category:${card.id}`) || '').trim()]));
+      let saved = 0;
+      try {
+        if (desktop) { await pendingSave; if (storageWarning) throw new Error(storageWarning); }
+        for (const card of knowledgeOrganize.cards) {
+          const note = state.notes.find(item => item.id === card.id);
+          if (!note || (note.updated !== card.updated && note.category !== String(values.get(`category:${card.id}`) || '').trim())) throw new Error('卡片已在别处修改，请重新打开整理建议。');
+          const category = String(values.get(`category:${card.id}`) || '').trim();
+          if (!category || category.length > 40) throw new Error('每张卡片都需要 1–40 字的主题名称。');
+          if (note.category === category) continue;
+          const next = { ...note, category, updated: Date.now() };
+          if (desktop) await desktop.saveNote(next);
+          Object.assign(note, next); card.updated = next.updated; saved++;
+          if (!desktop) save();
+        }
+        knowledgeOrganize = null; $('#knowledge-organize-dialog').close(); refreshKnowledgeResults(); toast(`已整理 ${saved} 张知识卡片。`);
+      } catch (error) {
+        knowledgeOrganize.error = `${saved ? `已保存 ${saved} 张；` : ''}${error.message}`;
+        refreshKnowledgeResults();
+      } finally { knowledgeOrganizeBusy = false; if (knowledgeOrganize) renderKnowledgeOrganize(); }
     } else if (form.id === 'note-form') {
       const n = state.notes.find(n => n.id === form.dataset.id), title = values.get('title').trim(), summary = values.get('summary').trim(), content = values.get('content').trim();
       const tags = [...new Set(values.get('tags').split(/[,，]/).map(t => t.trim()).filter(Boolean))].slice(0, 6);
       if (!title || !summary || !content || !tags.length) throw new Error('请填写标题、摘要、正文和至少一个标签。');
-      Object.assign(n, { title, summary, content, tags, updated: Date.now() }); persist('saveNote', n); updateNotePreview(n); toast('知识卡片已保存。');
+      const useWhen = knowledgeConditions(values.get('useWhen')), avoidWhen = knowledgeConditions(values.get('avoidWhen'));
+      if (!validKnowledgeDraft({ title, summary, content, tags, useWhen, avoidWhen })) throw new Error('请检查知识卡片字段长度和适用场景条数。');
+      const topic = String(values.get('topic') || n.topic || '未分类').trim();
+      if (!topic || topic.length > 160) throw new Error('主题目录名称不正确。');
+      const category = String(values.get('category') || '').trim();
+      if (category.length > 80) throw new Error('知识库归类名称不能超过 80 字。');
+      const next = { ...n, title, summary, content, tags, useWhen, avoidWhen, topic, updated: Date.now() };
+      if (category) next.category = category; else delete next.category;
+      if (desktop) { await pendingSave; if (storageWarning) throw new Error(storageWarning); await desktop.saveNote(next); }
+      Object.assign(n, next);
+      if (!category) delete n.category;
+      if (!desktop) save();
+      updateNotePreview(n); toast('知识卡片已保存。');
     } else if (form.id === 'ask-form') {
       submit.innerHTML = '<span class="spinner"></span>正在阅读你的知识…'; const question = values.get('question').trim();
       if (!question) throw new Error('请输入问题。');
-      if (status.mode === 'ai') { answer = await api('ask', { question, notes: state.notes.slice(-30).map(({ id, title, content }) => ({ id, title, content })) }); if (state.notes.length > 30) answer.answer += '\n\n本次仅参考最近 30 张卡片。'; }
+      const selected = retrieveKnowledge(question, state.notes, 12, state.plans);
+      if (status.mode === 'ai') {
+        if (!selected.length) answer = { demo: true, answer: '知识目录中没有找到与问题直接相关的卡片。请换一个更具体的知识点，或先补充卡片。', citations: [] };
+        else answer = await api('ask', { question, notes: selected.map(({ id, title, content, topic, category, summary, tags, useWhen, avoidWhen }) => ({ id, title, content: content.slice(0, 12000), topic: category || topic || '未分类', summary, tags, useWhen: useWhen || [], avoidWhen: avoidWhen || [] })) });
+      }
       else {
-        const terms = question.toLowerCase().match(/[a-z0-9_]+|[\u4e00-\u9fff]{2}/g) || [question.toLowerCase()];
-        const ranked = state.notes.map(n => ({ n, score: terms.filter(t => `${n.title} ${n.content} ${n.tags.join(' ')}`.toLowerCase().includes(t)).length })).filter(v => v.score > 0).sort((a, b) => b.score - a.score).slice(0, 3);
-        answer = { demo: true, answer: ranked.length ? '找到以下相关笔记。点击查看原文；当前结果为关键词匹配，并非 AI 回答。' : '未找到相关笔记。试试“变量”“函数”等更具体的关键词。', citations: ranked.map(v => v.n.id) };
+        answer = { demo: true, answer: selected.length ? '按知识目录、标题、标签和正文找到以下卡片；结果是本地关键词匹配，并非 AI 回答。' : '知识目录中没有找到相关卡片。请使用更具体的知识点，或先补充卡片。', citations: selected.slice(0, 5).map(note => note.id) };
       }
       if ($('#wiki-answer')) $('#wiki-answer').innerHTML = answerHTML();
     }
@@ -1080,8 +1486,8 @@ document.addEventListener('submit', async event => {
       imageConnectionResult = `图片配置保存失败：${e.message}`;
       $('#image-connection-result').textContent = imageConnectionResult;
       $('[data-action="check-image-connection"]').disabled = true;
-    } else if (form.id === 'revision-form' && $('#revision-error')) $('#revision-error').textContent = e.message; else if (form.id === 'desktop-settings-form' && $('#settings-error')) $('#settings-error').textContent = e.message; else if (form.id === 'plan-form' && $('#plan-error')) $('#plan-error').textContent = e.message; else if (form.id === 'lesson-ask-form' && $('#lesson-ask-error')) $('#lesson-ask-error').textContent = e.message; else toast(e.message); }
-  finally { if (modelFormIds.includes(form.id)) modelSettingsSaving = false; if (form.id === 'illustration-form') { illustrationBusy = false; const fields = form.querySelector('fieldset'); if (fields) fields.disabled = false; } if (form.id === 'revision-form') revisionBusy = false; if (submit.isConnected) { submit.disabled = form.id === 'plan-form' && status.mode !== 'ai'; submit.innerHTML = label; } }
+    } else if (form.id === 'revision-form' && $('#revision-error')) $('#revision-error').textContent = e.message; else if (form.id === 'knowledge-draft-form' && knowledgeDraft) { knowledgeDraft.error = e.message; renderKnowledgeDraft(); } else if (form.id === 'desktop-settings-form' && $('#settings-error')) $('#settings-error').textContent = e.message; else if (form.id === 'plan-form' && $('#plan-error')) $('#plan-error').textContent = e.message; else if (form.id === 'lesson-ask-form' && $('#lesson-ask-error')) $('#lesson-ask-error').textContent = e.message; else toast(e.message); }
+  finally { if (modelFormIds.includes(form.id)) modelSettingsSaving = false; if (form.id === 'knowledge-draft-form') knowledgeBusy = false; if (form.id === 'illustration-form') { illustrationBusy = false; const fields = form.querySelector('fieldset'); if (fields) fields.disabled = false; } if (form.id === 'revision-form') revisionBusy = false; if (submit.isConnected) { submit.disabled = form.id === 'plan-form' && status.mode !== 'ai'; submit.innerHTML = label; } }
 });
 document.addEventListener('input', event => {
   if ((event.target.id === 'speech-material' || event.target.id?.startsWith('speech-role-')) && speechDraft && !speechBusy) {
@@ -1093,6 +1499,9 @@ document.addEventListener('change', event => {
   if (event.target.id === 'speech-play-rate' && $('#speech-player')) $('#speech-player').playbackRate = Number(event.target.value);
 });
 $('#speech-dialog')?.addEventListener?.('cancel', event => { if (speechBusy) event.preventDefault(); else stopSpeechPlayback(); });
+$('#knowledge-draft-dialog')?.addEventListener?.('close', () => { if (!knowledgeBusy) knowledgeDraft = null; });
+$('#knowledge-organize-dialog')?.addEventListener?.('cancel', event => { if (knowledgeOrganizeBusy) event.preventDefault(); });
+$('#knowledge-organize-dialog')?.addEventListener?.('close', () => { if (!knowledgeOrganizeBusy) knowledgeOrganize = null; });
 if (desktop) {
   $('#app').innerHTML = '<div class="empty-state"><h2>正在读取本地数据…</h2></div>';
   desktop.load().then(result => {

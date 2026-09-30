@@ -67,7 +67,7 @@ export async function removePlanFromBackups(directory, planId) {
     if (!info.isDirectory() || info.isSymbolicLink()) throw new Error('备份目录不是普通目录，未访问其中的文件。');
     names = await readdir(folder);
   } catch (error) { if (!missing(error)) failures.push(`backups: ${error.message}`); }
-  for (const name of names) if (/^before-(?:delete|import|schema-v2)-[^/\\]+\.(?:json|sqlite)$/.test(name)) candidates.push(path.join(folder, name));
+  for (const name of names) if (/^before-(?:delete|import|schema-v2|schema-v3|knowledge-v1)-[^/\\]+\.(?:json|sqlite)$/.test(name)) candidates.push(path.join(folder, name));
   let cleaned = 0;
   for (const file of candidates) {
     try {

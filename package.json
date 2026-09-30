@@ -1,6 +1,6 @@
 {
   "name": "learnflow",
-  "version": "1.1.4",
+  "version": "1.1.5",
   "main": "desktop/main.cjs",
   "private": true,
   "type": "module",
@@ -59,6 +59,7 @@
   },
   "dependencies": {
     "dompurify": "3.4.16",
+    "js-yaml": "4.3.2",
     "marked": "18.0.14"
   }
 }

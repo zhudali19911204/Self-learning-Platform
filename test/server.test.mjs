@@ -192,7 +192,7 @@ test('serves all client assets and demo status; does not expose server files', a
   assert.equal(status.model, null);
   assert.equal(status.provider, 'ollama');
   assert.equal(status.configurationError, null);
-  for (const path of ['/', '/app.js', '/demo.js', '/blocks.js', '/planning.js', '/markdown.js', '/vendor/marked.js', '/vendor/purify.js', '/styles.css', '/favicon.svg']) {
+  for (const path of ['/', '/app.js', '/demo.js', '/blocks.js', '/planning.js', '/markdown.js', '/knowledge-index.js', '/knowledge-views.js', '/graph-motion.js', '/vendor/marked.js', '/vendor/purify.js', '/styles.css', '/favicon.svg']) {
     const r = await app.get(path); assert.equal(r.status, 200); assert.ok((await r.text()).length > 0);
     assert.ok(r.headers.get('content-security-policy').includes("script-src 'self'"));
   }
@@ -372,6 +372,44 @@ test('Wiki summarization accepts completed lesson material and personal reflecti
   const r = await app.post('/api/wiki', { title: '第一课', lesson: demoLessons.p1, reflection: '我计算了学习时长' });
   assert.equal(r.status, 200); assert.deepEqual(await r.json(), expected);
   assert.equal((await app.post('/api/wiki', { title: '第一课', lesson: {}, reflection: '' })).status, 400);
+});
+
+test('scoped knowledge-card drafting validates source and structured metadata', async t => {
+  let sent;
+  const expected = { title: 'print 输出', summary: 'print 将内容显示出来。', content: '## 要点\n\n`print` 显示内容。', tags: ['Python'], useWhen: ['需要显示结果时'], avoidWhen: [] };
+  const app = await serve(t, { model: 'test', fetchImpl: async (_, init) => {
+    sent = JSON.parse(init.body);
+    return Response.json({ message: { content: JSON.stringify(expected) } });
+  } });
+  const source = { courseTitle: 'Python 入门', lessonTitle: '输入输出', objective: '理解 print', sourceTitle: '输出', sourceText: 'print 会显示内容。', tags: ['Python'] };
+  const response = await app.post('/api/wiki-draft', source);
+  assert.equal(response.status, 200);
+  assert.deepEqual(await response.json(), expected);
+  assert.match(sent.messages[0].content, /只根据提供的 sourceText/);
+  assert.equal((await app.post('/api/wiki-draft', { ...source, sourceText: '' })).status, 400);
+  assert.equal((await app.post('/api/wiki-draft', { ...source, sourceText: 'x'.repeat(12001) })).status, 400);
+  const bad = await serve(t, { model: 'test', fetchImpl: mock({ ...expected, tags: [] }) });
+  assert.equal((await bad.post('/api/wiki-draft', source)).status, 502);
+});
+
+test('course knowledge organization proposes bounded groups without writing cards', async t => {
+  let sent;
+  const expected = { groups: [{ name: '安装与验证', ids: ['one', 'two'] }] };
+  const app = await serve(t, { model: 'test', fetchImpl: async (_, init) => {
+    sent = JSON.parse(init.body);
+    return Response.json({ message: { content: JSON.stringify(expected) } });
+  } });
+  const input = { courseTitle: 'Git 入门', existingThemes: [], cards: [
+    { id: 'one', title: '安装 Git', summary: '安装步骤', tags: ['Git'] },
+    { id: 'two', title: '验证 Git', summary: '版本检查', tags: ['Git'] }
+  ] };
+  const response = await app.post('/api/knowledge-organize', input);
+  assert.equal(response.status, 200);
+  assert.deepEqual(await response.json(), expected);
+  assert.match(sent.messages[0].content, /不移动文件/);
+  assert.equal((await app.post('/api/knowledge-organize', { ...input, cards: input.cards.slice(0, 1) })).status, 400);
+  const bad = await serve(t, { model: 'test', fetchImpl: mock({ groups: [{ name: '单卡目录', ids: ['one'] }, { name: '单卡目录2', ids: ['two'] }] }) });
+  assert.equal((await bad.post('/api/knowledge-organize', input)).status, 502);
 });
 
 test('lesson Q&A sends course context and bounded history, rejecting malformed input and output', async t => {

@@ -274,3 +274,81 @@
 .dashboard-columns > section > .knowledge-preview {
   height: 100%;
 }
+
+.knowledge-entry-toolbar,.knowledge-section-action,.knowledge-notes-actions{display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin:16px 0}.knowledge-section-action{margin-top:18px}.knowledge-notes-actions{align-items:flex-start;flex-direction:column}.knowledge-notes-actions p{margin:0;color:#79718b}#knowledge-draft-dialog{width:min(780px,calc(100vw - 32px));max-height:min(90vh,950px);overflow:auto;border:0;border-radius:18px;padding:28px;background:#fff;box-shadow:0 24px 80px #21193b40}#knowledge-draft-dialog::backdrop{background:#20183370}#knowledge-draft-form{display:grid;gap:10px}#knowledge-draft-form label{margin-top:8px;font-weight:600}#knowledge-draft-form textarea{min-height:80px;resize:vertical}#draft-content{min-height:210px}.knowledge-draft-columns{display:grid;grid-template-columns:1fr 1fr;gap:14px}.knowledge-draft-columns>div{display:grid;gap:8px}@media(max-width:680px){#knowledge-draft-dialog{padding:18px}.knowledge-draft-columns{grid-template-columns:1fr}}
+.wiki-directory{background:#fff;border:1px solid var(--line);border-radius:11px;padding:16px 18px;margin-bottom:18px}.wiki-directory>strong{display:block;font-size:12px;margin-bottom:12px}.wiki-directory-items{display:flex;gap:8px;flex-wrap:wrap}.wiki-directory-items button{border:1px solid #e7ddf3;background:#fcfaff;color:#7f6a9b;border-radius:8px;padding:7px 10px;margin-left:calc(var(--depth,0)*8px);font-size:11px}.wiki-directory-items button[aria-pressed=true]{background:#eee8fa;border-color:#baa9eb;color:#5940bc;font-weight:650}.wiki-directory-items span{opacity:.7;margin-left:5px}.knowledge-boundaries{border-top:1px solid var(--line);margin-top:24px;padding-top:17px}.knowledge-boundaries h3{font-size:14px;margin:12px 0 5px}.knowledge-boundaries li{line-height:1.8}
+
+/* Two complementary ways to explore the same knowledge cards. */
+.wiki-explorer{min-width:0}.wiki-view-switch{display:flex;gap:8px;margin-bottom:16px}.wiki-view-switch button{border:1px solid #e5def0;background:#fff;border-radius:8px;padding:9px 15px;color:#776b86;font-size:12px}.wiki-view-switch button[aria-selected=true]{background:#eee8fa;border-color:#bba9e9;color:#5940bc;font-weight:650}.wiki-directory{padding:18px;margin-bottom:18px}.wiki-directory-heading{display:flex;align-items:baseline;justify-content:space-between;gap:10px;margin-bottom:12px}.wiki-directory-heading strong{font-size:13px}.wiki-directory-heading small{color:#968aa2;font-size:10px}.wiki-tree{display:grid;gap:4px}.wiki-tree-folder{min-width:0}.wiki-tree-row{display:flex;align-items:center;gap:3px}.wiki-tree-expander{width:29px;height:29px;flex:0 0 29px;border:0;border-radius:6px;background:transparent;color:#856fa8;font-size:16px}.wiki-tree-expander:hover{background:#f2edf9}.wiki-tree-topic{flex:1;min-width:0;display:flex;align-items:center;justify-content:space-between;gap:9px;text-align:left;border:0;border-radius:7px;padding:7px 10px;background:transparent;color:#71617c;font-size:12px;overflow-wrap:anywhere}.wiki-tree-topic:hover{background:#f7f3fb}.wiki-tree-topic[aria-pressed=true]{background:#eee8fa;color:#5940bc;font-weight:650}.wiki-tree-topic span{flex:0 0 auto;color:#9c8da9;font-size:10px}.wiki-tree-all{width:100%;margin-bottom:4px}.wiki-tree-children{margin-left:15px;padding-left:13px;border-left:1px solid #e9e2f0}.wiki-tree-children[hidden]{display:none}
+
+/* Course-first knowledge library: cards live inside their topic, not in a flat grid. */
+.wiki-directory{padding:20px 22px}.wiki-tree{gap:8px}
+.wiki-tree-folder-toggle{width:100%;border:1px solid transparent;background:transparent;border-radius:8px;padding:7px 10px;text-align:left;color:#665a75}
+.wiki-tree-folder-toggle:hover{background:#f6f3fa}.wiki-tree-folder-toggle:focus-visible{outline-offset:1px}
+.wiki-tree-folder-toggle .wiki-tree-expander{display:grid;place-items:center;font-size:15px;color:#8a77a3}
+.wiki-tree-folder-toggle .wiki-tree-topic{padding:0;background:none;border:0;font-size:12px;color:inherit}
+.wiki-tree-folder-toggle .wiki-tree-count{font-size:10px;color:#998ba9;background:#f2eef8;padding:2px 7px;border-radius:10px}
+.wiki-tree-folder-heading{display:flex;align-items:center;gap:7px;min-width:0}.wiki-tree-folder-heading>.wiki-tree-folder-toggle{flex:1;min-width:0}
+.wiki-tree-domain>.wiki-tree-folder-heading>.wiki-tree-folder-toggle{background:#f3effa;color:#614d83;font-weight:650}
+.wiki-tree-course>.wiki-tree-folder-heading>.wiki-tree-folder-toggle{background:#faf9fc;border-color:#ede8f2;font-weight:600}
+.wiki-tree-theme>.wiki-tree-folder-heading>.wiki-tree-folder-toggle{color:#716281}
+.wiki-organize-trigger{flex:0 0 auto;border:1px solid #e5d9f3;background:#fff;border-radius:7px;padding:7px 9px;color:#785abe;font-size:11px}.wiki-organize-trigger:hover{background:#f3effa}
+.wiki-tree-theme>.wiki-tree-children{display:grid;gap:3px;padding-top:4px;padding-bottom:7px}
+.wiki-tree-theme>.wiki-tree-children[hidden]{display:none}
+.wiki-tree-card{width:100%;display:flex;align-items:flex-start;gap:10px;border:0;background:#fff;border-radius:7px;text-align:left;padding:10px 12px;color:#574a68}
+.wiki-tree-card:hover{background:#f5f1fb}.wiki-tree-card>.icon:first-child{width:15px;height:15px;color:#9881bc;margin-top:2px}
+.wiki-tree-card>.icon:last-child{width:14px;height:14px;color:#ae9dbe;margin-left:auto;margin-top:3px}
+.wiki-tree-card span{flex:1;min-width:0}.wiki-tree-card strong{display:block;font-size:12px;font-weight:600;overflow-wrap:anywhere}
+.wiki-tree-card-summary{display:block;color:#9c90aa;font-size:10px;line-height:1.5;margin-top:3px;overflow-wrap:anywhere}.wiki-tree-card-summary p{font-size:10px;line-height:1.5;margin:0}
+#knowledge-organize-dialog{width:min(740px,calc(100vw - 32px));max-height:min(88vh,900px);overflow:auto;border:0;border-radius:18px;padding:28px;background:#fff;box-shadow:0 24px 80px #21193b40}#knowledge-organize-dialog::backdrop{background:#20183370}.knowledge-organize-list{display:grid;gap:8px;max-height:48vh;overflow:auto;margin:15px 0}.knowledge-organize-item{display:grid;grid-template-columns:minmax(0,1fr) minmax(150px,210px);align-items:center;gap:12px;padding:12px;border:1px solid #ece6f2;border-radius:9px}.knowledge-organize-item strong{display:block;font-size:12px}.knowledge-organize-item small{display:block;color:#8a8096;font-size:10px;line-height:1.5;margin-top:4px}.knowledge-organize-item input{min-width:0;width:100%}@media(max-width:560px){#knowledge-organize-dialog{padding:18px}.knowledge-organize-item{grid-template-columns:1fr}}
+.wiki-active-filter{display:flex;align-items:center;justify-content:space-between;gap:10px;background:#f3effb;color:#695787;border-radius:8px;padding:9px 12px;margin-bottom:13px;font-size:11px;overflow-wrap:anywhere}.wiki-active-filter button{flex:0 0 auto;border:0;background:none;color:#5940bc;font-size:11px;text-decoration:underline}
+.wiki-layout:has(.knowledge-graph){grid-template-columns:minmax(0,1fr)}.wiki-layout:has(.knowledge-graph) .ask-panel{max-width:740px}.knowledge-graph.graph-dense .graph-node-card text{opacity:0}.knowledge-graph.graph-dense .graph-node-card:hover text,.knowledge-graph.graph-dense .graph-node-card:focus-visible text,.knowledge-graph.graph-dense .graph-node-card.selected text{opacity:1}
+
+/* Interactive graph controls share the application's light palette. */
+.graph-toolbar{display:flex;align-items:center;gap:7px;flex-wrap:wrap;padding:13px 14px;background:#fff;border-bottom:1px solid #e9e3f0}
+.graph-toolbar>label{min-width:120px;flex:1 1 130px}.graph-toolbar>.graph-search{flex:2 1 185px}
+.graph-toolbar input:not([type=radio]),.graph-toolbar select{width:100%;min-height:33px;height:33px;padding:5px 9px;background:#fcfbfe;border:1px solid #e3ddeb;color:#554968;border-radius:7px;font-size:11px}
+.graph-toolbar input::placeholder{color:#9b90a8}
+.graph-toolbar button,.graph-settings>summary{background:#fff;border:1px solid #e3ddeb;border-radius:7px;padding:7px 9px;color:#695a7d;font-size:11px;line-height:1.6;white-space:nowrap;cursor:pointer}
+.graph-toolbar button[aria-pressed=true]{color:#5940bc;border-color:#bba9e9;background:#eee8fa}
+.graph-toolbar button:disabled{opacity:.45}.graph-toolbar button:hover:not(:disabled),.graph-settings>summary:hover{background:#f6f2fb}
+.graph-settings{position:relative}.graph-settings>summary{list-style:none}.graph-settings>summary::-webkit-details-marker{display:none}.graph-settings[open]{z-index:5}
+.graph-settings[open]>label,.graph-settings[open]>small{display:block;position:absolute;right:0;width:205px;background:#fff;padding:10px 13px;color:#554968;font-size:11px;box-shadow:0 8px 20px #4f3a681c}
+.graph-settings[open]>label{top:36px;border:1px solid #e3ddeb;border-bottom:0;border-radius:7px 7px 0 0}.graph-settings[open]>label input{display:block;width:100%;accent-color:#8b72cf}
+.graph-settings[open]>small{top:93px;border:1px solid #e3ddeb;border-top:0;border-radius:0 0 7px 7px;color:#877990;line-height:1.5}
+.graph-edge-membership,.graph-edge-hierarchy{stroke:#c4bbd1;stroke-opacity:.7;stroke-width:1.2}
+.graph-node-card.graph-isolated circle{fill:#dc9b42}
+.graph-node:hover text,.graph-node:focus-visible text,.graph-node.selected text{font-weight:700}
+.knowledge-graph{min-width:0;background:#fff;border:1px solid var(--line);border-radius:12px;overflow:hidden}.knowledge-graph-header{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:16px 18px;border-bottom:1px solid var(--line)}.knowledge-graph-header strong{display:block;font-size:13px}.knowledge-graph-header small{display:block;font-size:10px;color:#91849c;margin-top:3px;line-height:1.5}.graph-controls{display:flex;gap:5px;flex-shrink:0}.graph-controls button{border:1px solid #e6ddf0;background:#fff;border-radius:6px;padding:5px 8px;min-width:28px;font-size:12px;color:#735d8a}.knowledge-graph-canvas{height:520px;overflow:hidden;background:radial-gradient(circle at center,#fff 0%,#f8f6fc 100%)}.knowledge-graph-canvas svg{display:block;width:100%;height:100%;cursor:grab;touch-action:none}.knowledge-graph-canvas svg.dragging{cursor:grabbing}.graph-edge{stroke:#d9d0e5;stroke-width:1.4;pointer-events:none}.graph-edge-related{stroke:#8066d8;stroke-width:2}.graph-edge-prerequisites{stroke:#5f9c9b;stroke-width:2}.graph-edge-contrasts{stroke:#d99c6a;stroke-width:2}.graph-edge-suggested{stroke:#a9a3b3;stroke-dasharray:4 4}.graph-edge.dimmed,.graph-node.dimmed{opacity:.15}.graph-node{cursor:pointer;outline:none}.graph-node circle{fill:#896fba;stroke:#fff;stroke-width:2;transition:r .15s,fill .15s}.graph-node-topic circle{fill:#e5dcf5;stroke:#967ac5;stroke-width:2.5}.graph-node text{font-size:10px;fill:#655473;paint-order:stroke;stroke:#fff;stroke-width:2px;stroke-linejoin:round;pointer-events:none}.graph-node-topic text{font-weight:700;fill:#684c95}.graph-node:hover circle,.graph-node:focus-visible circle,.graph-node.selected circle{fill:#5940bc;stroke:#e9ddff;stroke-width:4}.graph-node:focus-visible text{font-weight:700}.graph-legend{display:flex;gap:9px 17px;flex-wrap:wrap;padding:11px 18px;border-top:1px solid var(--line);font-size:10px;color:#82738f}.graph-legend span{display:inline-flex;align-items:center;gap:6px}.graph-legend span::before{content:"";width:16px;border-top:2px solid #d9d0e5}.graph-legend-related::before{border-color:#8066d8!important}.graph-legend-prerequisites::before{border-color:#5f9c9b!important}.graph-legend-contrasts::before{border-color:#d99c6a!important}.graph-legend-suggested::before{border-color:#a9a3b3!important;border-top-style:dashed!important}.graph-selection{padding:14px 18px 18px;border-top:1px solid var(--line);min-height:68px}.graph-selection>strong{display:block;font-size:13px}.graph-selection>p{font-size:11px;color:#80728b;margin:5px 0 10px}.graph-selection .btn{min-height:34px;padding:7px 11px;font-size:11px}.graph-related{display:flex;gap:6px;flex-wrap:wrap;margin-top:12px}.graph-related button{border:1px solid #e5dfee;background:#faf8fd;border-radius:6px;padding:5px 8px;color:#685a79;font-size:10px}.graph-related small{color:#9b8ba8;font-size:9px;margin-left:4px}
+@media(max-width:560px){.wiki-view-switch button{flex:1}.wiki-directory-heading{display:block}.wiki-directory-heading small{display:block;margin-top:3px}.knowledge-graph-header{align-items:flex-start;flex-direction:column}.knowledge-graph-canvas{height:430px}.graph-controls{align-self:flex-end}}
+
+/* The canvas stays white while colored nodes and typed links remain distinct. */
+#note-results .knowledge-graph{background:#fff;border-color:#e7e1ed;color:#3e3550}
+#note-results .knowledge-graph-canvas{height:min(72vh,730px);min-height:500px;background:radial-gradient(circle at 50% 48%,#fff 0%,#faf8fd 100%)}
+#note-results .graph-edge{stroke:#c6bdd2;stroke-opacity:.75;stroke-width:1.3}
+#note-results .graph-edge-membership,#note-results .graph-edge-hierarchy{stroke:#b8aec7;stroke-opacity:.7}
+#note-results .graph-edge-related{stroke:#8066d8;stroke-opacity:.85;stroke-width:2}
+#note-results .graph-edge-prerequisites{stroke:#539a91;stroke-opacity:.85;stroke-width:2}
+#note-results .graph-edge-contrasts{stroke:#cf9362;stroke-opacity:.85;stroke-width:2}
+#note-results .graph-edge-suggested{stroke:#aaa0b7;stroke-opacity:.8;stroke-dasharray:4 4}
+#note-results .graph-node-card circle{fill:var(--node-color,#70a3e9);stroke:#fff;stroke-width:2}
+#note-results .graph-node-topic circle{fill:var(--node-color,#70a3e9);stroke:#fff;stroke-width:2.5}
+#note-results .graph-node-card.graph-isolated circle{fill:#dc9b42}
+#note-results .graph-node text{fill:#3f3550;stroke:#fff;stroke-width:3px}
+#note-results .graph-node-topic text{fill:#3f3550}
+#note-results .graph-node:hover circle,#note-results .graph-node:focus-visible circle,#note-results .graph-node.selected circle{fill:#5940bc;stroke:#e9ddff;stroke-width:4}
+.knowledge-graph-canvas{position:relative}.graph-empty{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);width:min(90%,320px);text-align:center;color:#887b95;font-size:12px;pointer-events:none}
+main:has(.knowledge-graph) .wiki-toolbar{display:none}
+@media(max-width:560px){#note-results .knowledge-graph-canvas{height:430px;min-height:430px}}
+
+/* Knowledge exploration and Q&A are separate full-width tabs. */
+html{scrollbar-gutter:stable}
+.wiki-layout{display:block}
+.knowledge-conversation{max-width:960px;margin:0 auto;padding:28px 32px}
+.knowledge-conversation .ask-heading{font-size:18px;font-weight:650;color:#5940bc}
+.knowledge-conversation>p{font-size:12px;line-height:1.8;margin:12px 0 22px}
+.knowledge-conversation textarea{min-height:140px;font-size:13px}
+.knowledge-conversation .btn{max-width:260px;margin-top:14px}
+.knowledge-conversation .grounded-answer{padding:20px;margin-top:26px}
+main:has(.knowledge-conversation) .wiki-toolbar{display:none}
+@media(max-width:560px){.knowledge-conversation{padding:22px 18px}.knowledge-conversation .btn{max-width:none}}

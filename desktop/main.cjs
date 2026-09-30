@@ -123,6 +123,7 @@ async function start() {
   handle('learnflow:save-reflection', (id, value) => learning.saveReflection(id, value));
   handle('learnflow:append-chat', (id, question, answer) => learning.appendChat(id, question, answer));
   handle('learnflow:save-note', value => learning.saveNote(value));
+  handle('learnflow:card-markdown', id => learning.cardMarkdown(id));
   const imageRequests = new Set();
   const commonsImages = createCommonsImages(modelFetch);
   const webImages = createWebImageSearch({ getConfig: () => ({ ...store.getModelConfig(), ...webSearchStore.getConfig() }), fetchImpl: modelFetch, preview: bytes => {
@@ -282,7 +283,7 @@ async function start() {
     }
   });
   handle('learnflow:request', async (endpoint, data) => {
-    if (!['status', 'plan-clarify', 'plan', 'lesson', 'lesson-outline', 'lesson-block', 'lesson-ask', 'wiki', 'ask', 'test-connection'].includes(endpoint)) throw new Error('接口不存在。');
+    if (!['status', 'plan-clarify', 'plan', 'lesson', 'lesson-outline', 'lesson-block', 'lesson-ask', 'wiki', 'wiki-draft', 'knowledge-organize', 'ask', 'test-connection'].includes(endpoint)) throw new Error('接口不存在。');
     const response = await fetch(`${base}/api/${endpoint}`, {
       method: endpoint === 'status' ? 'GET' : 'POST',
       headers: { 'Content-Type': 'application/json', 'X-Learnflow-Token': token },

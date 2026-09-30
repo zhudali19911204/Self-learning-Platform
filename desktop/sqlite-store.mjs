@@ -9,11 +9,18 @@ import { validState } from './local-store.mjs';
 import { validOutline, validBlockSpec, validBlockContent, revisedContent, restoredContent, assistedBlockTypes } from '../public/blocks.js';
 import { referencedImages } from '../public/illustrations.js';
 import { removePlanFromBackups } from './course-backups.mjs';
+import { knowledgeCardMarkdown, knowledgeGeneration, knowledgeLayoutCurrent, normalizeKnowledgeCard, readKnowledgeCard, readKnowledgeCards, recoverKnowledgeCardSwap, refreshKnowledgeCatalog, removeKnowledgeCards, replaceKnowledgeCards, saveKnowledgeCard } from './knowledge-cards.mjs';
 
 const exists = async file => { try { await stat(file); return true; } catch (error) { if (error.code === 'ENOENT') return false; throw error; } };
 const id = value => typeof value === 'string' && /^[a-zA-Z0-9_-]{1,160}$/.test(value) && !['__proto__', 'constructor', 'prototype'].includes(value);
 const text = (value, max) => typeof value === 'string' && value.length <= max;
 const fromJSON = value => JSON.parse(value);
+const noteExtras = note => Object.fromEntries(['topic', 'category', 'useWhen', 'avoidWhen', 'aliases', 'sourceLessons', 'related', 'prerequisites', 'contrasts', 'status', 'created', 'yamlExtra'].filter(key => note[key] !== undefined).map(key => [key, note[key]]));
+const noteFromRow = row => normalizeKnowledgeCard({ id: row.id, lessonId: row.lesson_id, courseTitle: row.course_title, title: row.title, summary: row.summary, content: row.content, tags: fromJSON(row.tags_json), source: row.source, updated: row.updated, ...fromJSON(row.metadata_json) });
+const insertNote = (db, note) => {
+  const n = normalizeKnowledgeCard(note);
+  db.prepare('INSERT INTO notes (id, lesson_id, course_title, title, summary, content, tags_json, source, updated, metadata_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET lesson_id=excluded.lesson_id, course_title=excluded.course_title, title=excluded.title, summary=excluded.summary, content=excluded.content, tags_json=excluded.tags_json, source=excluded.source, updated=excluded.updated, metadata_json=excluded.metadata_json').run(n.id, n.lessonId, n.courseTitle, n.title, n.summary, n.content, JSON.stringify(n.tags), n.source, n.updated, JSON.stringify(noteExtras(n)));
+};
 const fresh = () => ({ version: 1, plans: [structuredClone(demoPlan)], active: demoPlan.id, lessons: {}, progress: {}, notes: [], reflections: {}, chats: {} });
 
 function configure(db) {
@@ -30,12 +37,12 @@ function schema(db) {
     CREATE TABLE reflections (lesson_id TEXT PRIMARY KEY REFERENCES lessons(id) ON DELETE CASCADE, content TEXT NOT NULL);
     CREATE TABLE chat_messages (id INTEGER PRIMARY KEY, lesson_id TEXT NOT NULL REFERENCES lessons(id) ON DELETE CASCADE, role TEXT NOT NULL CHECK(role IN ('user','assistant')), content TEXT NOT NULL);
     CREATE INDEX chat_by_lesson ON chat_messages(lesson_id, id);
-    CREATE TABLE notes (id TEXT PRIMARY KEY, lesson_id TEXT NOT NULL REFERENCES lessons(id) ON DELETE CASCADE, course_title TEXT NOT NULL, title TEXT NOT NULL, summary TEXT NOT NULL, content TEXT NOT NULL, tags_json TEXT NOT NULL, source TEXT NOT NULL, updated INTEGER NOT NULL);
+    CREATE TABLE notes (id TEXT PRIMARY KEY, lesson_id TEXT NOT NULL REFERENCES lessons(id) ON DELETE CASCADE, course_title TEXT NOT NULL, title TEXT NOT NULL, summary TEXT NOT NULL, content TEXT NOT NULL, tags_json TEXT NOT NULL, source TEXT NOT NULL, updated INTEGER NOT NULL, metadata_json TEXT NOT NULL DEFAULT '{}');
     CREATE INDEX notes_by_updated ON notes(updated DESC);
     CREATE TABLE lesson_outlines (lesson_id TEXT PRIMARY KEY REFERENCES lessons(id) ON DELETE CASCADE, intro TEXT NOT NULL);
     CREATE TABLE lesson_blocks (id TEXT PRIMARY KEY, lesson_id TEXT NOT NULL REFERENCES lessons(id) ON DELETE CASCADE, position INTEGER NOT NULL, type TEXT NOT NULL, title TEXT NOT NULL, objective TEXT NOT NULL, content_json TEXT);
     CREATE INDEX blocks_by_lesson ON lesson_blocks(lesson_id, position);
-    PRAGMA user_version = 2;
+    PRAGMA user_version = 3;
   `);
 }
 
@@ -54,7 +61,6 @@ function replaceAll(db, state) {
     const progressStatement = db.prepare('INSERT INTO progress VALUES (?, ?, ?, ?, ?, ?, ?)');
     const reflectionStatement = db.prepare('INSERT INTO reflections VALUES (?, ?)');
     const chatStatement = db.prepare('INSERT INTO chat_messages (lesson_id, role, content) VALUES (?, ?, ?)');
-    const noteStatement = db.prepare('INSERT INTO notes VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)');
     for (const [position, plan] of state.plans.entries()) {
       planStatement.run(plan.id, position, plan.title, plan.description, plan.goal, plan.level, plan.daily, plan.days, plan.source);
       if (plan.learningBrief) db.prepare('INSERT INTO meta VALUES (?, ?)').run(`plan_brief:${plan.id}`, JSON.stringify(plan.learningBrief));
@@ -66,7 +72,7 @@ function replaceAll(db, state) {
     for (const [lessonId, progress] of Object.entries(state.progress)) progressStatement.run(lessonId, Number(progress.completed), progress.attempts, progress.lastScore, progress.bestScore, JSON.stringify(progress.lastAnswers), progress.updated ?? null);
     for (const [lessonId, reflection] of Object.entries(state.reflections)) reflectionStatement.run(lessonId, reflection);
     for (const [lessonId, messages] of Object.entries(state.chats || {})) for (const message of messages) chatStatement.run(lessonId, message.role, message.content);
-    for (const note of state.notes) noteStatement.run(note.id, note.lessonId, note.courseTitle, note.title, note.summary, note.content, JSON.stringify(note.tags), note.source, note.updated);
+    for (const note of state.notes) insertNote(db, note);
     const outlineStatement = db.prepare('INSERT INTO lesson_outlines VALUES (?, ?)');
     const blockStatement = db.prepare('INSERT INTO lesson_blocks VALUES (?, ?, ?, ?, ?, ?, ?)');
     for (const [lessonId, course] of Object.entries(state.blockCourses || {})) {
@@ -74,11 +80,12 @@ function replaceAll(db, state) {
       for (const [position, block] of course.blocks.entries()) blockStatement.run(block.id, lessonId, position, block.type, block.title, block.objective, block.content ? JSON.stringify(block.content) : null);
     }
     db.prepare('INSERT INTO meta VALUES (?, ?)').run('active_plan', state.active);
+    db.prepare('INSERT INTO meta VALUES (?, ?)').run('knowledge_generation', randomUUID());
   });
 }
 
 function checkDatabase(db) {
-  if (db.prepare('PRAGMA user_version').get().user_version !== 2) throw new Error('学习数据库版本不受支持，原文件已保留。');
+  if (db.prepare('PRAGMA user_version').get().user_version !== 3) throw new Error('学习数据库版本不受支持，原文件已保留。');
   if (db.prepare('PRAGMA integrity_check').get().integrity_check !== 'ok' || db.prepare('PRAGMA foreign_key_check').all().length) throw new Error('学习数据库校验失败，原文件已保留。');
 }
 
@@ -92,7 +99,7 @@ function readOverview(db) {
   for (const row of db.prepare('SELECT id, plan_id, title, objective, phase, minutes, tags_json FROM lessons ORDER BY plan_id, position').all()) byId.get(row.plan_id).lessons.push({ id: row.id, title: row.title, objective: row.objective, phase: row.phase, minutes: row.minutes, tags: fromJSON(row.tags_json) });
   const progress = {};
   for (const row of db.prepare('SELECT * FROM progress').all()) progress[row.lesson_id] = { completed: !!row.completed, attempts: row.attempts, lastScore: row.last_score, bestScore: row.best_score, lastAnswers: fromJSON(row.last_answers_json), ...(row.updated === null ? {} : { updated: row.updated }) };
-  const notes = db.prepare('SELECT * FROM notes ORDER BY rowid').all().map(row => ({ id: row.id, lessonId: row.lesson_id, courseTitle: row.course_title, title: row.title, summary: row.summary, content: row.content, tags: fromJSON(row.tags_json), source: row.source, updated: row.updated }));
+  const notes = db.prepare('SELECT * FROM notes ORDER BY rowid').all().map(noteFromRow);
   return { version: 1, plans, active: db.prepare("SELECT value FROM meta WHERE key = 'active_plan'").get()?.value || plans[0]?.id, lessons: {}, progress, notes, reflections: {}, chats: {} };
 }
 
@@ -105,6 +112,21 @@ function readExport(db) {
   for (const row of db.prepare('SELECT id, lesson_id, type, title, objective, content_json FROM lesson_blocks ORDER BY lesson_id, position').all()) state.blockCourses[row.lesson_id].blocks.push({ id: row.id, type: row.type, title: row.title, objective: row.objective, content: row.content_json ? fromJSON(row.content_json) : null });
   if (!validState(state)) throw new Error('学习数据库导出校验失败。');
   return state;
+}
+
+function syncKnowledgeIndex(db, directory) {
+  const generation = db.prepare("SELECT value FROM meta WHERE key = 'knowledge_generation'").get()?.value;
+  if (!generation) throw new Error('知识卡片目录尚未完成迁移。');
+  if (knowledgeGeneration(directory) !== generation) {
+    replaceKnowledgeCards(directory, readOverview(db).notes, generation);
+    return;
+  }
+  const files = readKnowledgeCards(directory);
+  transaction(db, () => {
+    for (const row of db.prepare('SELECT id FROM notes').all()) if (!files.has(row.id)) db.prepare('DELETE FROM notes WHERE id = ?').run(row.id);
+    for (const { note } of files.values()) insertNote(db, note);
+  });
+  readExport(db);
 }
 
 export async function createSqliteStore(directory) {
@@ -124,7 +146,7 @@ export async function createSqliteStore(directory) {
       configure(candidate); schema(candidate); replaceAll(candidate, state); checkDatabase(candidate);
       const restored = readExport(candidate);
       for (const key of Object.keys(restored.lessons)) if (!Object.hasOwn(state.lessons, key)) delete restored.lessons[key];
-      const expected = { ...state, chats: state.chats || {} };
+      const expected = { ...state, notes: state.notes.map(normalizeKnowledgeCard), chats: state.chats || {} };
       if (expected.blockCourses && !Object.keys(expected.blockCourses).length) delete expected.blockCourses;
       if (!isDeepStrictEqual(restored, expected)) throw new Error('旧学习数据回读校验失败，原文件已保留。');
     } finally { candidate.close(); }
@@ -150,7 +172,39 @@ export async function createSqliteStore(directory) {
         PRAGMA user_version = 2;
       `));
     }
+    if (db.prepare('PRAGMA user_version').get().user_version === 2) {
+      if (db.prepare('PRAGMA integrity_check').get().integrity_check !== 'ok' || db.prepare('PRAGMA foreign_key_check').all().length) throw new Error('原学习数据库校验失败，未迁移。');
+      const folder = path.join(directory, 'backups'); await mkdir(folder, { recursive: true });
+      const target = path.join(folder, `before-schema-v3-${new Date().toISOString().replace(/[:.]/g, '-')}-${randomUUID()}.sqlite`);
+      await backup(db, target);
+      const copy = new DatabaseSync(target, { readOnly: true });
+      try { if (copy.prepare('PRAGMA user_version').get().user_version !== 2 || copy.prepare('PRAGMA integrity_check').get().integrity_check !== 'ok') throw new Error('知识卡片迁移前备份校验失败。'); }
+      finally { copy.close(); }
+      transaction(db, () => {
+        if (!db.prepare('PRAGMA table_info(notes)').all().some(column => column.name === 'metadata_json')) db.exec("ALTER TABLE notes ADD COLUMN metadata_json TEXT NOT NULL DEFAULT '{}'");
+        db.exec('PRAGMA user_version = 3');
+      });
+    }
     checkDatabase(db);
+    recoverKnowledgeCardSwap(directory);
+    let generation = db.prepare("SELECT value FROM meta WHERE key = 'knowledge_generation'").get()?.value;
+    if (!generation) {
+      if (db.prepare('SELECT COUNT(*) AS count FROM notes').get().count) {
+        const folder = path.join(directory, 'backups'); await mkdir(folder, { recursive: true });
+        const target = path.join(folder, `before-knowledge-v1-${new Date().toISOString().replace(/[:.]/g, '-')}-${randomUUID()}.sqlite`);
+        await backup(db, target);
+        const copy = new DatabaseSync(target, { readOnly: true });
+        try { checkDatabase(copy); } finally { copy.close(); }
+      }
+      generation = randomUUID();
+      replaceKnowledgeCards(directory, readOverview(db).notes, generation);
+      db.prepare("INSERT INTO meta (key, value) VALUES ('knowledge_generation', ?)").run(generation);
+    } else if (knowledgeGeneration(directory) !== generation) {
+      // An import or route deletion committed before the Markdown directory was refreshed.
+      replaceKnowledgeCards(directory, readOverview(db).notes, generation);
+    } else syncKnowledgeIndex(db, directory);
+    if (!knowledgeLayoutCurrent(directory)) replaceKnowledgeCards(directory, readOverview(db).notes, generation);
+    refreshKnowledgeCatalog(directory);
   }
   catch (error) { db.close(); throw error; }
   const lessonExists = db.prepare('SELECT 1 FROM lessons WHERE id = ?');
@@ -165,8 +219,8 @@ export async function createSqliteStore(directory) {
     const blockCourse = outline ? { intro: outline.intro, blocks: db.prepare('SELECT id, type, title, objective, content_json FROM lesson_blocks WHERE lesson_id = ? ORDER BY position').all(lessonId).map(block => ({ id: block.id, type: block.type, title: block.title, objective: block.objective, content: block.content_json ? fromJSON(block.content_json) : null })) } : null;
     return { lesson: row.content_json ? fromJSON(row.content_json) : null, blockCourse, reflection, chats };
   }
-  const exportState = () => readExport(db);
-  function planDeletionPreview(planId) {
+  const exportState = () => { syncKnowledgeIndex(db, directory); return readExport(db); };
+  function readPlanDeletionPreview(planId) {
     if (!id(planId)) throw new Error('学习路线不存在。');
     const plan = db.prepare('SELECT title FROM plans WHERE id = ?').get(planId);
     if (!plan) throw new Error('学习路线不存在。');
@@ -177,8 +231,10 @@ export async function createSqliteStore(directory) {
       notes: db.prepare('SELECT COUNT(*) AS count FROM notes WHERE lesson_id IN (SELECT id FROM lessons WHERE plan_id = ?)').get(planId).count
     };
   }
+  function planDeletionPreview(planId) { syncKnowledgeIndex(db, directory); return readPlanDeletionPreview(planId); }
   return {
     filename, overview, getLesson, exportState, planDeletionPreview,
+    cardMarkdown(id) { if (!db.prepare('SELECT 1 FROM notes WHERE id = ?').get(id)) throw new Error('知识卡片不存在。'); return knowledgeCardMarkdown(directory, id); },
     savePlan(plan) {
       if (!validState({ version: 1, plans: [plan], active: plan.id, lessons: {}, progress: {}, notes: [], reflections: {}, chats: {} })) throw new Error('学习路线格式不正确。');
       transaction(db, () => {
@@ -196,16 +252,19 @@ export async function createSqliteStore(directory) {
     async deletePlan(planId) {
       planDeletionPreview(planId);
       const lessonIds = db.prepare('SELECT id FROM lessons WHERE plan_id = ?').all(planId).map(row => row.id);
+      const noteIds = db.prepare('SELECT id FROM notes WHERE lesson_id IN (SELECT id FROM lessons WHERE plan_id = ?)').all(planId).map(row => row.id);
       const beforeImages = referencedImages(exportState());
       transaction(db, () => {
-        planDeletionPreview(planId);
+        readPlanDeletionPreview(planId);
         const current = db.prepare("SELECT value FROM meta WHERE key = 'active_plan'").get()?.value;
         const next = current === planId ? db.prepare('SELECT id FROM plans WHERE id <> ? ORDER BY position LIMIT 1').get(planId)?.id : current;
         db.prepare('DELETE FROM plans WHERE id = ?').run(planId);
         db.prepare('DELETE FROM meta WHERE key = ?').run(`plan_brief:${planId}`);
+        db.prepare("UPDATE meta SET value = ? WHERE key = 'knowledge_generation'").run(randomUUID());
         db.prepare("UPDATE meta SET value = ? WHERE key = 'active_plan'").run(next);
         for (const [position, row] of db.prepare('SELECT id FROM plans ORDER BY position').all().entries()) db.prepare('UPDATE plans SET position = ? WHERE id = ?').run(position, row.id);
       });
+      removeKnowledgeCards(directory, noteIds, db.prepare("SELECT value FROM meta WHERE key = 'knowledge_generation'").get().value, db.prepare('SELECT COUNT(*) AS count FROM notes').get().count);
       const remainingImages = new Set(referencedImages(exportState()));
       const imageIds = beforeImages.filter(imageId => !remainingImages.has(imageId));
       const backups = await removePlanFromBackups(directory, planId);
@@ -310,11 +369,16 @@ export async function createSqliteStore(directory) {
       });
     },
     saveNote(note) {
-      if (!note || !id(note.id) || !id(note.lessonId) || !text(note.title, 160) || !text(note.summary, 500) || !text(note.content, 20000) || !text(note.courseTitle, 160) || !['ai', 'demo'].includes(note.source) || !Number.isFinite(note.updated) || !Array.isArray(note.tags) || note.tags.length > 6 || !note.tags.every(tag => text(tag, 200))) throw new Error('知识卡片格式不正确。');
-      requireLesson(note.lessonId);
-      db.prepare('INSERT INTO notes VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET title=excluded.title, summary=excluded.summary, content=excluded.content, tags_json=excluded.tags_json, updated=excluded.updated').run(note.id, note.lessonId, note.courseTitle, note.title, note.summary, note.content, JSON.stringify(note.tags), note.source, note.updated);
+      const normalized = normalizeKnowledgeCard(note);
+      requireLesson(normalized.lessonId);
+      const indexed = db.prepare('SELECT * FROM notes WHERE id = ?').get(normalized.id);
+      const old = indexed ? noteFromRow(indexed) : null;
+      const onDisk = readKnowledgeCard(directory, normalized.id, old?.topic);
+      if ((indexed && !onDisk) || (!indexed && onDisk) || (indexed && onDisk && !isDeepStrictEqual(noteFromRow(indexed), onDisk))) throw new Error('知识卡片文件已在应用外修改，请重启应用后再编辑。');
+      saveKnowledgeCard(directory, normalized, saved => insertNote(db, saved), old?.topic);
     },
     async backupBeforeImport() {
+      syncKnowledgeIndex(db, directory);
       const folder = path.join(directory, 'backups'); await mkdir(folder, { recursive: true });
       const target = path.join(folder, `before-import-${new Date().toISOString().replace(/[:.]/g, '-')}-${randomUUID()}.sqlite`);
       await backup(db, target);
@@ -322,7 +386,11 @@ export async function createSqliteStore(directory) {
       try { checkDatabase(copy); } finally { copy.close(); }
       return target;
     },
-    replaceState(state) { replaceAll(db, state); checkDatabase(db); return overview(); },
+    replaceState(state) {
+      replaceAll(db, state); checkDatabase(db);
+      replaceKnowledgeCards(directory, readOverview(db).notes, db.prepare("SELECT value FROM meta WHERE key = 'knowledge_generation'").get().value);
+      return overview();
+    },
     close() { db.close(); }
   };
 }

@@ -13,6 +13,10 @@ import { validQuestionnaire, validClarification, learningBriefFrom } from '../pu
 import { questionnaire, clarification } from '../test-support/planning.mjs';
 import { validIllustration, validImageProposal } from '../public/illustrations.js';
 import { speechDefaults, speechVoices, listeningText, speechTurns, speechRequest, validAudioId } from '../public/speech.js';
+import { validKnowledgeSource, validKnowledgeDraft, localKnowledgeDraft, knowledgeTags, knowledgeConditions } from '../public/knowledge-draft.js';
+import { knowledgeCatalog, knowledgeDomain, knowledgeTopic, retrieveKnowledge, validKnowledgeOrganization } from '../public/knowledge-index.js';
+import { courseKnowledgeTree, knowledgeTree, knowledgeGraph, filterKnowledgeGraph } from '../public/knowledge-views.js';
+import { createGraphMotion, stepGraphMotion } from '../public/graph-motion.js';
 const DOMPurify = createDOMPurify(new JSDOM('').window);
 const source = (await readFile(new URL('../public/app.js', import.meta.url), 'utf8')).replace(/^import .* from '\.\/[^']+';$/gm, '');
 
@@ -406,12 +410,14 @@ test('image settings save failures expose the cause in both notices and preserve
 // This harness checks application state transitions, not browser rendering.
 // Keyless-form regressions need real elements.namedItem() and actual FormData.
 function realSettingsHarness(bridge) {
-  const dom = new JSDOM('<div id="app"></div><div id="toast"></div>', { url: 'http://localhost' });
+  const dom = new JSDOM('<div id="app"></div><div id="toast"></div><dialog id="knowledge-draft-dialog"></dialog><dialog id="knowledge-organize-dialog"></dialog>', { url: 'http://localhost' });
   const document = dom.window.document, listeners = new Map();
+  document.querySelector('#knowledge-organize-dialog').showModal = function () { this.open = true; };
+  document.querySelector('#knowledge-organize-dialog').close = function () { this.open = false; };
   document.addEventListener = (name, listener) => { const group = listeners.get(name) || []; group.push(listener); listeners.set(name, group); };
   dom.window.learnflowDesktop = bridge; dom.window.scrollTo = () => {};
   const context = vm.createContext({
-    demoPlan, demoLessons, lessonFromBlocks, validOutline, validBlockContent, validBlockSpec, blockGenerationContext, revisedContent, restoredContent, assistedBlockTypes, Marked, DOMPurify, createMarkdownRenderer, validQuestionnaire, validClarification, learningBriefFrom, validIllustration, validImageProposal, speechDefaults, speechVoices, listeningText, speechTurns, speechRequest, validAudioId, structuredClone, crypto: webcrypto, AbortSignal,
+    demoPlan, demoLessons, lessonFromBlocks, validOutline, validBlockContent, validBlockSpec, blockGenerationContext, revisedContent, restoredContent, assistedBlockTypes, Marked, DOMPurify, createMarkdownRenderer, validQuestionnaire, validClarification, learningBriefFrom, validIllustration, validImageProposal, speechDefaults, speechVoices, listeningText, speechTurns, speechRequest, validAudioId, validKnowledgeSource, validKnowledgeDraft, localKnowledgeDraft, knowledgeTags, knowledgeConditions, knowledgeCatalog, knowledgeDomain, knowledgeTopic, retrieveKnowledge, validKnowledgeOrganization, courseKnowledgeTree, knowledgeTree, knowledgeGraph, filterKnowledgeGraph, createGraphMotion, stepGraphMotion, structuredClone, crypto: webcrypto, AbortSignal,
     document, window: dom.window, FormData: dom.window.FormData, setTimeout: () => 1, clearTimeout() {}
   });
   vm.runInContext(source, context);
@@ -428,7 +434,7 @@ function harness(saved, fetchImpl, desktopBridge) {
     return nodes.get(selector);
   };
   const context = vm.createContext({
-    demoPlan, demoLessons, lessonFromBlocks, validOutline, validBlockContent, validBlockSpec, blockGenerationContext, revisedContent, restoredContent, assistedBlockTypes, Marked, DOMPurify, createMarkdownRenderer, validQuestionnaire, validClarification, learningBriefFrom, validIllustration, validImageProposal, speechDefaults, speechVoices, listeningText, speechTurns, speechRequest, validAudioId, structuredClone, crypto: webcrypto, AbortSignal,
+    demoPlan, demoLessons, lessonFromBlocks, validOutline, validBlockContent, validBlockSpec, blockGenerationContext, revisedContent, restoredContent, assistedBlockTypes, Marked, DOMPurify, createMarkdownRenderer, validQuestionnaire, validClarification, learningBriefFrom, validIllustration, validImageProposal, speechDefaults, speechVoices, listeningText, speechTurns, speechRequest, validAudioId, validKnowledgeSource, validKnowledgeDraft, localKnowledgeDraft, knowledgeTags, knowledgeConditions, knowledgeCatalog, knowledgeDomain, knowledgeTopic, retrieveKnowledge, validKnowledgeOrganization, courseKnowledgeTree, knowledgeTree, knowledgeGraph, filterKnowledgeGraph, createGraphMotion, stepGraphMotion, structuredClone, crypto: webcrypto, AbortSignal,
     document: { querySelector: node, addEventListener(name, listener) { const group = listeners.get(name) || []; group.push(listener); listeners.set(name, group); } },
     localStorage: { get length() { return storage.size; }, key: index => [...storage.keys()][index] ?? null, getItem: key => storage.get(key) ?? null, setItem: (key, value) => storage.set(key, value), removeItem: key => storage.delete(key) },
     window: { learnflowDesktop: desktopBridge, scrollY: 0, scrollTo({ top }) { this.scrollY = top; }, confirm: () => true }, setTimeout: () => 1, clearTimeout() {},
@@ -455,16 +461,17 @@ test('learning loop: incorrect answers, retry, completion, Wiki creation, edit a
   assert.equal(app.run('state.progress.p1.completed'), false);
   assert.equal(app.run('state.progress.p1.lastScore'), 0);
   assert.equal(app.run('state.progress.p1.attempts'), 1);
-  await assert.rejects(app.run("createNote('p1')"), /通过/);
+  await app.run("createNote('p1', '', '0')");
+  assert.equal(app.run('state.notes.length'), 0, 'draft must not save before confirmation');
+  await app.submit('knowledge-draft-form', { title: '输入输出基础', summary: '理解输出', content: '## 输出\n\nprint 显示内容。', tags: 'Python，输入输出', useWhen: '显示结果', avoidWhen: '' });
+  assert.equal(app.run('state.notes.length'), 1, 'cards can be saved before passing the quiz');
   await app.submit('quiz-form', { q0: '1', q1: '1' }, 'p1');
   assert.equal(app.run('state.progress.p1.completed'), true);
   assert.equal(app.run('state.progress.p1.bestScore'), 100);
-  app.run("state.reflections.p1 = '我理解了字符串与计算表达式的区别';");
   await app.run("createNote('p1')");
   assert.equal(app.run('state.notes.length'), 1);
-  assert.match(app.run('state.notes[0].content'), /我理解了字符串/);
-  await app.run("createNote('p1')");
-  assert.equal(app.run('state.notes.length'), 1, 'repeated clicks must not duplicate cards');
+  await app.submit('knowledge-draft-form', { title: '整课要点', summary: '课程要点', content: '## 本课\n\n学习输入输出。', tags: 'Python', useWhen: '', avoidWhen: '' });
+  assert.equal(app.run('state.notes.length'), 2, 'one lesson can contain multiple cards');
   const id = app.run('state.notes[0].id');
   await app.submit('note-form', { title: '我的输入输出笔记', summary: '用自己的话理解 print', content: 'print 会显示内容，字符串原样显示。', tags: 'Python，输入输出，Python' }, id);
   assert.equal(app.run('state.notes[0].title'), '我的输入输出笔记');
@@ -476,6 +483,65 @@ test('learning loop: incorrect answers, retry, completion, Wiki creation, edit a
   assert.equal(app.run('state.progress.p1.completed'), true, 'review mistakes do not delete prior mastery');
   assert.equal(app.run('state.progress.p1.bestScore'), 100);
   assert.equal(app.run('state.progress.p1.lastScore'), 0);
+});
+test('study card drafting is scoped, editable and does not save when desktop persistence fails', async () => {
+  let writes = 0;
+  const app = harness(null, null, { load: async () => ({ status: { mode: 'demo' } }), saveNote: async () => { writes++; throw new Error('磁盘写入失败'); } });
+  await Promise.resolve();
+  await app.run("createNote('p1', '', '0')");
+  assert.equal(app.run('knowledgeDraft.source.sourceTitle'), demoLessons.p1.sections[0].heading);
+  assert.equal(app.run('state.notes.length'), 0);
+  assert.match(app.node('#knowledge-draft-dialog').innerHTML, /确认保存卡片/);
+  await app.submit('knowledge-draft-form', { title: '输出', summary: '解释输出', content: '## 具体解释\n\nprint 显示内容。', tags: 'Python', useWhen: '显示结果', avoidWhen: '' });
+  assert.equal(writes, 1);
+  assert.equal(app.run('state.notes.length'), 0);
+  assert.equal(app.node('#knowledge-draft-dialog').open, true);
+  assert.match(app.node('#knowledge-draft-dialog').innerHTML, /磁盘写入失败/);
+});
+
+test('editing an existing desktop card does not claim a topic move succeeded when writing fails', async () => {
+  const app = harness(null, null, { load: async () => ({ status: { mode: 'demo' } }), saveNote: async () => { throw new Error('主题目录写入失败'); } });
+  await Promise.resolve();
+  app.run("state.notes = [{id:'note-1',lessonId:'p1',courseTitle:'Python',title:'原标题',summary:'摘要',content:'原正文',tags:['Python'],source:'demo',topic:'编程/Python',updated:1}]; activeNote='note-1'; page='wiki'; render()");
+  await app.submit('note-form', { title: '新标题', summary: '摘要', content: '新正文', tags: 'Python', topic: '开发工具/Git', useWhen: '', avoidWhen: '' }, 'note-1');
+  assert.equal(app.run('state.notes[0].title'), '原标题');
+  assert.equal(app.run('state.notes[0].topic'), '编程/Python');
+  assert.match(app.node('#toast').textContent, /主题目录写入失败/);
+});
+
+test('reading UI exposes section card actions and saves only after reviewing the dialog', async t => {
+  const saved = [];
+  const app = realSettingsHarness({ load: async () => ({ status: { mode: 'demo' } }), saveNote: async note => { saved.push(note); } });
+  t.after(() => app.close()); await app.ready();
+  const dialog = app.document.getElementById('knowledge-draft-dialog');
+  dialog.showModal = () => { dialog.open = true; };
+  dialog.close = () => { dialog.open = false; };
+  app.run("activeLesson='p1'; page='study'; lessonTab='read'; render()");
+  const sectionButton = app.document.querySelector('.reading-section [data-action="create-note"]');
+  assert.ok(sectionButton);
+  assert.ok(app.document.querySelector('.knowledge-entry-toolbar [data-action="create-note"]'));
+  await app.fire('click', sectionButton);
+  assert.equal(saved.length, 0);
+  assert.equal(dialog.open, true);
+  const form = app.document.getElementById('knowledge-draft-form');
+  assert.ok(form);
+  form.elements.namedItem('title').value = '我的第一张卡片';
+  form.elements.namedItem('topic').value = '编程/Python';
+  form.elements.namedItem('useWhen').value = '需要解释本节概念时';
+  await app.fire('submit', form);
+  assert.equal(saved.length, 1);
+  assert.equal(saved[0].title, '我的第一张卡片');
+  assert.equal(saved[0].topic, '编程/Python');
+  assert.deepEqual(saved[0].useWhen, ['需要解释本节概念时']);
+  assert.equal(app.run('state.notes.length'), 1);
+});
+
+test('block knowledge source uses the selected generated block and rejects pending blocks', () => {
+  const app = harness();
+  app.run("state.blockCourses.p1 = { intro: '导语', blocks: [{ id: 'one', type: 'reading', title: '变量', objective: '理解变量', content: { text: '## 定义\\n\\n变量保存值。' } }, { id: 'two', type: 'example', title: '案例', objective: '看懂案例' }] }; state.lessons = {};");
+  assert.equal(app.run("knowledgeSource('p1', 'one').sourceTitle"), '变量');
+  assert.match(app.run("knowledgeSource('p1', 'one').sourceText"), /变量保存值/);
+  assert.throws(() => app.run("knowledgeSource('p1', 'two')"), /尚未生成/);
 });
 test('new learning clarifies before planning, preserves answers on failure, and persists the confirmed brief', async () => {
   const calls = [];
@@ -805,6 +871,7 @@ test('all pages render with empty and populated state; untrusted content is esca
   }
   app.run("state.reflections.p1 = '<script>alert(1)</script>'; state.progress.p1 = { completed: true };");
   await app.run("createNote('p1')");
+  await app.submit('knowledge-draft-form', { title: '测试', summary: '测试', content: '<script>alert(1)</script>', tags: 'Python', useWhen: '', avoidWhen: '' });
   assert.ok(!app.node('#app').innerHTML.includes('<script>'));
   assert.ok(app.node('#app').innerHTML.includes('&lt;script&gt;'));
   for (const page of ['home', 'routes', 'study', 'practice', 'wiki', 'settings']) app.run(`navigate('${page}')`);
@@ -819,11 +886,182 @@ test('offline Wiki retrieval finds relevant notes and labels results honestly', 
   const app = harness();
   app.run("state.progress.p1 = { completed: true }; status = { mode: 'demo' };");
   await app.run("createNote('p1')");
+  await app.submit('knowledge-draft-form', { title: '输出', summary: '输出', content: 'print 输出内容', tags: 'Python', useWhen: '', avoidWhen: '' });
   await app.submit('ask-form', { question: 'print' });
   assert.equal(app.run('answer.demo'), true);
   assert.equal(app.run('answer.citations.length'), 1);
   await app.submit('ask-form', { question: 'nonexistentkeyword' });
   assert.equal(app.run('answer.citations.length'), 0);
+});
+
+test('Wiki AI question selects an older relevant card through the catalog instead of the newest 30', async () => {
+  const requests = [];
+  const app = harness(null, async (url, init) => {
+    if (url === '/api/status') return { ok: true, json: async () => ({ mode: 'ai' }) };
+    requests.push(JSON.parse(init.body));
+    return { ok: true, json: async () => ({ answer: '根据 Git 卡片配置身份。', citations: ['old-git'] }) };
+  });
+  const notes = [{ id: 'old-git', lessonId: 'p1', courseTitle: 'Git', title: 'Git 全局身份配置', summary: '设置 user.email', content: 'git config --global user.email', tags: ['Git'], topic: '开发工具/Git', source: 'demo', updated: 1 }, ...Array.from({ length: 35 }, (_, index) => ({ id: `later-${index}`, lessonId: 'p1', courseTitle: '其他', title: `其他卡片 ${index}`, summary: '其他内容', content: '无关正文', tags: ['其他'], topic: '其他', source: 'demo', updated: index + 2 }))];
+  app.run(`state.notes = ${JSON.stringify(notes)}; status = { mode: 'ai' };`);
+  await app.submit('ask-form', { question: 'Git user.email 怎么配置？' });
+  assert.equal(requests.length, 1);
+  assert.deepEqual(requests[0].notes.map(note => note.id), ['old-git']);
+  assert.equal(app.run('answer.citations[0]'), 'old-git');
+});
+
+test('knowledge directory nests cards under broad domains, courses and shared themes', async t => {
+  const app = realSettingsHarness({ load: async () => ({ status: { mode: 'demo' } }) });
+  t.after(() => app.close()); await app.ready();
+  const plans = [
+    { id: 'git-course', title: 'Windows Git 入门', lessons: [{ id: 'git-lesson', title: '安装与配置', tags: ['Git'] }] },
+    { id: 'sql-course', title: 'SQL 查询入门', lessons: [{ id: 'sql-lesson', title: '查询', tags: ['SQL'] }] }
+  ];
+  const notes = [
+    { id: 'git-install', lessonId: 'git-lesson', courseTitle: '旧 Git 标题', title: '安装 Git', summary: '安装', content: '安装步骤', tags: ['Git安装'], topic: 'Git安装', updated: 1 },
+    { id: 'git-check', lessonId: 'git-lesson', courseTitle: '旧 Git 标题', title: '验证 Git', summary: '验证', content: 'git --version', tags: ['Git安装'], topic: '未分类', updated: 2 },
+    { id: 'git-config', lessonId: 'git-lesson', courseTitle: '旧 Git 标题', title: '配置身份', summary: '身份', content: 'user.email', tags: ['Git'], topic: 'Git', updated: 3 },
+    { id: 'sql', lessonId: 'sql-lesson', courseTitle: 'SQL 查询入门', title: 'SELECT', summary: '查询', content: 'SELECT *', tags: ['SQL'], topic: '查询语法', updated: 4 }
+  ];
+  app.run(`state.plans = ${JSON.stringify(plans)}; state.notes = ${JSON.stringify(notes)}; page = 'wiki'; render()`);
+  assert.deepEqual([...app.document.querySelectorAll('.wiki-tree-domain>.wiki-tree-folder-heading>.wiki-tree-folder-toggle .wiki-tree-topic')].map(node => node.textContent), ['技术与开发', '数据与分析']);
+  assert.equal(app.document.querySelectorAll('.wiki-tree-course').length, 2);
+  assert.match(app.document.querySelector('.wiki-tree-course .wiki-tree-topic').textContent, /Windows Git 入门/);
+  const git = app.document.querySelector('.wiki-tree-course');
+  assert.deepEqual([...git.querySelectorAll('.wiki-tree-theme>.wiki-tree-folder-heading>.wiki-tree-folder-toggle .wiki-tree-topic')].map(node => node.textContent), ['Git安装', '课程要点']);
+  assert.equal(git.querySelectorAll('.wiki-tree-card').length, 3);
+  assert.equal(app.document.querySelector('.note-grid'), null, 'cards are not repeated in a flat grid');
+  const theme = git.querySelector('.wiki-tree-theme>.wiki-tree-folder-heading>.wiki-tree-folder-toggle');
+  assert.equal(theme.getAttribute('aria-expanded'), 'false');
+  await app.fire('click', theme);
+  assert.equal(theme.getAttribute('aria-expanded'), 'true');
+  assert.equal(theme.closest('.wiki-tree-folder').querySelector('.wiki-tree-children').hidden, false);
+  const search = app.document.querySelector('#wiki-search'); search.value = 'user.email';
+  await app.fire('input', search);
+  assert.equal(app.document.querySelectorAll('.wiki-tree-course').length, 1);
+  assert.equal(app.document.querySelectorAll('.wiki-tree-card').length, 1);
+  assert.match(app.document.querySelector('.wiki-tree-card').textContent, /配置身份/);
+});
+
+test('AI course organization requests only after a click and saves edited suggestions only after confirmation', async t => {
+  const requests = [], saves = [];
+  const app = realSettingsHarness({ load: async () => ({ status: { mode: 'ai' } }), request: async (path, input) => {
+    requests.push({ path, input }); return { groups: [{ name: 'Git 基础', ids: ['install', 'verify'] }] };
+  }, saveNote: async note => { saves.push(note); } });
+  t.after(() => app.close()); await app.ready();
+  const plans = [{ id: 'git-course', title: 'Windows Git 入门', lessons: [{ id: 'git-lesson', title: '安装 Git' }] }];
+  const notes = [
+    { id: 'install', lessonId: 'git-lesson', courseTitle: 'Windows Git 入门', title: '安装 Git', summary: '安装步骤', content: '步骤', tags: ['Git'], topic: '安装', updated: 1 },
+    { id: 'verify', lessonId: 'git-lesson', courseTitle: 'Windows Git 入门', title: '验证 Git', summary: '检查版本', content: 'git --version', tags: ['Git'], topic: '验证', updated: 2 }
+  ];
+  app.run(`state.plans = ${JSON.stringify(plans)}; state.notes = ${JSON.stringify(notes)}; page = 'wiki'; render()`);
+  await app.fire('click', app.document.querySelector('[data-action="open-organize"]'));
+  assert.equal(requests.length, 0);
+  assert.equal(saves.length, 0);
+  await app.fire('click', app.document.querySelector('[data-action="generate-organize"]'));
+  assert.equal(requests.length, 1);
+  assert.equal(requests[0].path, 'knowledge-organize');
+  assert.deepEqual(requests[0].input.cards.map(card => Object.keys(card).sort()), [
+    ['id', 'summary', 'tags', 'title'], ['id', 'summary', 'tags', 'title']
+  ]);
+  assert.equal(saves.length, 0);
+  const form = app.document.querySelector('#knowledge-organize-form');
+  form.elements.namedItem('category:verify').value = '安装与验证';
+  await app.fire('submit', form);
+  assert.equal(saves.length, 2);
+  assert.deepEqual(saves.map(note => note.category), ['Git 基础', '安装与验证']);
+  assert.deepEqual(saves.map(note => note.topic), ['安装', '验证'], 'original Markdown paths stay unchanged');
+});
+
+test('Wiki switches between nested tree and interactive relation graph without model calls', async t => {
+  const app = realSettingsHarness({ load: async () => ({ status: { mode: 'demo' } }) });
+  t.after(() => app.close()); await app.ready();
+  const notes = [
+    { id: 'python', lessonId: 'p1', title: 'Python 输出', summary: '输出', content: 'print', tags: ['Python'], topic: '编程/Python/语法', related: ['git'], updated: 1 },
+    { id: 'git', lessonId: 'p1', title: 'Git 身份', summary: '身份', content: 'user.email', tags: ['Git'], topic: '开发工具/Git', updated: 2 }
+  ];
+  app.run(`state.notes = ${JSON.stringify(notes)}; page = 'wiki'; render()`);
+  assert.ok(app.document.querySelector('.wiki-tree-theme'));
+  const folder = app.document.querySelector('.wiki-tree-course>.wiki-tree-folder-heading>.wiki-tree-folder-toggle');
+  assert.equal(folder.getAttribute('aria-expanded'), 'true');
+  await app.fire('click', folder);
+  assert.equal(folder.getAttribute('aria-expanded'), 'false');
+  assert.equal(folder.closest('.wiki-tree-folder').querySelector('.wiki-tree-children').hidden, true);
+  await app.fire('click', app.document.querySelector('[data-action="switch-wiki-view"][data-view="graph"]'));
+  assert.equal(app.document.querySelector('[data-view="graph"]').getAttribute('aria-selected'), 'true');
+  assert.equal(app.document.querySelectorAll('.graph-node-card').length, 2);
+  assert.ok(app.document.querySelector('.graph-edge-related'));
+  await app.fire('click', app.document.querySelector('[data-action="select-graph-node"][data-id="card:python"]'));
+  assert.match(app.document.querySelector('.graph-selection').textContent, /Python 输出/);
+  assert.ok(app.document.querySelector('.graph-selection [data-action="open-note"][data-id="python"]'));
+  const svg = app.document.querySelector('#knowledge-graph-svg');
+  const before = svg.getAttribute('viewBox');
+  await app.fire('click', app.document.querySelector('[data-action="graph-zoom-in"]'));
+  assert.notEqual(svg.getAttribute('viewBox'), before);
+  await app.fire('click', app.document.querySelector('[data-action="graph-pause"]'));
+  assert.equal(app.document.querySelector('[data-action="graph-pause"]').textContent, '继续运动');
+  const tag = app.document.querySelector('#graph-tag'); tag.value = 'Python';
+  await app.fire('change', tag);
+  assert.equal(app.document.querySelectorAll('.graph-node-card').length, 1);
+  const resetTag = app.document.querySelector('#graph-tag'); resetTag.value = '';
+  await app.fire('change', resetTag);
+  assert.equal(app.document.querySelectorAll('.graph-node-card').length, 2);
+  const type = app.document.querySelector('#graph-type'); type.value = 'topic';
+  await app.fire('change', type);
+  assert.equal(app.document.querySelectorAll('.graph-node-card').length, 0);
+  assert.ok(app.document.querySelector('#graph-type'), 'graph controls remain available when no card nodes match');
+  const resetType = app.document.querySelector('#graph-type'); resetType.value = 'all';
+  await app.fire('change', resetType);
+  assert.equal(app.document.querySelectorAll('.graph-node-card').length, 2);
+  const graphSearch = app.document.querySelector('#graph-search'); graphSearch.value = '完全无关的词';
+  await app.fire('input', graphSearch);
+  assert.equal(app.document.querySelectorAll('.graph-node-card').length, 0);
+  assert.ok(app.document.querySelector('#graph-search'), 'zero results keep the filter controls available');
+  assert.match(app.document.querySelector('.graph-empty').textContent, /没有可显示/);
+  const clearSearch = app.document.querySelector('#graph-search'); clearSearch.value = '';
+  await app.fire('input', clearSearch);
+  assert.equal(app.document.querySelectorAll('.graph-node-card').length, 2);
+  await app.fire('click', app.document.querySelector('[data-action="graph-orphans"]'));
+  assert.equal(app.document.querySelectorAll('.graph-node-card').length, 0);
+  await app.fire('click', app.document.querySelector('[data-action="graph-orphans"]'));
+  assert.equal(app.document.querySelectorAll('.graph-node-card').length, 2);
+  await app.fire('click', app.document.querySelector('[data-action="switch-wiki-view"][data-view="tree"]'));
+  assert.equal(app.document.querySelector('.wiki-tree-course>.wiki-tree-folder-heading>.wiki-tree-folder-toggle').getAttribute('aria-expanded'), 'false');
+});
+
+test('Wiki Q&A is left of the tree, without the banner, and keeps its answer when switching views', async t => {
+  const app = realSettingsHarness({ load: async () => ({ status: { mode: 'demo' } }) });
+  t.after(() => app.close()); await app.ready();
+  app.run(`state.notes = [{ id: 'python', lessonId: 'p1', title: 'Python 输出', summary: '输出', content: 'print', tags: ['Python'], topic: '编程/Python', updated: 1 }]; page = 'wiki'; render()`);
+  assert.deepEqual([...app.document.querySelectorAll('.wiki-view-switch [role="tab"]')].map(tab => tab.dataset.view), ['chat', 'tree', 'graph']);
+  assert.equal(app.document.querySelector('.wiki-view-switch').nextElementSibling.className, 'wiki-toolbar');
+  assert.equal(app.document.querySelector('[data-view="chat"]').textContent, '知识问答');
+  assert.equal(app.document.querySelector('.wiki-banner'), null);
+  assert.equal(app.document.querySelector('#ask-form'), null);
+  await app.fire('click', app.document.querySelector('[data-view="chat"]'));
+  assert.equal(app.document.querySelector('#note-results').getAttribute('aria-label'), '知识问答');
+  assert.equal(app.document.querySelector('[data-view="chat"]').getAttribute('aria-selected'), 'true');
+  assert.ok(app.document.querySelector('#ask-form'));
+  assert.equal(app.document.querySelector('.wiki-directory'), null);
+  app.run(`answer = { demo: true, answer: 'print 用于输出', citations: ['python'] }; refreshKnowledgeResults()`);
+  assert.match(app.document.querySelector('#wiki-answer').textContent, /print 用于输出/);
+  await app.fire('click', app.document.querySelector('[data-view="graph"]'));
+  assert.equal(app.document.querySelector('#ask-form'), null);
+  await app.fire('click', app.document.querySelector('[data-view="chat"]'));
+  assert.match(app.document.querySelector('#wiki-answer').textContent, /print 用于输出/);
+});
+
+test('Wiki questions with no catalog match do not call the paid AI endpoint', async () => {
+  let calls = 0;
+  const app = harness(null, async url => {
+    if (url === '/api/status') return { ok: true, json: async () => ({ mode: 'ai' }) };
+    calls++;
+    return { ok: true, json: async () => ({ answer: 'unexpected', citations: [] }) };
+  });
+  app.run("state.notes = [{id:'git',lessonId:'p1',title:'Git 身份',summary:'user.email',content:'git config',tags:['Git'],topic:'开发工具/Git',updated:1}]; status = { mode: 'ai' }");
+  await app.submit('ask-form', { question: 'quantum banana astronomy' });
+  assert.equal(calls, 0);
+  assert.equal(app.run('answer.demo'), true);
+  assert.deepEqual([...app.run('answer.citations')], []);
 });
 
 test('lesson Q&A keeps per-lesson context across turns, persists locally and escapes answers', async () => {

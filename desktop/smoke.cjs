@@ -5,6 +5,7 @@ const path = require('node:path');
 const http = require('node:http');
 exports.run = async (window, store, directory) => {
   const { demoPlan } = await import('../public/demo.js');
+  const { cardPathFor } = await import('./knowledge-cards.mjs');
   const evaluate = code => window.webContents.executeJavaScript(code).catch(error => { console.error('SMOKE_FAILED_STEP', code.slice(0, 220)); throw error; });
   const wait = expression => evaluate(`new Promise((resolve, reject) => { let attempts = 0; const timer = setInterval(() => { try { if (${expression}) { clearInterval(timer); resolve(true); } else if (++attempts > 150) { clearInterval(timer); reject(new Error('Desktop check timed out')); } } catch (error) { clearInterval(timer); reject(error); } }, 100); })`);
   await wait("document.querySelector('main h1')");
@@ -155,7 +156,11 @@ exports.run = async (window, store, directory) => {
   await evaluate(`document.querySelector('[data-action=notes-tab]').click(); document.querySelector('#reflection').value = ${JSON.stringify(reflectionMarkdown)}; document.querySelector('#reflection').dispatchEvent(new Event('input', {bubbles:true}))`);
   assert.equal(await evaluate("document.querySelector('#reflection-preview h3').textContent"), '桌面集成测试心得');
   assert.equal(await evaluate("document.querySelector('#reflection-preview strong').textContent"), '掌握核心概念');
+  const notesBeforeDraft = (await store.loadState()).notes.length;
   await evaluate("document.querySelector('[data-action=create-note]').click()");
+  await wait("document.querySelector('#knowledge-draft-form')");
+  assert.equal((await store.loadState()).notes.length, notesBeforeDraft, 'an unconfirmed draft must not be saved');
+  await evaluate("document.querySelector('#knowledge-draft-form').requestSubmit()");
   await wait("document.querySelector('#note-form')");
   assert.equal(await evaluate("document.querySelector('#note-source-view').hidden"), true);
   assert.equal(await evaluate("document.querySelector('#note-preview-view').hidden"), false);
@@ -177,6 +182,45 @@ exports.run = async (window, store, directory) => {
   assert.equal(state.reflections.p1, reflectionMarkdown);
   assert.ok(state.notes.some(note => note.lessonId === 'p1'));
   assert.equal(state.notes.find(note => note.lessonId === 'p1').content, editedNote);
+  const savedNote = state.notes.find(note => note.lessonId === 'p1');
+  const savedMarkdown = await readFile(cardPathFor(directory, savedNote), 'utf8');
+  assert.match(savedMarkdown, /^---\nschema: 1\n/);
+  assert.ok(savedMarkdown.includes(editedNote));
+  assert.equal(await evaluate(`window.learnflowDesktop.cardMarkdown(${JSON.stringify(savedNote.id)})`), savedMarkdown);
+  await evaluate("document.querySelector('[data-action=close-note]').click()");
+  await wait("document.querySelector('.wiki-tree')");
+  assert.ok(await evaluate("document.querySelectorAll('.wiki-tree-card').length") >= 1);
+  const wikiHeaderMetrics = "(() => { const title = document.querySelector('.page-intro h1'), tabs = document.querySelector('.wiki-view-switch'); return { titleTop: Math.round(title.getBoundingClientRect().top), titleLeft: Math.round(title.getBoundingClientRect().left), titleSize: getComputedStyle(title).fontSize, tabsTop: Math.round(tabs.getBoundingClientRect().top), tabsLeft: Math.round(tabs.getBoundingClientRect().left) }; })()";
+  const treeHeader = await evaluate(wikiHeaderMetrics);
+  assert.equal(await evaluate("document.querySelector('#ask-form')"), null);
+  await evaluate("document.querySelector('[data-view=chat]').click()");
+  await wait("document.querySelector('#ask-form')");
+  assert.deepEqual(await evaluate(wikiHeaderMetrics), treeHeader);
+  assert.equal(await evaluate("document.querySelector('#note-results').getAttribute('aria-label')"), '知识问答');
+  assert.equal(await evaluate("document.querySelector('.wiki-banner')"), null);
+  assert.equal(await evaluate("document.querySelector('.wiki-tree')"), null);
+  await evaluate("document.querySelector('[data-view=graph]').click()");
+  await wait("document.querySelector('#knowledge-graph-svg .graph-node-card')");
+  assert.deepEqual(await evaluate(wikiHeaderMetrics), treeHeader);
+  assert.ok(await evaluate("document.querySelectorAll('#knowledge-graph-svg .graph-node-card').length") >= 1);
+  assert.equal(await evaluate("getComputedStyle(document.querySelector('.knowledge-graph')).backgroundColor"), 'rgb(255, 255, 255)');
+  assert.equal(await evaluate("getComputedStyle(document.querySelector('.graph-toolbar')).backgroundColor"), 'rgb(255, 255, 255)');
+  assert.equal(await evaluate("getComputedStyle(document.querySelector('.graph-node text')).fill"), 'rgb(63, 53, 80)');
+  assert.ok(await evaluate("document.querySelector('#graph-type') && document.querySelector('#graph-relation') && document.querySelector('[data-action=graph-pause]')"));
+  await evaluate("new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))");
+  await writeFile(path.join(directory, '..', 'knowledge-graph-smoke.png'), (await window.webContents.capturePage()).toPNG());
+  await evaluate("document.querySelector('[data-action=graph-pause]').click()");
+  const beforeDrag = await evaluate("document.querySelector('#knowledge-graph-svg .graph-node-card circle').getAttribute('cx')");
+  await evaluate("(() => { const circle = document.querySelector('#knowledge-graph-svg .graph-node-card circle'); const box = circle.getBoundingClientRect(); const x = box.left + box.width / 2, y = box.top + box.height / 2; circle.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, clientX: x, clientY: y })); document.dispatchEvent(new PointerEvent('pointermove', { bubbles: true, clientX: x + 35, clientY: y + 20 })); document.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, clientX: x + 35, clientY: y + 20 })); })()");
+  assert.notEqual(await evaluate("document.querySelector('#knowledge-graph-svg .graph-node-card circle').getAttribute('cx')"), beforeDrag);
+  await evaluate("document.querySelector('#knowledge-graph-svg .graph-node-card').dispatchEvent(new MouseEvent('click', {bubbles:true,cancelable:true}))");
+  await wait("document.querySelector('.graph-selection [data-action=open-note]')");
+  const graphBox = await evaluate("document.querySelector('#knowledge-graph-svg').getAttribute('viewBox')");
+  await evaluate("document.querySelector('[data-action=graph-zoom-in]').click()");
+  assert.notEqual(await evaluate("document.querySelector('#knowledge-graph-svg').getAttribute('viewBox')"), graphBox);
+  assert.ok(await evaluate("document.querySelector('.knowledge-graph') && document.querySelector('#knowledge-graph-svg')"));
+  await evaluate("document.querySelector('.graph-selection [data-action=open-note]').click()");
+  await wait("document.querySelector('#note-preview-view')");
   // Reload the entire renderer, mimicking a new launch while preserving disk data.
   window.webContents.reload();
   await new Promise(resolve => window.webContents.once('did-finish-load', resolve));
@@ -245,6 +289,7 @@ exports.run = async (window, store, directory) => {
       : input.daily !== undefined ? {...demoPlan,title:'路线纠正集成测试',lessons:input.repair ? demoPlan.lessons : [demoPlan.lessons[0]]}
       : input.revisionRequest ? {text:markdownAnswer}
       : input.notes ? {answer:'## 检索结论\n\n**输入与输出**已记录在你的知识卡片中。',citations:[input.notes[0].id]}
+      : input.sourceText ? {title:'现金流',summary:'**现金流**的核心概念与实践方法',content:wikiMarkdown,tags:['财务'],useWhen:['分析收支时'],avoidWhen:[]}
       : input.lesson && input.reflection !== undefined ? {summary:'**现金流**的核心概念与实践方法',content:wikiMarkdown}
       : {answer:chatMarkdown};
     res.writeHead(200, { 'Content-Type': 'application/json' });
@@ -272,7 +317,7 @@ exports.run = async (window, store, directory) => {
     assert.equal(await evaluate("document.querySelector('.chat-message.from-ai:last-child .markdown-content h3').textContent"), '直接回答');
     assert.ok(await evaluate("!!document.querySelector('.chat-message.from-ai:last-child pre code')"));
     assert.equal(await evaluate("getComputedStyle(document.querySelector('.chat-message.from-ai:last-child .markdown-content strong')).display"), 'inline');
-    await evaluate("document.querySelector('[data-page=wiki]').click(); document.querySelector('#wiki-question').value = '输入与输出有哪些要点？'; document.querySelector('#ask-form').requestSubmit()");
+    await evaluate("document.querySelector('[data-page=wiki]').click(); document.querySelector('[data-view=chat]').click(); document.querySelector('#wiki-question').value = '输入与输出有哪些要点？'; document.querySelector('#ask-form').requestSubmit()");
     await wait("document.querySelector('.grounded-answer .answer-body h3')?.textContent === '检索结论' && !document.querySelector('#ask-form button[type=submit]').disabled");
     assert.equal(await evaluate("document.querySelector('.grounded-answer .markdown-content strong').textContent"), '输入与输出');
     assert.ok(await evaluate("!!document.querySelector('.grounded-answer .citation')"));
@@ -521,8 +566,8 @@ exports.run = async (window, store, directory) => {
     await evaluate(`document.querySelector('[data-page=routes]').click(); document.querySelector('[data-action=open-lesson][data-id="${lessonId}"]').click()`);
     await wait(`document.querySelector('[data-block-id="${practiceBlock.id}"] [data-action=request-revision]')`);
     const practiceActions = await evaluate(`Array.from(document.querySelectorAll('[data-block-id="${practiceBlock.id}"] .revision-actions button')).map(button=>({action:button.dataset.action,text:button.textContent}))`);
-    assert.deepEqual(practiceActions.map(button=>button.action),['open-speech','request-illustration','request-revision']);
-    assert.equal(practiceActions[2].text,'换个任务');
+    assert.deepEqual(practiceActions.map(button=>button.action),['create-note','open-speech','request-illustration','request-revision']);
+    assert.equal(practiceActions[3].text,'换个任务');
     await evaluate(`document.querySelector('[data-action=open-speech][data-block="${practiceBlock.id}"]').click()`);
     await wait("document.querySelector('#speech-dialog').open && !document.querySelector('#speech-preview-fields').disabled");
     assert.match(await evaluate("document.querySelector('#speech-material').value"),/^Sarah: Alright/);
@@ -559,9 +604,11 @@ exports.run = async (window, store, directory) => {
     await evaluate(`document.querySelector('[data-page=routes]').click();document.querySelector('[data-action=open-lesson][data-id="${lessonId}"]').click()`);
     await wait(`document.querySelector('[data-block-id="${practiceBlock.id}"] .course-illustration img')?.complete`);
     assert.equal((await store.loadState()).blockCourses[lessonId].blocks.find(block=>block.id===practiceBlock.id).content.text,practiceText);
-    console.log('PRACTICE_ACTIONS_SMOKE',JSON.stringify({passed:true,checks:['three-action-buttons','practice-transcript-preview','image-confirmation-and-IPC-save','task-feedback-and-history','restore-task-and-image','quiz-progress-preserved','sqlite-reload']}));
+    console.log('PRACTICE_ACTIONS_SMOKE',JSON.stringify({passed:true,checks:['four-action-buttons','practice-transcript-preview','image-confirmation-and-IPC-save','task-feedback-and-history','restore-task-and-image','quiz-progress-preserved','sqlite-reload']}));
     // Generate an AI Wiki card and verify that source Markdown survives a renderer reload.
     await evaluate("document.querySelector('[data-tab=notes]').click(); document.querySelector('[data-action=create-note]').click()");
+    await wait("document.querySelector('#knowledge-draft-form')");
+    await evaluate("document.querySelector('#knowledge-draft-form').requestSubmit()");
     await wait("document.querySelector('#note-preview-content h3')?.textContent === '核心概念'");
     assert.equal(await evaluate("document.querySelector('#note-preview-content strong').textContent"), '现金流');
     const aiNote = (await store.loadState()).notes.find(note => note.lessonId === lessonId);
@@ -588,5 +635,5 @@ exports.run = async (window, store, directory) => {
   await evaluate("window.scrollTo({top:0,behavior:'instant'})");
   const image = await window.webContents.capturePage();
   await writeFile(path.join(directory, '..', 'settings-smoke.png'), image.toPNG());
-  console.log('DESKTOP_SMOKE', JSON.stringify({ passed: true, checks: ['window', 'sandbox', 'settings-save', 'os-encryption', 'cloud-save-confirmation', 'cloud-settings-reload', 'lan-save-confirmation', 'quick-ask-right-dock-and-focus', 'quick-ask-return-position', 'quiz', 'wiki', 'disk-persistence', 'reload', 'lesson-qa', 'adaptive-learning-questionnaire-and-confirmation', 'plan-invalid-count-repair', 'teaching-unit', 'feedback-regeneration', 'markdown-typography', 'legacy-diagram-fences-as-code-reload', 'markdown-revision-preset', 'reflection-markdown-preview', 'note-markdown-read-edit', 'chat-markdown', 'grounded-markdown-citations', 'ai-wiki-markdown-reload', 'revision-failure-preserves-content', 'revision-restore-reload', 'image-settings-os-encryption', 'image-model-check-without-generation', 'image-suggestion-before-confirmation', 'image-generation-failure-no-retry', 'image-local-render-layout-and-reload', 'image-restoration-with-text', 'private-asset-cookie'], screenshot: path.join(directory, '..', 'settings-smoke.png') }));
+  console.log('DESKTOP_SMOKE', JSON.stringify({ passed: true, checks: ['window', 'sandbox', 'settings-save', 'os-encryption', 'cloud-save-confirmation', 'cloud-settings-reload', 'lan-save-confirmation', 'quick-ask-right-dock-and-focus', 'quick-ask-return-position', 'quiz', 'wiki', 'knowledge-tree-chat-and-graph', 'disk-persistence', 'reload', 'lesson-qa', 'adaptive-learning-questionnaire-and-confirmation', 'plan-invalid-count-repair', 'teaching-unit', 'feedback-regeneration', 'markdown-typography', 'legacy-diagram-fences-as-code-reload', 'markdown-revision-preset', 'reflection-markdown-preview', 'note-markdown-read-edit', 'chat-markdown', 'grounded-markdown-citations', 'ai-wiki-markdown-reload', 'revision-failure-preserves-content', 'revision-restore-reload', 'image-settings-os-encryption', 'image-model-check-without-generation', 'image-suggestion-before-confirmation', 'image-generation-failure-no-retry', 'image-local-render-layout-and-reload', 'image-restoration-with-text', 'private-asset-cookie'], screenshot: path.join(directory, '..', 'settings-smoke.png') }));
 };

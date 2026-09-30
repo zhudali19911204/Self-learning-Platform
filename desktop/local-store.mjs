@@ -6,12 +6,14 @@ import { validPlan, validLesson } from '../server.mjs';
 import { validBlockCourse } from '../public/blocks.js';
 import { validLearningBrief } from '../public/planning.js';
 import { createModelProfiles } from './model-profiles.mjs';
+import { normalizeKnowledgeCard } from './knowledge-cards.mjs';
 
 export const defaults = { provider: 'ollama', model: '', baseUrl: '', jsonMode: 'auto', timeoutMs: 120000, maxTokens: 8192, localOnly: true };
 const id = v => typeof v === 'string' && /^[a-zA-Z0-9_-]{1,160}$/.test(v) && !['__proto__', 'constructor', 'prototype'].includes(v);
 const string = (v, max = 20000) => typeof v === 'string' && v.length <= max;
 const object = v => v && typeof v === 'object' && !Array.isArray(v);
 const dict = (v, check) => object(v) && Object.entries(v).every(([key, value]) => id(key) && check(value));
+const validNote = value => { try { normalizeKnowledgeCard(value); return true; } catch { return false; } };
 export function validState(v) {
   if (!object(v) || v.version !== 1 || !Array.isArray(v.plans) || !v.plans.length || v.plans.length > 1000 || !id(v.active)) return false;
   if (!v.plans.every(p => validPlan(p) && id(p.id) && string(p.goal, 1000) && string(p.level, 80) && Number.isInteger(p.daily) && Number.isInteger(p.days) && ['ai', 'demo'].includes(p.source) && p.lessons.every(l => id(l.id)))) return false;
@@ -22,7 +24,7 @@ export function validState(v) {
   if (v.blockCourses !== undefined && (!dict(v.blockCourses, validBlockCourse) || Object.keys(v.blockCourses).some(key => !lessonIds.includes(key)))) return false;
   if (v.chats !== undefined && !dict(v.chats, messages => Array.isArray(messages) && messages.length <= 20 && messages.every(message => object(message) && ['user', 'assistant'].includes(message.role) && string(message.content, message.role === 'user' ? 1000 : 12000)))) return false;
   if (!dict(v.progress, p => object(p) && typeof p.completed === 'boolean' && Number.isInteger(p.attempts) && p.attempts >= 0 && [p.lastScore, p.bestScore].every(n => Number.isInteger(n) && n >= 0 && n <= 100) && Array.isArray(p.lastAnswers) && p.lastAnswers.length <= 100 && p.lastAnswers.every(a => Number.isInteger(a) && a >= 0 && a < 4))) return false;
-  if (!Array.isArray(v.notes) || !v.notes.every(n => object(n) && id(n.id) && id(n.lessonId) && lessonIds.includes(n.lessonId) && string(n.title, 160) && string(n.summary, 500) && string(n.content) && string(n.courseTitle, 160) && ['ai', 'demo'].includes(n.source) && Number.isFinite(n.updated) && Array.isArray(n.tags) && n.tags.length <= 6 && n.tags.every(t => string(t, 200)))) return false;
+  if (!Array.isArray(v.notes) || !v.notes.every(n => validNote(n) && lessonIds.includes(n.lessonId))) return false;
   return new Set(v.notes.map(n => n.id)).size === v.notes.length;
 }
 export function normalizeSettings(input, previous = defaults) {
