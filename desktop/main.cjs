@@ -121,6 +121,7 @@ async function start() {
   handle('learnflow:restore-block', (id, blockId, expectedText) => learning.restoreBlock(id, blockId, expectedText));
   handle('learnflow:save-progress', (id, value) => learning.saveProgress(id, value));
   handle('learnflow:save-reflection', (id, value) => learning.saveReflection(id, value));
+  handle('learnflow:save-annotations', (id, value) => learning.saveAnnotations(id, value));
   handle('learnflow:append-chat', (id, question, answer) => learning.appendChat(id, question, answer));
   handle('learnflow:save-note', value => learning.saveNote(value));
   handle('learnflow:delete-note', async id => {

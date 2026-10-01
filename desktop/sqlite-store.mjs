@@ -9,6 +9,7 @@ import { validState } from './local-store.mjs';
 import { validOutline, validBlockSpec, validBlockContent, revisedContent, restoredContent, assistedBlockTypes } from '../public/blocks.js';
 import { referencedImages } from '../public/illustrations.js';
 import { removePlanFromBackups } from './course-backups.mjs';
+import { validAnnotations } from '../public/annotations.js';
 import { knowledgeCardMarkdown, knowledgeGeneration, knowledgeLayoutCurrent, normalizeKnowledgeCard, readKnowledgeCard, readKnowledgeCards, recoverKnowledgeCardSwap, refreshKnowledgeCatalog, removeKnowledgeCards, replaceKnowledgeCards, saveKnowledgeCard } from './knowledge-cards.mjs';
 
 const exists = async file => { try { await stat(file); return true; } catch (error) { if (error.code === 'ENOENT') return false; throw error; } };
@@ -71,6 +72,7 @@ function replaceAll(db, state) {
     }
     for (const [lessonId, progress] of Object.entries(state.progress)) progressStatement.run(lessonId, Number(progress.completed), progress.attempts, progress.lastScore, progress.bestScore, JSON.stringify(progress.lastAnswers), progress.updated ?? null);
     for (const [lessonId, reflection] of Object.entries(state.reflections)) reflectionStatement.run(lessonId, reflection);
+    for (const [lessonId, annotations] of Object.entries(state.annotations || {})) if (annotations.length) db.prepare('INSERT INTO meta VALUES (?, ?)').run(`annotations:${lessonId}`, JSON.stringify(annotations));
     for (const [lessonId, messages] of Object.entries(state.chats || {})) for (const message of messages) chatStatement.run(lessonId, message.role, message.content);
     for (const note of state.notes) insertNote(db, note);
     const outlineStatement = db.prepare('INSERT INTO lesson_outlines VALUES (?, ?)');
@@ -107,6 +109,7 @@ function readExport(db) {
   const state = readOverview(db);
   for (const row of db.prepare('SELECT id, content_json FROM lessons WHERE content_json IS NOT NULL').all()) state.lessons[row.id] = fromJSON(row.content_json);
   for (const row of db.prepare('SELECT lesson_id, content FROM reflections').all()) state.reflections[row.lesson_id] = row.content;
+  for (const row of db.prepare("SELECT key, value FROM meta WHERE key GLOB 'annotations:*'").all()) (state.annotations ||= {})[row.key.slice('annotations:'.length)] = fromJSON(row.value);
   for (const row of db.prepare('SELECT lesson_id, role, content FROM chat_messages ORDER BY id').all()) (state.chats[row.lesson_id] ||= []).push({ role: row.role, content: row.content });
   for (const row of db.prepare('SELECT lesson_id, intro FROM lesson_outlines').all()) (state.blockCourses ||= {})[row.lesson_id] = { intro: row.intro, blocks: [] };
   for (const row of db.prepare('SELECT id, lesson_id, type, title, objective, content_json FROM lesson_blocks ORDER BY lesson_id, position').all()) state.blockCourses[row.lesson_id].blocks.push({ id: row.id, type: row.type, title: row.title, objective: row.objective, content: row.content_json ? fromJSON(row.content_json) : null });
@@ -147,6 +150,7 @@ export async function createSqliteStore(directory) {
       const restored = readExport(candidate);
       for (const key of Object.keys(restored.lessons)) if (!Object.hasOwn(state.lessons, key)) delete restored.lessons[key];
       const expected = { ...state, notes: state.notes.map(normalizeKnowledgeCard), chats: state.chats || {} };
+      if (expected.annotations && !Object.keys(expected.annotations).length) delete expected.annotations;
       if (expected.blockCourses && !Object.keys(expected.blockCourses).length) delete expected.blockCourses;
       if (!isDeepStrictEqual(restored, expected)) throw new Error('旧学习数据回读校验失败，原文件已保留。');
     } finally { candidate.close(); }
@@ -214,10 +218,11 @@ export async function createSqliteStore(directory) {
     requireLesson(lessonId);
     const row = db.prepare('SELECT content_json FROM lessons WHERE id = ?').get(lessonId);
     const reflection = db.prepare('SELECT content FROM reflections WHERE lesson_id = ?').get(lessonId)?.content || '';
+    const annotations = fromJSON(db.prepare('SELECT value FROM meta WHERE key = ?').get(`annotations:${lessonId}`)?.value || '[]');
     const chats = db.prepare('SELECT role, content FROM chat_messages WHERE lesson_id = ? ORDER BY id DESC LIMIT 20').all(lessonId).reverse();
     const outline = db.prepare('SELECT intro FROM lesson_outlines WHERE lesson_id = ?').get(lessonId);
     const blockCourse = outline ? { intro: outline.intro, blocks: db.prepare('SELECT id, type, title, objective, content_json FROM lesson_blocks WHERE lesson_id = ? ORDER BY position').all(lessonId).map(block => ({ id: block.id, type: block.type, title: block.title, objective: block.objective, content: block.content_json ? fromJSON(block.content_json) : null })) } : null;
-    return { lesson: row.content_json ? fromJSON(row.content_json) : null, blockCourse, reflection, chats };
+    return { lesson: row.content_json ? fromJSON(row.content_json) : null, blockCourse, reflection, annotations, chats };
   }
   const exportState = () => { syncKnowledgeIndex(db, directory); return readExport(db); };
   function readPlanDeletionPreview(planId) {
@@ -260,6 +265,7 @@ export async function createSqliteStore(directory) {
         const next = current === planId ? db.prepare('SELECT id FROM plans WHERE id <> ? ORDER BY position LIMIT 1').get(planId)?.id : current;
         db.prepare('DELETE FROM plans WHERE id = ?').run(planId);
         db.prepare('DELETE FROM meta WHERE key = ?').run(`plan_brief:${planId}`);
+        for (const lessonId of lessonIds) db.prepare('DELETE FROM meta WHERE key = ?').run(`annotations:${lessonId}`);
         db.prepare("UPDATE meta SET value = ? WHERE key = 'knowledge_generation'").run(randomUUID());
         db.prepare("UPDATE meta SET value = ? WHERE key = 'active_plan'").run(next);
         for (const [position, row] of db.prepare('SELECT id FROM plans ORDER BY position').all().entries()) db.prepare('UPDATE plans SET position = ? WHERE id = ?').run(position, row.id);
@@ -358,6 +364,12 @@ export async function createSqliteStore(directory) {
       requireLesson(lessonId);
       if (!text(value, 5000)) throw new Error('学习心得过长。');
       db.prepare('INSERT INTO reflections VALUES (?, ?) ON CONFLICT(lesson_id) DO UPDATE SET content=excluded.content').run(lessonId, value);
+    },
+    saveAnnotations(lessonId, annotations) {
+      requireLesson(lessonId);
+      if (!validAnnotations(annotations)) throw new Error('原文批注格式不正确。');
+      if (annotations.length) db.prepare('INSERT INTO meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value').run(`annotations:${lessonId}`, JSON.stringify(annotations));
+      else db.prepare('DELETE FROM meta WHERE key = ?').run(`annotations:${lessonId}`);
     },
     appendChat(lessonId, question, answer) {
       requireLesson(lessonId);

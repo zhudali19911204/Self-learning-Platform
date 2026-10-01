@@ -18,6 +18,7 @@ contextBridge.exposeInMainWorld('learnflowDesktop', Object.freeze({
   restoreBlock: (id, blockId, expectedText) => invoke('learnflow:restore-block', id, blockId, expectedText),
   saveProgress: (id, value) => invoke('learnflow:save-progress', id, value),
   saveReflection: (id, value) => invoke('learnflow:save-reflection', id, value),
+  saveAnnotations: (id, value) => invoke('learnflow:save-annotations', id, value),
   appendChat: (id, question, answer) => invoke('learnflow:append-chat', id, question, answer),
   saveNote: value => invoke('learnflow:save-note', value),
   deleteNote: id => invoke('learnflow:delete-note', id),

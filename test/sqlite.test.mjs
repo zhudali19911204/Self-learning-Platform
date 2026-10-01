@@ -59,6 +59,28 @@ test('legacy JSON migrates without modifying its bytes; lessons load individuall
   try { assert.equal(reopened.getLesson('p1').lesson.intro, '只更新这一门课'); }
   finally { reopened.close(); }
 });
+test('inline annotations survive lesson reload and backup import without changing lesson text', async t => {
+  const directory = await temporary(t);
+  let store = await createSqliteStore(directory);
+  const originalText = store.getLesson('p1').lesson.sections[0].body;
+  const annotation = { id: 'note-inline-1', source: 'section:0', offset: 3, quote: '原文', text: '我自己的理解', created: 12345 };
+  try {
+    store.saveAnnotations('p1', [annotation]);
+    assert.deepEqual(store.getLesson('p1').annotations, [annotation]);
+    assert.equal(store.getLesson('p1').lesson.sections[0].body, originalText);
+    assert.deepEqual(store.exportState().annotations.p1, [annotation]);
+    assert.throws(() => store.saveAnnotations('p1', [{ ...annotation, source: '../bad' }]), /格式不正确/);
+    const backup = store.exportState();
+    store.saveAnnotations('p1', []);
+    assert.deepEqual(store.getLesson('p1').annotations, []);
+    store.replaceState(backup);
+    assert.deepEqual(store.getLesson('p1').annotations, [annotation]);
+  } finally { store.close(); }
+  store = await createSqliteStore(directory);
+  try { assert.deepEqual(store.getLesson('p1').annotations, [annotation]); }
+  finally { store.close(); }
+});
+
 test('confirmed learning requirements survive save, reopen, export, import and deletion', async t => {
   const directory = await temporary(t);
   let store = await createSqliteStore(directory);

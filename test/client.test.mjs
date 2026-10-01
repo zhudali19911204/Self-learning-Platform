@@ -14,6 +14,7 @@ import { questionnaire, clarification } from '../test-support/planning.mjs';
 import { validIllustration, validImageProposal } from '../public/illustrations.js';
 import { speechDefaults, speechVoices, listeningText, speechTurns, speechRequest, validAudioId } from '../public/speech.js';
 import { validKnowledgeSource, validKnowledgeDraft, localKnowledgeDraft, knowledgeTags, knowledgeConditions } from '../public/knowledge-draft.js';
+import { validAnnotations, personalNotesForSource, personalNotesMarkdown } from '../public/annotations.js';
 import { knowledgeCatalog, knowledgeDomain, knowledgeDomainColors, knowledgeTopic, retrieveKnowledge, validKnowledgeOrganization } from '../public/knowledge-index.js';
 import { courseKnowledgeTree, knowledgeTree, knowledgeGraph, filterKnowledgeGraph } from '../public/knowledge-views.js';
 import { createGraphMotion, stepGraphMotion } from '../public/graph-motion.js';
@@ -410,20 +411,24 @@ test('image settings save failures expose the cause in both notices and preserve
 // This harness checks application state transitions, not browser rendering.
 // Keyless-form regressions need real elements.namedItem() and actual FormData.
 function realSettingsHarness(bridge) {
-  const dom = new JSDOM('<div id="app"></div><div id="toast"></div><dialog id="knowledge-draft-dialog"></dialog><dialog id="knowledge-organize-dialog"></dialog>', { url: 'http://localhost' });
+  const dom = new JSDOM('<div id="app"></div><div id="toast"></div><button id="annotation-quick-add" data-action="add-annotation" hidden></button><dialog id="annotation-dialog"></dialog><dialog id="knowledge-draft-dialog"></dialog><dialog id="knowledge-organize-dialog"></dialog>', { url: 'http://localhost' });
   const document = dom.window.document, listeners = new Map();
   document.querySelector('#knowledge-organize-dialog').showModal = function () { this.open = true; };
   document.querySelector('#knowledge-organize-dialog').close = function () { this.open = false; };
+  for (const id of ['annotation-dialog', 'knowledge-draft-dialog']) {
+    document.querySelector(`#${id}`).showModal = function () { this.open = true; };
+    document.querySelector(`#${id}`).close = function () { this.open = false; };
+  }
   document.addEventListener = (name, listener) => { const group = listeners.get(name) || []; group.push(listener); listeners.set(name, group); };
   dom.window.learnflowDesktop = bridge; dom.window.scrollTo = () => {};
   const context = vm.createContext({
-    demoPlan, demoLessons, lessonFromBlocks, validOutline, validBlockContent, validBlockSpec, blockGenerationContext, revisedContent, restoredContent, assistedBlockTypes, Marked, DOMPurify, createMarkdownRenderer, validQuestionnaire, validClarification, learningBriefFrom, validIllustration, validImageProposal, speechDefaults, speechVoices, listeningText, speechTurns, speechRequest, validAudioId, validKnowledgeSource, validKnowledgeDraft, localKnowledgeDraft, knowledgeTags, knowledgeConditions, knowledgeCatalog, knowledgeDomain, knowledgeDomainColors, knowledgeTopic, retrieveKnowledge, validKnowledgeOrganization, courseKnowledgeTree, knowledgeTree, knowledgeGraph, filterKnowledgeGraph, createGraphMotion, stepGraphMotion, structuredClone, crypto: webcrypto, AbortSignal,
+    demoPlan, demoLessons, lessonFromBlocks, validOutline, validBlockContent, validBlockSpec, blockGenerationContext, revisedContent, restoredContent, assistedBlockTypes, Marked, DOMPurify, createMarkdownRenderer, validQuestionnaire, validClarification, learningBriefFrom, validIllustration, validImageProposal, speechDefaults, speechVoices, listeningText, speechTurns, speechRequest, validAudioId, validKnowledgeSource, validKnowledgeDraft, localKnowledgeDraft, knowledgeTags, knowledgeConditions, validAnnotations, personalNotesForSource, personalNotesMarkdown, knowledgeCatalog, knowledgeDomain, knowledgeDomainColors, knowledgeTopic, retrieveKnowledge, validKnowledgeOrganization, courseKnowledgeTree, knowledgeTree, knowledgeGraph, filterKnowledgeGraph, createGraphMotion, stepGraphMotion, structuredClone, crypto: webcrypto, AbortSignal,
     document, window: dom.window, FormData: dom.window.FormData, setTimeout: () => 1, clearTimeout() {}
   });
   vm.runInContext(source, context);
   return { document, run: code => vm.runInContext(code, context), close: () => dom.window.close(),
     ready: async () => { await Promise.resolve(); },
-    fire: async (name, target) => { for (const listener of listeners.get(name) || []) await listener({ target, preventDefault() {} }); }
+    fire: async (name, target, extras = {}) => { for (const listener of listeners.get(name) || []) await listener({ target, ...extras, preventDefault() {} }); }
   };
 }
 
@@ -434,7 +439,7 @@ function harness(saved, fetchImpl, desktopBridge) {
     return nodes.get(selector);
   };
   const context = vm.createContext({
-    demoPlan, demoLessons, lessonFromBlocks, validOutline, validBlockContent, validBlockSpec, blockGenerationContext, revisedContent, restoredContent, assistedBlockTypes, Marked, DOMPurify, createMarkdownRenderer, validQuestionnaire, validClarification, learningBriefFrom, validIllustration, validImageProposal, speechDefaults, speechVoices, listeningText, speechTurns, speechRequest, validAudioId, validKnowledgeSource, validKnowledgeDraft, localKnowledgeDraft, knowledgeTags, knowledgeConditions, knowledgeCatalog, knowledgeDomain, knowledgeDomainColors, knowledgeTopic, retrieveKnowledge, validKnowledgeOrganization, courseKnowledgeTree, knowledgeTree, knowledgeGraph, filterKnowledgeGraph, createGraphMotion, stepGraphMotion, structuredClone, crypto: webcrypto, AbortSignal,
+    demoPlan, demoLessons, lessonFromBlocks, validOutline, validBlockContent, validBlockSpec, blockGenerationContext, revisedContent, restoredContent, assistedBlockTypes, Marked, DOMPurify, createMarkdownRenderer, validQuestionnaire, validClarification, learningBriefFrom, validIllustration, validImageProposal, speechDefaults, speechVoices, listeningText, speechTurns, speechRequest, validAudioId, validKnowledgeSource, validKnowledgeDraft, localKnowledgeDraft, knowledgeTags, knowledgeConditions, validAnnotations, personalNotesForSource, personalNotesMarkdown, knowledgeCatalog, knowledgeDomain, knowledgeDomainColors, knowledgeTopic, retrieveKnowledge, validKnowledgeOrganization, courseKnowledgeTree, knowledgeTree, knowledgeGraph, filterKnowledgeGraph, createGraphMotion, stepGraphMotion, structuredClone, crypto: webcrypto, AbortSignal,
     document: { querySelector: node, addEventListener(name, listener) { const group = listeners.get(name) || []; group.push(listener); listeners.set(name, group); } },
     localStorage: { get length() { return storage.size; }, key: index => [...storage.keys()][index] ?? null, getItem: key => storage.get(key) ?? null, setItem: (key, value) => storage.set(key, value), removeItem: key => storage.delete(key) },
     window: { learnflowDesktop: desktopBridge, scrollY: 0, scrollTo({ top }) { this.scrollY = top; }, confirm: () => true }, setTimeout: () => 1, clearTimeout() {},
@@ -564,6 +569,85 @@ test('reading UI exposes section card actions and saves only after reviewing the
   assert.equal(saved[0].topic, '编程/Python');
   assert.deepEqual(saved[0].useWhen, ['需要解释本节概念时']);
   assert.equal(app.run('state.notes.length'), 1);
+});
+
+test('reading keeps explanation prominent, can collapse the syllabus, and saves selected-text notes into card drafts', async t => {
+  const saved = [];
+  const app = realSettingsHarness({ load: async () => ({ status: { mode: 'demo' } }), saveAnnotations: async (id, items) => { saved.push({ id, items }); } });
+  t.after(() => app.close()); await app.ready();
+  app.run("state.lessons.p1 = structuredClone(demoLessons.p1); activeLesson = 'p1'; page = 'study'; lessonTab = 'read'; render()");
+  const doc = app.document;
+  assert.ok(doc.querySelector('[data-action="toggle-syllabus"]'));
+  await app.fire('click', doc.querySelector('[data-action="toggle-syllabus"]'));
+  assert.equal(doc.querySelector('#course-syllabus').hidden, true);
+  const reading = doc.querySelector('.reading-section .annotatable');
+  const original = reading.textContent;
+  const range = doc.createRange(); range.setStart(reading.firstChild, 0); range.setEnd(reading.firstChild, 4);
+  doc.defaultView.getSelection().removeAllRanges(); doc.defaultView.getSelection().addRange(range);
+  app.run('showAnnotationShortcut()');
+  assert.equal(doc.querySelector('#annotation-quick-add').hidden, false);
+  await app.fire('click', doc.querySelector('#annotation-quick-add'));
+  doc.querySelector('#annotation-text').value = '这是我的个人理解';
+  await app.fire('submit', doc.querySelector('#annotation-form'));
+  assert.equal(saved.length, 1);
+  assert.equal(saved[0].id, 'p1');
+  assert.equal(saved[0].items[0].text, '这是我的个人理解');
+  assert.ok(doc.querySelector('.annotation-marker'));
+  assert.equal(reading.textContent.replace('✎', ''), original, 'original lesson text remains unchanged');
+  const source = app.run("knowledgeSource('p1', '', '0')");
+  assert.equal(source.personalNotes[0].text, '这是我的个人理解');
+  await app.run("createNote('p1', '', '0')");
+  assert.match(app.run('knowledgeDraft.result.content'), /## 我的笔记[\s\S]*这是我的个人理解/);
+});
+
+test('block lessons omit the duplicate top tools and keep example revision visible', async t => {
+  const app = realSettingsHarness({ load: async () => ({ status: { mode: 'demo' } }) });
+  t.after(() => app.close()); await app.ready();
+  app.run("state.blockCourses.p1 = { intro:'课程导语', blocks:[{id:'reading-1',type:'reading',title:'讲解',objective:'理解',content:{text:'讲解正文'}},{id:'example-1',type:'example',title:'案例',objective:'应用',content:{text:'案例正文'}}] }; state.lessons={}; activeLesson='p1'; page='study'; lessonTab='read'; render()");
+  const doc = app.document;
+  assert.equal(doc.querySelector('.knowledge-entry-toolbar details'), null);
+  const speechShortcut = doc.querySelector('.quick-ask-dock > .quick-speech-button');
+  assert.ok(speechShortcut);
+  assert.equal(speechShortcut.previousElementSibling.dataset.action, 'quick-ask');
+  assert.equal(speechShortcut.dataset.action, 'open-speech');
+  assert.equal(doc.querySelector('.more-learning-tools-menu [data-action="open-speech"]'), null);
+  const readingRevision = doc.querySelector('.teaching-reading [data-action="request-revision"]');
+  const exampleRevision = doc.querySelector('.teaching-example [data-action="request-revision"]');
+  assert.equal(readingRevision.textContent.trim(), '换个讲法');
+  assert.equal(exampleRevision.textContent.trim(), '换个例子');
+  assert.equal(readingRevision.closest('details'), null);
+  assert.equal(exampleRevision.closest('details'), null);
+  assert.ok(doc.querySelector('.teaching-example details [data-action="create-note"]'));
+  const readingToggle = doc.querySelector('.teaching-reading [data-action="toggle-block-collapse"]');
+  const exampleToggle = doc.querySelector('.teaching-example [data-action="toggle-block-collapse"]');
+  const readingBody = doc.getElementById(readingToggle.getAttribute('aria-controls'));
+  const exampleBody = doc.getElementById(exampleToggle.getAttribute('aria-controls'));
+  assert.equal(readingBody.hidden, false);
+  assert.equal(exampleBody.hidden, false);
+  await app.fire('click', readingToggle);
+  assert.equal(readingBody.hidden, true);
+  assert.equal(exampleBody.hidden, false, 'collapsing the explanation must not collapse its example');
+  assert.equal(readingToggle.textContent, '展开');
+  assert.equal(doc.querySelector('.teaching-reading .block-title').textContent, '讲解');
+  assert.equal(doc.querySelector('.teaching-reading .block-objective').textContent, '理解');
+  await app.fire('click', exampleToggle);
+  assert.equal(exampleBody.hidden, true);
+  await app.fire('click', readingToggle);
+  assert.equal(readingBody.hidden, false);
+  assert.equal(exampleBody.hidden, true);
+  app.run('render()');
+  assert.equal(doc.querySelector('.teaching-example .block-collapsible-body').hidden, true, 'the fold state survives a view rerender');
+  const readingTools = doc.querySelector('.teaching-reading .more-learning-tools');
+  const exampleTools = doc.querySelector('.teaching-example .more-learning-tools');
+  readingTools.open = true;
+  await app.fire('click', doc.body);
+  assert.equal(readingTools.open, false, 'clicking outside closes the dropdown');
+  readingTools.open = true; exampleTools.open = true;
+  await app.fire('click', exampleTools.querySelector('summary'));
+  assert.equal(readingTools.open, false, 'opening another dropdown closes the first');
+  assert.equal(exampleTools.open, true);
+  await app.fire('keydown', doc.body, { key: 'Escape' });
+  assert.equal(exampleTools.open, false, 'Escape closes the dropdown');
 });
 
 test('block knowledge source uses the selected generated block and rejects pending blocks', () => {
@@ -788,6 +872,8 @@ test('teaching units pair adjacent examples and regenerate only the requested bl
   assert.match(html, /<article class="teaching-unit"[^>]*>.*知识讲解.*原始讲解.*配套案例.*原始案例.*<\/article>/s);
   assert.equal((html.match(/class="teaching-unit"/g) || []).length, 1);
   assert.ok(html.indexOf('</article>') < html.indexOf('data-block-id="quiz-1"'));
+  assert.match(html, /data-block-id="reading-1"[\s\S]*?换个讲法[\s\S]*?<summary>更多学习工具<\/summary>/);
+  assert.match(html, /<summary>更多学习工具<\/summary>[\s\S]*?生成知识卡片/);
   await app.run("action('request-revision', {dataset:{id:'p1',block:'reading-1'}})");
   assert.equal(app.node('#revise-block-dialog').open, true);
   assert.match(app.node('#revise-block-dialog').innerHTML, /你的具体要求/);
@@ -835,7 +921,8 @@ test('practice exposes speech, image suggestions and task revision with failure-
   await Promise.resolve();
   app.run(`state.blockCourses={p1:{intro:'课程',blocks:[{id:'reading-1',type:'reading',title:'讲解',objective:'理解',content:{text:'原讲解'}},{id:'practice-1',type:'practice',title:'会议听力',objective:'记录进度',content:{text:${JSON.stringify(original)}}},{id:'quiz-1',type:'quiz',title:'测验',objective:'检验',content:null}]}};state.progress.p1={completed:true};state.notes=[{id:'n1',lessonId:'p1',title:'卡片',content:'原Wiki',tags:[]}];state.reflections.p1='原心得';page='study';activeLesson='p1';render()`);
   const html = app.run("blockPart(state.blockCourses.p1.blocks[1],1,'p1')");
-  for (const action of ['open-speech', 'request-illustration', 'request-revision']) assert.match(html, new RegExp(`data-action="${action}"[^>]*data-block="practice-1"`));
+  for (const action of ['request-illustration', 'request-revision']) assert.match(html, new RegExp(`data-action="${action}"[^>]*data-block="practice-1"`));
+  assert.doesNotMatch(html, /data-action="open-speech"/);
   assert.match(html, /换个任务/);
   for (const type of ['summary', 'quiz']) assert.doesNotMatch(app.run(`blockPart({id:'x',type:'${type}',title:'模块',objective:'目标',content:${type === 'quiz' ? '{questions:[]}' : "{text:'正文'}"}},2,'p1')`), /data-action="(?:open-speech|request-illustration|request-revision)"/);
   assert.doesNotMatch(app.run("blockPart({id:'x',type:'practice',title:'未生成任务',objective:'目标',content:null},2,'p1')"), /换个任务|AI 朗读|AI 配图建议/);
@@ -1314,20 +1401,16 @@ test('knowledge cards default to Markdown reading, preserve editing drafts and s
   assert.ok(restored.run('markdown(state.notes[0])').includes(draft));
 });
 
-test('learning reflection and takeaways have safe Markdown previews without changing auto-save', () => {
+test('learning-note tab is removed without deleting historical reflections or knowledge cards', () => {
   const app = harness();
-  app.run("state.lessons.p1=structuredClone(demoLessons.p1); state.lessons.p1.takeaways=['**关键收获**']; openLesson('p1','notes')");
-  assert.match(app.node('#app').innerHTML, /id="reflection-preview"/);
-  assert.match(app.node('#app').innerHTML, /<strong>关键收获<\/strong>/);
-  const reflection = '## 我的理解\n\n**先看输入**。\n\n<img src=x onerror=alert(1)>';
-  app.input('reflection', reflection, {reflection:'p1'});
-  assert.match(app.node('#reflection-preview').innerHTML, /<h3>我的理解<\/h3>/);
-  assert.ok(!app.node('#reflection-preview').innerHTML.includes('<img'));
-  assert.equal(app.run('state.reflections.p1'), reflection);
-  assert.equal(harness(app.storage.get('learnflow.v1')).run('state.reflections.p1'), reflection);
+  app.run("state.lessons.p1=structuredClone(demoLessons.p1); state.reflections.p1='旧心得'; openLesson('p1','notes')");
+  assert.equal(app.run('lessonTab'), 'read');
+  assert.doesNotMatch(app.node('#app').innerHTML, /data-tab="notes"|id="reflection"/);
+  assert.equal(app.run('state.reflections.p1'), '旧心得');
   app.run("state.blockCourses={p1:{intro:'课程',blocks:[{id:'summary-1',type:'summary',title:'总结',objective:'记住',content:{text:'**内容块总结**'}}]}}; render()");
   assert.match(app.node('#app').innerHTML, /<strong>内容块总结<\/strong>/);
-  assert.match(app.node('#app').innerHTML, /id="reflection-preview"/);
+  assert.doesNotMatch(app.node('#app').innerHTML, /data-tab="notes"|id="reflection"/);
+  assert.equal(app.run('state.reflections.p1'), '旧心得');
 });
 
 test('settings display cloud status, test connection and keep failures visible', async () => {

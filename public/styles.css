@@ -63,6 +63,7 @@
 .btn.danger { background: #fff; color: #b25b65; border-color: #eacbd0; }
 .btn.danger:hover:not(:disabled) { background: #fff3f4; }
 .teaching-unit { margin: 18px 0; border: 1px solid #e8e3f5; border-radius: 14px; overflow: hidden; background: #fff; }
+.teaching-unit:has(.more-learning-tools[open]) { position: relative; z-index: 5; overflow: visible; }
 .teaching-part { padding: 22px; }
 .teaching-part + .teaching-part { border-top: 1px solid #e8e3f5; }
 .teaching-example { background: #f5f7ff; border-left: 3px solid #a49ae7; }
@@ -77,6 +78,12 @@
 #revise-block-dialog .field-hint { display: block; font-size: 11px; line-height: 1.8; margin-top: 12px; }
 @media(max-width:560px) { .teaching-part { padding: 18px; } .teaching-part .block-text { font-size: 13px; } .teaching-part-heading { align-items: flex-start; } .revision-dialog-actions .btn { flex: 1; } }
 .teaching-part .block-title { margin: 0 0 10px; font-size: 21px; font-weight: 700; color: #242a3d; line-height: 1.5; }
+.block-title-row { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
+.block-title-row .block-title { flex: 1; min-width: 0; }
+.block-collapse-toggle { flex: none; border: 1px solid #e4ddef; border-radius: 20px; background: #fff; color: #695787; padding: 6px 12px; font-size: 11px; line-height: 1.5; }
+.block-collapse-toggle::before { content: '▾'; margin-right: 6px; }
+.block-collapse-toggle[aria-expanded="false"]::before { content: '▸'; }
+.block-collapsible-body[hidden] { display: none; }
 .markdown-content, .teaching-part .markdown-content { white-space: normal; font-size: 14px; line-height: 1.9; color: #42495e; overflow-wrap: anywhere; }
 .markdown-content > :first-child { margin-top: 0; }
 .markdown-content > :last-child { margin-bottom: 0; }
@@ -133,13 +140,13 @@
 
 .study-layout > .syllabus { grid-column: 1; grid-row: 1; }
 .study-layout > .lesson-content { grid-column: 2; grid-row: 1; }
-.quick-ask-dock { position: fixed; top: calc(50vh - 42px); right: 0; z-index: 12; }
+.quick-ask-dock { position: fixed; top: 50%; right: 0; transform: translateY(-50%); z-index: 12; display: flex; flex-direction: column; gap: 8px; }
 .quick-ask-button { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 5px; width: 46px; height: 84px; border: 1px solid #d9cef0; border-radius: 24px; background: #fff; box-shadow: 0 5px 20px #6e57aa30; color: #6c4cbd; font-size: 11px; font-weight: 650; line-height: 1.25; text-align: center; }
 .quick-ask-button .icon { width: 19px; height: 19px; }
 .quick-ask-button:hover, .quick-ask-button.active { background: #6750bd; color: #fff; border-color: #6750bd; }
 .quick-ask-button:focus-visible { outline: 3px solid #ab97ef; outline-offset: 3px; }
-@media(max-width:1000px) { .study-layout > .lesson-content { grid-column: 1; } .quick-ask-dock { top: auto; right: 24px; bottom: 24px; } }
-@media(max-width:560px) { .quick-ask-dock { right: 15px; bottom: 15px; } .quick-ask-button { width: 58px; height: 58px; border-radius: 50%; gap: 2px; font-size: 10px; } .quick-ask-button .icon { width: 16px; height: 16px; } }
+@media(max-width:1000px) { .study-layout > .lesson-content { grid-column: 1; } .quick-ask-dock { top: auto; right: 24px; bottom: 24px; transform: none; } }
+@media(max-width:560px) { .quick-ask-dock { right: 15px; bottom: 15px; gap: 7px; } .quick-ask-button,.quick-speech-button { width: 58px; height: 58px; border-radius: 50%; gap: 2px; font-size: 10px; } .quick-ask-button .icon { width: 16px; height: 16px; } }
 /* Cached teaching illustrations never load model-provided remote URLs. */
 .image-settings-panel { grid-column: 1 / -1; }
 .image-settings-panel .desktop-form { max-width: 760px; }
@@ -344,6 +351,31 @@ main:has(.knowledge-graph) .wiki-toolbar{display:none}
 /* Keep the graph cursor legible on its light canvas, including over SVG nodes. */
 #note-results .knowledge-graph-canvas{--graph-cursor:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='24' height='24' viewBox='0 0 24 24'%3E%3Cpath d='M12 2v20M2 12h20' stroke='%23fff' stroke-width='5' stroke-linecap='round'/%3E%3Cpath d='M12 2v20M2 12h20' stroke='%2338294f' stroke-width='2' stroke-linecap='round'/%3E%3Ccircle cx='12' cy='12' r='2' fill='%23fff' stroke='%2338294f' stroke-width='1.5'/%3E%3C/svg%3E") 12 12,crosshair}
 #note-results .knowledge-graph-canvas svg,#note-results .knowledge-graph-canvas .graph-node,#note-results .knowledge-graph-canvas svg.dragging{cursor:var(--graph-cursor)}
+
+/* Reading tools keep the primary explanation action prominent. */
+.study-layout.syllabus-collapsed{grid-template-columns:minmax(0,1fr)}
+.study-layout.syllabus-collapsed>.lesson-content{grid-column:1;grid-row:1}
+.study-layout>.syllabus[hidden]{display:none}
+@media(max-width:1000px){.study-layout>.syllabus:not([hidden]){display:block;grid-column:1;grid-row:auto}.study-layout>.lesson-content,.study-layout.syllabus-collapsed>.lesson-content{grid-column:1;grid-row:auto}}
+.syllabus-toggle{margin-left:auto}
+.more-learning-tools{position:relative;flex:none;font-size:11px;color:#695787}
+.more-learning-tools summary{list-style:none;cursor:pointer;border:1px solid #e4ddef;border-radius:20px;background:#fff;padding:8px 13px;white-space:nowrap}
+.more-learning-tools summary::-webkit-details-marker{display:none}
+.more-learning-tools summary::after{content:'⌄';margin-left:8px}
+.more-learning-tools[open] summary{background:#f3effb;border-color:#cfc2ec}
+.more-learning-tools-menu{position:absolute;top:calc(100% + 6px);right:0;z-index:30;display:flex;flex-direction:column;gap:3px;width:200px;max-width:calc(100vw - 32px);max-height:min(320px,60vh);overflow-y:auto;padding:7px;background:#fff;border:1px solid #e4ddef;border-radius:11px;box-shadow:0 12px 28px #39255424}
+.more-learning-tools:not([open]) .more-learning-tools-menu{display:none}
+.more-learning-tools-menu .btn{justify-content:space-between;width:100%;min-height:34px;padding:7px 9px;border-color:transparent;font-size:11px;text-align:left}
+.more-learning-tools-menu .btn:hover{background:#f6f2fd}
+.knowledge-entry-toolbar .more-learning-tools-menu,.knowledge-section-action .more-learning-tools-menu{left:0;right:auto}
+.annotation-tip{color:#817489;font-size:12px}
+.annotation-quick-add{position:fixed;z-index:40;border:1px solid #6b53d9;border-radius:8px;background:#473488;color:#fff;padding:7px 12px;font-size:12px;box-shadow:0 6px 18px #39255435;cursor:pointer}
+.annotation-marker{display:inline-grid;place-items:center;vertical-align:baseline;width:23px;height:23px;margin:0 2px;border:1px solid #7556bd;border-radius:50%;background:#f1ebff;color:#593ba3;font-size:13px;line-height:1;cursor:pointer}
+.annotation-marker:hover,.annotation-marker:focus-visible{background:#6547b3;color:#fff}
+.annotation-marker.annotation-stale{border-style:dashed}
+.annotation-quote{max-height:110px;overflow:auto;white-space:pre-wrap;background:#f7f4fc;border-left:3px solid #a88adf;border-radius:5px;padding:12px 14px;color:#5f5377;font-size:12px}
+.annotation-dialog-actions{display:flex;justify-content:flex-end;gap:10px;flex-wrap:wrap}
+.annotation-dialog-actions .danger{margin-right:auto}
 
 /* Knowledge exploration and Q&A are separate full-width tabs. */
 html{scrollbar-gutter:stable}

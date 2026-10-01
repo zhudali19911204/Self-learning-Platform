@@ -15,7 +15,7 @@ function withoutPlan(state, planId) {
   const next = { ...state, plans: state.plans.filter(item => item.id !== planId) };
   if (!next.plans.length) return next;
   if (next.active === planId) next.active = next.plans[0].id;
-  for (const key of ['lessons', 'blockCourses', 'progress', 'reflections', 'chats']) {
+  for (const key of ['lessons', 'blockCourses', 'progress', 'reflections', 'annotations', 'chats']) {
     if (next[key]) next[key] = Object.fromEntries(Object.entries(next[key]).filter(([lessonId]) => !lessonIds.has(lessonId)));
   }
   next.notes = next.notes.filter(note => !lessonIds.has(note.lessonId));

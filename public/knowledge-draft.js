@@ -2,7 +2,8 @@ const text = (value, max) => typeof value === 'string' && value.trim().length > 
 const list = (value, max, itemMax) => Array.isArray(value) && value.length <= max && value.every(item => text(item, itemMax));
 
 export function validKnowledgeSource(value) {
-  return !!value && text(value.courseTitle, 160) && text(value.lessonTitle, 160) && text(value.objective, 1000) && text(value.sourceTitle, 160) && text(value.sourceText, 12000) && list(value.tags, 6, 40);
+  return !!value && text(value.courseTitle, 160) && text(value.lessonTitle, 160) && text(value.objective, 1000) && text(value.sourceTitle, 160) && text(value.sourceText, 12000) && list(value.tags, 6, 40) &&
+    (value.personalNotes === undefined || (Array.isArray(value.personalNotes) && value.personalNotes.length <= 20 && value.personalNotes.every(note => note && typeof note.quote === 'string' && note.quote.length <= 300 && text(note.text, 2000))));
 }
 
 export function validKnowledgeDraft(value) {
