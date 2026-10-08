@@ -19,6 +19,7 @@ function withoutPlan(state, planId) {
     if (next[key]) next[key] = Object.fromEntries(Object.entries(next[key]).filter(([lessonId]) => !lessonIds.has(lessonId)));
   }
   next.notes = next.notes.filter(note => !lessonIds.has(note.lessonId));
+  if (next.qualityReports) next.qualityReports = next.qualityReports.filter(report => report.planId !== planId);
   if (next.imageAssets) {
     const used = new Set(referencedImages(next));
     next.imageAssets = next.imageAssets.filter(asset => used.has(asset.id));

@@ -8,6 +8,7 @@ import { validLearningBrief } from '../public/planning.js';
 import { createModelProfiles } from './model-profiles.mjs';
 import { normalizeKnowledgeCard } from './knowledge-cards.mjs';
 import { validAnnotations } from '../public/annotations.js';
+import { validQualityReport } from '../public/course-quality.js';
 
 export const defaults = { provider: 'ollama', model: '', baseUrl: '', jsonMode: 'auto', timeoutMs: 120000, maxTokens: 8192, localOnly: true };
 const id = v => typeof v === 'string' && /^[a-zA-Z0-9_-]{1,160}$/.test(v) && !['__proto__', 'constructor', 'prototype'].includes(v);
@@ -21,6 +22,7 @@ export function validState(v) {
   if (!v.plans.every(p => p.learningBrief === undefined || validLearningBrief(p.learningBrief))) return false;
   const planIds = v.plans.map(p => p.id), lessonIds = v.plans.flatMap(p => p.lessons.map(l => l.id));
   if (new Set(planIds).size !== planIds.length || new Set(lessonIds).size !== lessonIds.length || !planIds.includes(v.active)) return false;
+  if (v.qualityReports !== undefined && (!Array.isArray(v.qualityReports) || v.qualityReports.length > 10000 || new Set(v.qualityReports.map(r => r?.id)).size !== v.qualityReports.length || !v.qualityReports.every(r => validQualityReport(r) && planIds.includes(r.planId) && (r.scope === 'route' ? r.targetId === r.planId : v.plans.find(p => p.id === r.planId).lessons.some(l => l.id === r.targetId))))) return false;
   if (!dict(v.lessons, validLesson) || !dict(v.reflections, s => string(s, 5000))) return false;
   if (v.annotations !== undefined && (!dict(v.annotations, validAnnotations) || Object.keys(v.annotations).some(key => !lessonIds.includes(key)))) return false;
   if (v.blockCourses !== undefined && (!dict(v.blockCourses, validBlockCourse) || Object.keys(v.blockCourses).some(key => !lessonIds.includes(key)))) return false;
@@ -61,7 +63,7 @@ export function normalizeSettings(input, previous = defaults) {
   return { ...next, apiKey };
 }
 
-export function createLocalStore(directory, secrets) {
+export function createLocalStore(directory, secrets, { filename = 'settings.json', validateChange = () => {} } = {}) {
   let queue = Promise.resolve();
   let settings = { ...defaults, apiKey: '' };
   let settingsError = '';
@@ -86,12 +88,12 @@ export function createLocalStore(directory, secrets) {
   return {
     async initialize() {
       try {
-        const stored = await read('settings.json');
+        const stored = await read(filename);
         if (stored) {
           if (stored.version !== 1) throw new Error();
         }
         settings = await profiles.load(stored);
-      } catch { settingsError = '本地模型配置无法读取或密钥无法解密。原文件已保留，请检查 settings.json 及其 .bak 备份后重启应用。'; }
+      } catch { settingsError = `本地模型配置无法读取或密钥无法解密。原文件已保留，请检查 ${filename} 及其 .bak 备份后重启应用。`; }
       return safeSettings();
     },
     getSettings: safeSettings,
@@ -103,7 +105,8 @@ export function createLocalStore(directory, secrets) {
       return enqueue(async () => {
         if (settingsError) throw new Error(settingsError);
         const change = await profiles.prepare(input, settings);
-        await atomic('settings.json', { version: 1, ...change.value });
+        validateChange(change.next);
+        await atomic(filename, { version: 1, ...change.value });
         settings = change.next; change.commit();
         return safeSettings();
       });

@@ -684,6 +684,7 @@ exports.run = async (window, store, directory) => {
   window.webContents.reload();
   await new Promise(resolve => window.webContents.once('did-finish-load', resolve));
   await wait("document.querySelector('main h1')");
+  await require('./quality-smoke.cjs').run(window, directory);
   await require('./speech-smoke.cjs').run(window, directory);
   await evaluate("document.querySelector('#speech-dialog').close()");
   await evaluate("document.querySelector('[data-page=settings]').click()");

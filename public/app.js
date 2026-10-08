@@ -11,6 +11,7 @@ import { validAnnotations, personalNotesForSource, personalNotesMarkdown } from 
 import { knowledgeCatalog, knowledgeDomain, knowledgeDomainColors, knowledgeTopic, retrieveKnowledge, validKnowledgeOrganization } from './knowledge-index.js';
 import { courseKnowledgeTree, knowledgeGraph, filterKnowledgeGraph } from './knowledge-views.js';
 import { createGraphMotion, stepGraphMotion } from './graph-motion.js';
+import { qualityRubric, qualityLabels } from './course-quality.js';
 
 const renderMarkdown = createMarkdownRenderer(Marked, DOMPurify);
 
@@ -65,6 +66,7 @@ let syllabusCollapsed = false, annotationDraft = null, pendingAnnotationAnchor =
 const collapsedBlocks = new Set();
 let status = { mode: 'loading' };
 let connectionResult = '';
+let qualitySettings = null, qualityStatus = { mode: 'demo' }, qualityConnectionResult = '', qualityView = null, qualityBusy = false;
 let revisionBusy = false;
 let imageSettings = null, imageConnectionResult = '', illustrationBusy = false, illustrationDraft = null;
 let webSearchSettings = null, webSearchSaveResult = '';
@@ -75,7 +77,7 @@ const knowledgeOrganizeUndo = new Map();
 // Unsaved configuration stays in memory only, including newly typed keys.
 const modelFormDrafts = new Map();
 const modelServiceDrafts = new Map();
-const modelFormIds = ['desktop-settings-form', 'image-settings-form', 'speech-settings-form', 'web-search-settings-form'];
+const modelFormIds = ['desktop-settings-form', 'quality-settings-form', 'image-settings-form', 'speech-settings-form', 'web-search-settings-form'];
 let modelSettingsSaving = false;
 function rememberModelDrafts(changedId) {
   if (!desktop || page !== 'settings') return;
@@ -92,7 +94,7 @@ function restoreModelDrafts() {
   for (const [id, draft] of modelFormDrafts) {
     const form = $('#' + id);
     if (!form?.elements) continue;
-    const selector = id === 'desktop-settings-form' ? 'provider' : id === 'image-settings-form' ? 'protocol' : null;
+    const selector = ['desktop-settings-form', 'quality-settings-form'].includes(id) ? 'provider' : id === 'image-settings-form' ? 'protocol' : null;
     const selected = selector && draft.fields.find(field => field.name === selector)?.value;
     if (selected) { updateProfileKeyField(form, savedModelProfile(id, selected)); form.dataset.profile = selected; }
     for (const field of draft.fields) {
@@ -110,7 +112,7 @@ function restoreModelDrafts() {
   }
 }
 function savedModelProfile(formId, selected) {
-  const image = formId === 'image-settings-form', settings = image ? imageSettings : desktopSettings;
+  const image = formId === 'image-settings-form', settings = image ? imageSettings : formId === 'quality-settings-form' ? qualitySettings : desktopSettings;
   const selector = image ? 'protocol' : 'provider';
   const base = image
     ? { enabled: false, protocol: selected, model: '', baseUrl: '', size: '1024x1024', responseFormat: 'auto', timeoutMs: 180000, localOnly: true, downloadHosts: '', hasApiKey: false }
@@ -122,7 +124,7 @@ function updateProfileKeyField(form, cfg) {
   const host = form.querySelector('.model-key-field');
   if (!host) return;
   const image = form.id === 'image-settings-form';
-  host.innerHTML = modelKeyField(image ? 'image-model-key' : 'model-key', image ? 'image-key-action' : 'key-action', cfg);
+  host.innerHTML = modelKeyField(image ? 'image-model-key' : form.id === 'quality-settings-form' ? 'quality-model-key' : 'model-key', image ? 'image-key-action' : form.id === 'quality-settings-form' ? 'quality-key-action' : 'key-action', cfg);
 }
 function switchModelProfile(form) {
   if (!form?.elements) return;
@@ -149,6 +151,7 @@ function switchModelProfile(form) {
   dirtyModelForm(form);
   const message = draft ? '已恢复此服务的未保存参数；点击保存后生效。' : cfg.model || cfg.baseUrl || cfg.hasApiKey ? '已恢复此服务保存的参数；点击保存后生效，密钥不回显。' : '此服务尚无保存参数，请填写后保存。';
   if (image) { imageConnectionResult = message; $('#image-connection-result').textContent = message; }
+  else if (form.id === 'quality-settings-form') { qualityConnectionResult = message; $('#quality-connection-result').textContent = message; }
   else { connectionResult = message; $('#connection-result').textContent = message; }
 }
 function clearSavedModelDraft(form) {
@@ -185,15 +188,16 @@ function dirtyModelForm(form) {
     return;
   }
   const speech = form.id === 'speech-settings-form', image = form.id === 'image-settings-form';
-  const prefix = speech ? 'speech-' : image ? 'image-' : '';
+  const prefix = speech ? 'speech-' : image ? 'image-' : form.id === 'quality-settings-form' ? 'quality-' : '';
   $('#' + (prefix ? prefix + 'settings-error' : 'settings-error')).textContent = '';
   if (!prefix) $('#remote-permission').hidden = true;
   const message = '配置尚未保存，请保存后再检查连接。';
   if (speech) speechConnectionResult = message;
   else if (image) imageConnectionResult = message;
+  else if (prefix === 'quality-') qualityConnectionResult = message;
   else connectionResult = message;
   $('#' + prefix + 'connection-result').textContent = message;
-  $('[data-action="' + (prefix ? 'check-' + prefix + 'connection' : 'test-connection') + '"]').disabled = true;
+  $('[data-action="' + (prefix === 'quality-' ? 'test-quality-connection' : prefix ? 'check-' + prefix + 'connection' : 'test-connection') + '"]').disabled = true;
   syncModelKey(form);
   rememberModelDrafts(form.id);
 }
@@ -293,6 +297,7 @@ function render() {
   pendingAnnotationAnchor = null;
   restoreModelDrafts();
   decorateKnowledgeActions();
+  decorateQualityActions();
   paintAnnotations();
   decorateGraphToolbar();
   startGraphMotion(pendingGraph);
@@ -403,6 +408,18 @@ function decorateKnowledgeActions() {
       });
     }
   }
+}
+function decorateQualityActions() {
+  if (!desktop?.inspectQuality || !document.createElement) return;
+  const scope = page === 'routes' ? 'route' : page === 'study' ? 'lesson' : '';
+  const targetId = scope === 'route' ? plan().id : activeLesson;
+  const host = scope === 'route' ? $('.route-overview-actions') : scope === 'lesson' ? $('.lesson-objective') : null;
+  if (!host || !targetId) return;
+  const entry = document.createElement('button');
+  entry.type = 'button'; entry.className = 'btn secondary quality-entry';
+  entry.dataset.action = 'open-quality'; entry.dataset.scope = scope; entry.dataset.id = targetId;
+  entry.textContent = (state.qualityReports || []).some(r => r.scope === scope && r.targetId === targetId) ? '质量审查 · 查看报告' : '质量审查';
+  if (scope === 'route') host.append(entry); else host.after(entry);
 }
 function home() {
   const p = plan(), next = nextLesson();
@@ -685,7 +702,7 @@ function desktopSettingsPage() {
   const cfg = desktopSettings || { provider: 'ollama', model: '', baseUrl: '', jsonMode: 'auto', timeoutMs: 120000, maxTokens: 8192, localOnly: true };
   const providers = [['ollama', 'Ollama · 本地'], ['lmstudio', 'LM Studio · 本地'], ['vllm', 'vLLM · 自部署'], ['deepseek', 'DeepSeek · 云端'], ['qwen', '通义千问 · 云端'], ['compatible', '自定义兼容接口']];
   return `<section class="page-intro"><div><div class="eyebrow">YOUR LOCAL LEARNING SPACE</div><h1>模型与数据设置</h1><p>文字、图片、语音在同一页配置，各自保存后立即生效，无需重启。</p></div>${pill('桌面版 · 本地存储', 'success')}</section>
-  <p class="settings-key-note">文字模型按服务、图片模型按接口协议分别记住参数，切回时自动恢复，点击保存后才生效。API Key 有就填写，没有可留空；已保存的密钥不回显，留空保留，不跨服务沿用。三种模型独立保存密钥，加密保存在本机，不写入学习备份。</p>
+  <p class="settings-key-note">生成与评审文字模型按服务、图片模型按接口协议分别记住参数，切回时自动恢复，点击保存后才生效。API Key 有就填写，没有可留空；已保存的密钥不回显，留空保留，不跨服务或角色沿用。各模型独立保存密钥，加密保存在本机，不写入学习备份。</p>
   <div class="model-settings-grid"><section class="panel model-settings-card"><div class="model-card-heading">${icon('brain')}<h2>LLM 文字模型</h2></div><p class="model-card-description">规划课程、讲解知识和 AI 答疑。</p>${pill(status.mode === 'ai' ? (status.providerLabel || 'AI') + ' · ' + status.model : '尚未配置可用模型', 'purple')}
   ${cfg.error ? `<div class="notice error">${escape(cfg.error)}</div>` : ''}
   <form id="desktop-settings-form" class="desktop-form" data-profile="${escape(cfg.provider)}">
@@ -702,13 +719,83 @@ function desktopSettingsPage() {
   </form>
   ${button('测试已保存的模型连接', 'test-connection', 'secondary full', status.mode === 'ai' ? '' : 'disabled', 'bolt')}
   <div id="connection-result" class="notice" role="status">${escape(connectionResult || '保存后可测试连接；“已配置”不代表模型已启动。')}</div><p class="field-hint">连接测试只发送固定短提示。使用云端服务时会按服务商规则计费。</p>
-  </section>${imageSettingsPanel()}${speechSettingsPanel()}</div>${webSearchSettingsPanel()}<section class="panel settings-data-panel"><h2>本地学习数据</h2><p>学习路线、课程、练习成绩与 Wiki 自动保存到本机。关闭应用后，下次打开会继续加载。</p>
+  </section>${imageSettingsPanel()}${speechSettingsPanel()}</div>${qualitySettingsPanel()}${webSearchSettingsPanel()}<section class="panel settings-data-panel"><h2>本地学习数据</h2><p>学习路线、课程、练习成绩与 Wiki 自动保存到本机。关闭应用后，下次打开会继续加载。</p>
   <label>数据目录</label><pre class="config-example">${escape(dataDirectory)}</pre>
   <div class="data-counts"><strong>${state.plans.length}<span>条路线</span></strong><strong>${state.notes.length}<span>张卡片</span></strong></div>
   <div class="settings-data-actions">${button('打开数据目录', 'open-data', 'secondary', '', 'book')}${button('导出完整 JSON 备份', 'export-data', 'secondary', '', 'export')}${button('导入学习备份', 'import-data', 'secondary', '', 'plus')}${button('导出 Wiki Markdown', 'export-wiki', 'secondary', state.notes.length ? '' : 'disabled', 'export')}</div>
   <p class="field-hint">完整备份包含课程配图和历史版本。导入前会确认替换并创建 SQLite 快照。学习备份不包含模型配置或密钥。朗读音频为独立本地缓存；如需保留，请在应用关闭后备份整个数据目录。</p></section>`;
 }
 
+function qualitySettingsPanel() {
+  const cfg = qualitySettings || { provider: 'ollama', model: '', baseUrl: '', localOnly: true, jsonMode: 'auto', timeoutMs: 120000, maxTokens: 8192 };
+  return `<section class="panel quality-settings-panel"><div class="model-card-heading">${icon('check')}<h2>课程评审模型 · 独立配置</h2></div><p>用不同于生成模型的模型检查路线、讲解、案例和测验。建议选择不同模型家族；当前生成模型：${escape(status.model || '尚未配置')}。</p>${pill(qualityStatus.mode === 'ai' ? qualityStatus.model : '尚未配置可用的独立评审模型', 'purple')}
+  <form id="quality-settings-form" class="desktop-form" data-profile="${escape(cfg.provider)}"><div class="quality-config-grid"><div>
+  <label for="quality-model-provider">评审模型服务</label><select id="quality-model-provider" name="provider">${[['ollama','Ollama · 本地'],['lmstudio','LM Studio · 本地'],['vllm','vLLM · 自部署'],['deepseek','DeepSeek · 云端'],['qwen','通义千问 · 云端'],['compatible','自定义兼容接口']].map(([id,label]) => `<option value="${id}" ${id === cfg.provider ? 'selected' : ''}>${label}</option>`).join('')}</select>
+  <label for="quality-model-name">评审模型名称</label><input id="quality-model-name" name="model" maxlength="200" value="${escape(cfg.model)}" placeholder="必须与生成模型不同，留空停用评审">
+  <label for="quality-model-url">接口根地址 <small>留空使用服务预设</small></label><input id="quality-model-url" name="baseUrl" maxlength="2000" value="${escape(cfg.baseUrl)}" placeholder="例如 http://127.0.0.1:11434"></div><div>
+  <label class="check-label"><input type="checkbox" name="localOnly" ${cfg.localOnly ? 'checked' : ''}>仅使用本机评审模型</label><p class="field-hint">云端或局域网模型请关闭此项。保存配置不会发起课程评价。</p><div class="model-key-field">${modelKeyField('quality-model-key', 'quality-key-action', cfg)}</div>
+  <details class="model-advanced"><summary>高级设置</summary><div class="model-advanced-content"><div class="form-row"><div><label>JSON 模式</label><select name="jsonMode">${[['auto','自动'],['on','开启'],['off','仅提示词']].map(([id,label]) => `<option value="${id}" ${id === cfg.jsonMode ? 'selected' : ''}>${label}</option>`).join('')}</select></div><div><label>超时（秒）</label><input name="timeout" type="number" min="1" max="600" required value="${cfg.timeoutMs / 1000}"></div><div><label>输出上限</label><input name="maxTokens" type="number" min="128" max="32768" required value="${cfg.maxTokens}"></div></div></div></details></div></div>
+  <p id="quality-settings-error" class="inline-error" role="alert">${escape(cfg.error || qualityStatus.configurationError || '')}</p><button type="submit" class="btn primary" ${cfg.error ? 'disabled' : ''}>保存评审模型配置 ${icon('check')}</button></form>
+  ${button('测试已保存的评审模型连接', 'test-quality-connection', 'secondary', qualityStatus.mode === 'ai' ? '' : 'disabled', 'bolt')}<p id="quality-connection-result" class="notice" role="status">${escape(qualityConnectionResult || '只有主动点击“开始 AI 评价”才发送课程需求与正文。评价可能消耗模型额度；当前评价未经人工校准，也未外部核验事实。')}</p></section>`;
+}
+async function openQuality(scope, id) {
+  if (!desktop?.inspectQuality) throw new Error('课程评价目前在桌面版提供。');
+  await pendingSave;
+  const data = await desktop.inspectQuality(scope, id);
+  qualityView = { ...data, selectedReportId: data.currentReportId || data.reports[0]?.id || '', error: '' };
+  renderQualityDialog(); $('#quality-dialog').showModal();
+}
+function qualityIssueMarkup(item, index) {
+  const title = qualityView.units.find(u => u.id === item.unitId)?.title || '原版本模块';
+  return `<article class="quality-issue ${item.severity}"><div><strong>${escape({critical:'严重问题',major:'需重点核对',minor:'改进建议'}[item.severity])}</strong><span>${escape(title)} · ${item.origin === 'rule' ? '本地规则' : 'AI 审查'}</span></div>${item.quote ? `<blockquote>${escape(item.quote)}</blockquote>` : ''}<p>${escape(item.reason)}</p><p><strong>建议：</strong>${escape(item.suggestion)}</p><button type="button" class="text-button" data-action="quality-locate" data-issue="${index}">${icon('arrow')}查看对应内容</button></article>`;
+}
+const qualityDate = timestamp => new Date(timestamp).toLocaleString('zh-CN', { year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit' });
+function renderQualityDialog() {
+  if (!qualityView) return;
+  const v = qualityView, report = v.reports.find(r => r.id === v.selectedReportId), stale = report && report.fingerprint !== v.fingerprint;
+  const issues = report ? report.issues : v.rules.issues;
+  const reportMarkup = report ? `<section class="quality-report"><div class="quality-score"><strong>${report.score}<small>/100</small></strong><div>${pill(qualityLabels[report.status], report.status === 'reviewed' ? 'success' : 'purple')}<p>${report.partial ? '部分内容审查' : report.scope === 'route' ? '路线规划审查' : '本课内容审查'} · 参考分，不代表事实正确率</p></div></div>${stale ? '<p class="notice">这是旧内容版本的报告。课程已变化，请重新评价当前版本。</p>' : ''}<p>${escape(report.summary)}</p><p class="field-hint">评审模型：${escape(report.reviewer.model)} · ${qualityDate(report.created)} · ${escape(report.rubricVersion)}<br>生成配置（审查时）：${escape(report.generator.model || '未配置')}。历史课程的原始生成模型尚未追溯。<br>未经人工校准；事实未外部核验。</p><div class="quality-dimensions">${report.dimensions.map(d => `<details><summary>${escape(qualityRubric.find(r => r.id === d.id)?.label || d.id)}<strong>${d.rating}/4</strong></summary><p>${escape(d.reason)}</p></details>`).join('')}</div></section>` : '<p class="notice">尚无 AI 评价报告。下方本地检查无需联网，不能判断事实是否正确。</p>';
+  $('#quality-dialog').innerHTML = `<div class="dialog-heading"><div><div class="eyebrow">COURSE QUALITY REVIEW</div><h2 id="quality-title">课程质量报告</h2></div><button type="button" class="icon-button" data-action="close-quality" aria-label="关闭质量报告">${icon('close')}</button></div><h3>${escape(v.title)}</h3><p>${escape(v.objective)}</p><p class="field-hint">${v.scope === 'route' ? `路线共 ${v.rules.total} 节课，仅审查规划。` : `已生成 ${v.rules.ready}/${v.rules.total} 个模块。${v.rules.partial ? '仅评价已生成内容。' : ''}`}</p>
+  <div class="quality-review-actions">${button(qualityBusy ? '正在评价…' : '开始 AI 评价（可能计费）', 'evaluate-quality', 'primary', qualityBusy || qualityStatus.mode !== 'ai' || !v.rules.ready ? 'disabled' : '', 'check')}${button('评审模型设置', 'quality-settings', 'secondary', qualityBusy ? 'disabled' : '', 'settings')}</div><p class="field-hint">发送学习需求、大纲及已生成正文给独立评审模型；不发送笔记、答疑或成绩。每次点击评价一次，失败不自动重试，课程原文保持保存。</p><p id="quality-error" class="inline-error" role="alert">${escape(v.error)}</p>
+  ${v.reports.length ? `<label for="quality-report-select">评价历史（保留最近 10 份）</label><select id="quality-report-select">${v.reports.map(r => `<option value="${r.id}" ${r.id === v.selectedReportId ? 'selected' : ''}>${qualityDate(r.created)} · ${r.score} 分 · ${r.fingerprint === v.fingerprint ? '当前内容' : '历史版本'}${r.partial ? ' · 部分审查' : ''}</option>`).join('')}</select>` : ''}${reportMarkup}<h3>${report ? '审查发现' : '本地检查'}</h3>${issues.length ? issues.map(qualityIssueMarkup).join('') : '<p>当前未报告问题；仍需核对关键事实。</p>'}<details class="quality-objectives"><summary>查看课程验收目标</summary>${v.units.map(u => `<p><strong>${escape(u.title)}${u.pending ? ' · 尚未生成' : ''}</strong><br>${escape(u.objective)}</p>`).join('')}</details>`;
+}
+async function evaluateQuality() {
+  if (qualityBusy || !qualityView) return;
+  const target = qualityView;
+  qualityBusy = true; target.error = ''; renderQualityDialog();
+  try {
+    const result = await desktop.evaluateQuality(target.scope, target.targetId, target.fingerprint);
+    state.qualityReports = [...(state.qualityReports || []).filter(r => r.scope !== target.scope || r.targetId !== target.targetId), ...result.reports];
+    if (qualityView === target) qualityView = { ...result, selectedReportId: result.reports[0]?.id || '', error: '' };
+    toast('课程评价报告已保存。');
+  } catch (error) { if (qualityView === target) target.error = error.message; else toast(error.message); }
+  finally { qualityBusy = false; if (qualityView) renderQualityDialog(); }
+}
+async function locateQualityIssue(index) {
+  const view = qualityView, report = view.reports.find(r => r.id === view.selectedReportId);
+  const issue = (report?.issues || view.rules.issues)[index];
+  if (!issue) return;
+  if (report && report.fingerprint !== view.fingerprint) throw new Error('此问题来自历史版本，请先评价当前内容再定位。');
+  $('#quality-dialog').close();
+  const lessonId = view.scope === 'route' ? issue.unitId : view.targetId;
+  const owner = state.plans.find(p => p.lessons.some(l => l.id === lessonId));
+  if (!owner) throw new Error('对应课程不存在。');
+  state.active = owner.id;
+  const quizTarget = issue.unitId === 'legacy-quiz' || state.blockCourses?.[lessonId]?.blocks.some(b => b.id === issue.unitId && b.type === 'quiz');
+  await openLesson(lessonId, quizTarget ? 'quiz' : 'read');
+  let node = document.querySelector(`[data-block-id="${issue.unitId}"]`);
+  if (!node && issue.unitId.startsWith('section-')) node = document.querySelectorAll('.reading-section')[Number(issue.unitId.slice(8))];
+  if (!node && issue.unitId === 'legacy-example') node = $('.code-block');
+  if (!node && issue.unitId === 'legacy-practice') node = $('.challenge');
+  if (!node && issue.unitId === 'legacy-quiz') node = $('.quiz-intro');
+  if (!node) node = $('.lesson-content');
+  const body = node?.querySelector('.block-collapsible-body');
+  if (body?.hidden) { collapsedBlocks.delete(`${lessonId}:${issue.unitId}`); body.hidden = false; const toggle = node.querySelector('.block-collapse-toggle'); if (toggle) { toggle.textContent = '收起'; toggle.setAttribute('aria-expanded', 'true'); } }
+  if (quizTarget) node = $$('.question')[0] || node;
+  node?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  node?.classList.add('quality-target');
+  setTimeout(() => node?.classList.remove('quality-target'), 2600);
+}
 function webSearchSettingsPanel() {
   const cfg = webSearchSettings || { enabled: false };
   return `<section class="panel web-search-settings-panel"><h2>网页图片搜索 · 百炼文搜图</h2><p>使用当前文字模型的地址、模型和密钥，通过 Responses 的 web_search_image 工具查找互联网图片，不需要另一套搜索 Key。</p><form id="web-search-settings-form" class="desktop-form">
@@ -1011,6 +1098,20 @@ async function download(name, content, type) {
 }
 function markdown(n) { return `# ${n.title}\n\n${n.summary.split('\n').map(line => '> ' + line).join('\n')}\n\n标签：${n.tags.join('、')}\n\n来源课程：${n.courseTitle}\n\n${n.content}\n`; }
 async function action(name, element) {
+  if (name === 'open-quality' && desktop) return openQuality(element.dataset.scope, element.dataset.id);
+  if (name === 'close-quality') { $('#quality-dialog').close(); qualityView = null; return; }
+  if (name === 'evaluate-quality' && desktop) return evaluateQuality();
+  if (name === 'quality-locate') return locateQualityIssue(Number(element.dataset.issue));
+  if (name === 'quality-settings') { $('#quality-dialog').close(); qualityView = null; return navigate('settings'); }
+  if (name === 'test-quality-connection' && desktop) {
+    const button = element; button.disabled = true;
+    qualityConnectionResult = '正在测试独立评审模型的连接…';
+    $('#quality-connection-result').textContent = qualityConnectionResult;
+    try { const result = await desktop.testQualityConnection(); qualityConnectionResult = `评审连接成功：${result.provider} / ${result.model}，${(result.latencyMs / 1000).toFixed(1)} 秒。尚未发送课程。`; }
+    catch (error) { qualityConnectionResult = error.message; }
+    finally { if ($('#quality-connection-result')) $('#quality-connection-result').textContent = qualityConnectionResult; button.disabled = qualityStatus.mode !== 'ai'; }
+    return;
+  }
   if (name === 'toggle-syllabus') {
     syllabusCollapsed = !syllabusCollapsed;
     const syllabus = $('#course-syllabus'), layout = $('.study-layout');
@@ -1517,6 +1618,7 @@ document.addEventListener('change', event => {
   if (desktop && event.target.id === 'model-provider') {
     switchModelProfile($('#desktop-settings-form')); return;
   }
+  if (desktop && event.target.id === 'quality-model-provider') { switchModelProfile($('#quality-settings-form')); return; }
   if (desktop && event.target.id === 'image-protocol') {
     switchModelProfile($('#image-settings-form')); return;
   }
@@ -1550,7 +1652,11 @@ document.addEventListener('submit', async event => {
   const submit = form.querySelector('button[type="submit"]');
   const label = submit.innerHTML; submit.disabled = true;
   try {
-    if (form.id === 'web-search-settings-form' && desktop) {
+    if (form.id === 'quality-settings-form' && desktop) {
+      const result = await desktop.saveQualitySettings({ provider: values.get('provider'), model: values.get('model'), baseUrl: values.get('baseUrl'), ...modelKeyValues(values), localOnly: values.get('localOnly') === 'on', jsonMode: values.get('jsonMode'), timeoutMs: Number(values.get('timeout')) * 1000, maxTokens: Number(values.get('maxTokens')) });
+      qualitySettings = result.settings; qualityStatus = result.status; qualityConnectionResult = '独立评审模型已保存，可以测试连接或主动评价课程。';
+      clearSavedModelDraft(form); modelFormDrafts.delete(form.id); render(); toast('评审模型配置已保存在本机。');
+    } else if (form.id === 'web-search-settings-form' && desktop) {
       webSearchSettings = await desktop.saveWebSearchSettings({ enabled: values.get('enabled') === 'on' });
       webSearchSaveResult = `网页搜图已${webSearchSettings.enabled ? '启用' : '关闭'}并保存；没有发起搜索。`;
       modelFormDrafts.delete(form.id); render(); toast('百炼网页搜图设置已保存；没有发起搜索。');
@@ -1639,6 +1745,7 @@ document.addEventListener('submit', async event => {
         return;
       }
       desktopSettings = result.settings; status = result.status; connectionResult = '配置已保存并生效，可测试模型连接。';
+      if (result.qualityStatus) qualityStatus = result.qualityStatus;
       clearSavedModelDraft(form);
       modelFormDrafts.delete(form.id);
       render(); toast('模型配置已保存在本机。');
@@ -1747,6 +1854,7 @@ document.addEventListener('submit', async event => {
       if ($('#wiki-answer')) $('#wiki-answer').innerHTML = answerHTML();
     }
   } catch (e) { if (['commons-search-form', 'commons-select-form'].includes(form.id) && illustrationDraft) { illustrationDraft.error = e.message; illustrationBusy = false; renderIllustrationDialog(); }
+    else if (form.id === 'quality-settings-form') { $('#quality-settings-error').textContent = e.message; qualityConnectionResult = '评审配置未保存，请检查参数；不能与生成模型相同。'; $('#quality-connection-result').textContent = qualityConnectionResult; }
     else if (form.id === 'web-search-settings-form') $('#web-search-settings-error').textContent = e.message;
     else if (['speech-preview-form', 'speech-generate-form'].includes(form.id)) { speechDraft.error = e.message; speechBusy = false; renderSpeechDialog(); }
     else if (form.id === 'speech-settings-form') { $('#speech-settings-error').textContent = e.message; speechConnectionResult = `语音配置保存失败：${e.message}`; $('#speech-connection-result').textContent = speechConnectionResult; }
@@ -1791,11 +1899,14 @@ $('#annotation-dialog')?.addEventListener?.('close', () => { annotationDraft = n
 $('#knowledge-draft-dialog')?.addEventListener?.('close', () => { if (!knowledgeBusy) knowledgeDraft = null; });
 $('#knowledge-organize-dialog')?.addEventListener?.('cancel', event => { if (knowledgeOrganizeBusy) event.preventDefault(); });
 $('#knowledge-organize-dialog')?.addEventListener?.('close', () => { if (!knowledgeOrganizeBusy) knowledgeOrganize = null; });
+$('#quality-dialog')?.addEventListener?.('cancel', () => { qualityView = null; });
+document.addEventListener('change', event => { if (event.target.id === 'quality-report-select' && qualityView) { qualityView.selectedReportId = event.target.value; renderQualityDialog(); } });
 if (desktop) {
   $('#app').innerHTML = '<div class="empty-state"><h2>正在读取本地数据…</h2></div>';
   desktop.load().then(result => {
     if (result.state) state = result.state;
     desktopSettings = result.settings; imageSettings = result.imageSettings || null; speechSettings = result.speechSettings || null; webSearchSettings = result.webSearchSettings || null; dataDirectory = result.dataDirectory; status = result.status;
+    qualitySettings = result.qualitySettings || null; qualityStatus = result.qualityStatus || { mode: 'demo' };
     if (result.startPage === 'settings') page = 'settings';
     storageWarning = result.stateError || ''; render();
   }).catch(error => {

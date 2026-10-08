@@ -9,7 +9,7 @@ const smoke = process.argv.includes('--smoke-test');
 const development = process.argv.includes('--dev-profile');
 if (smoke) app.setPath('userData', path.resolve('.desktop-test'));
 else if (development) app.setPath('userData', path.resolve('.desktop-dev'));
-let window, server, store, imageStore, speechStore, webSearchStore, learning, base, shuttingDown = false;
+let window, server, store, imageStore, speechStore, webSearchStore, qualityStore, learning, base, shuttingDown = false;
 const token = randomBytes(32).toString('hex');
 if (!app.requestSingleInstanceLock()) app.quit();
 else {
@@ -27,6 +27,8 @@ function handle(channel, fn) {
 async function start() {
   const { createApp, illustrationGuidance } = await import(pathToFileURL(path.join(__dirname, '..', 'server.mjs')));
   const { createLLM } = await import(pathToFileURL(path.join(__dirname, '..', 'llm.mjs')));
+  const { assertDistinctQualityModels } = await import(pathToFileURL(path.join(__dirname, '..', 'public', 'course-quality.js')));
+  const { createQualityService } = await import(pathToFileURL(path.join(__dirname, '..', 'course-quality.mjs')));
   const { createLocalStore, validState } = await import(pathToFileURL(path.join(__dirname, 'local-store.mjs')));
   const { createSqliteStore } = await import(pathToFileURL(path.join(__dirname, 'sqlite-store.mjs')));
   const { createImageStore } = await import(pathToFileURL(path.join(__dirname, 'image-store.mjs')));
@@ -46,8 +48,10 @@ async function start() {
     encrypt: async value => { if (!available()) throw new Error('系统安全存储不可用，无法保存密钥。可使用不需要密钥的本地模型。'); return safeStorage.encryptString(value).toString('base64'); },
     decrypt: async value => { if (!available()) throw new Error('系统安全存储不可用。'); return safeStorage.decryptString(Buffer.from(value, 'base64')); }
   };
-  store = createLocalStore(dataDirectory, secrets);
+  store = createLocalStore(dataDirectory, secrets, { validateChange: next => assertDistinctQualityModels(next, qualityStore?.getModelConfig()) });
   await store.initialize();
+  qualityStore = createLocalStore(dataDirectory, secrets, { filename: 'quality-settings.json', validateChange: next => assertDistinctQualityModels(store.getModelConfig(), next) });
+  await qualityStore.initialize();
   imageStore = createImageStore(dataDirectory, secrets, bytes => {
     const decoded = nativeImage.createFromBuffer(bytes), { width, height } = decoded.getSize();
     if (decoded.isEmpty() || width < 1 || height < 1 || width > 4096 || height > 4096) throw new Error('图片无法解码或尺寸超过 4096，请调整图片模型尺寸。');
@@ -66,6 +70,16 @@ async function start() {
   const modelFetch = (url, options) => modelSession.fetch(url, { ...options, credentials: 'omit' });
   const speechService = createSpeechService(speechStore, modelFetch);
   let llm = createLLM({ ...store.getModelConfig(), fetchImpl: modelFetch });
+  const getQualityLLM = () => createLLM({ ...qualityStore.getModelConfig(), fetchImpl: modelFetch });
+  const qualityStatus = () => {
+    const result = getQualityLLM().status();
+    try { assertDistinctQualityModels(llm.status(), result); }
+    catch (error) { return { ...result, mode: 'error', configurationError: error.message }; }
+    return result;
+  };
+  const qualityService = createQualityService({ learning, getReviewer: getQualityLLM, getGenerator: () => llm.status() });
+  let roleSaveQueue = Promise.resolve();
+  const saveModelRole = task => { const operation = roleSaveQueue.then(task); roleSaveQueue = operation.catch(() => {}); return operation; };
   if (process.argv.includes('--verify-model')) {
     try {
       const result = await llm.testConnection();
@@ -84,8 +98,18 @@ async function start() {
   handle('learnflow:load', async () => {
     let state = null, stateError = '';
     try { state = learning.overview(); } catch (error) { stateError = error.message; }
-    return { settings: store.getSettings(), imageSettings: imageStore.getSettings(), speechSettings: speechStore.getSettings(), webSearchSettings: webSearchStore.getSettings(), state, stateError, status: llm.status(), dataDirectory, startPage: process.argv.includes('--settings') ? 'settings' : 'home' };
+    return { settings: store.getSettings(), qualitySettings: qualityStore.getSettings(), qualityStatus: qualityStatus(), imageSettings: imageStore.getSettings(), speechSettings: speechStore.getSettings(), webSearchSettings: webSearchStore.getSettings(), state, stateError, status: llm.status(), dataDirectory, startPage: process.argv.includes('--settings') ? 'settings' : 'home' };
   });
+  handle('learnflow:inspect-quality', (scope, id) => qualityService.inspect(scope, id));
+  handle('learnflow:evaluate-quality', (scope, id, fingerprint) => qualityService.evaluate(scope, id, fingerprint));
+  handle('learnflow:test-quality-connection', () => {
+    assertDistinctQualityModels(llm.status(), getQualityLLM().status());
+    return getQualityLLM().testConnection();
+  });
+  handle('learnflow:save-quality-settings', value => saveModelRole(async () => {
+    const settings = await qualityStore.saveSettings(value);
+    return { settings, status: qualityStatus() };
+  }));
   handle('learnflow:save-speech-settings', value => speechStore.saveSettings(value));
   handle('learnflow:check-speech-connection', () => createSpeechModel(speechStore.getConfig(), modelFetch).check());
   const speechForLesson = value => { learning.getLesson(value?.lessonId); return value; };
@@ -283,16 +307,16 @@ async function start() {
       return pendingImages.public(record);
     } finally { imageRequests.delete(requestId); }
   });
-  handle('learnflow:save-settings', async value => {
+  handle('learnflow:save-settings', value => saveModelRole(async () => {
     try {
       const settings = await store.saveSettings(value);
       llm = createLLM({ ...store.getModelConfig(), fetchImpl: modelFetch });
-      return { settings, status: llm.status() };
+      return { settings, status: llm.status(), qualityStatus: qualityStatus() };
     } catch (error) {
       if (error.code === 'LOCAL_ONLY_CONFLICT') return { requiresRemotePermission: true, error: error.message };
       throw error;
     }
-  });
+  }));
   handle('learnflow:request', async (endpoint, data) => {
     if (!['status', 'plan-clarify', 'plan', 'lesson', 'lesson-outline', 'lesson-block', 'lesson-ask', 'wiki', 'wiki-draft', 'knowledge-organize', 'ask', 'test-connection'].includes(endpoint)) throw new Error('接口不存在。');
     const response = await fetch(`${base}/api/${endpoint}`, {
@@ -359,12 +383,12 @@ async function start() {
   if (development) { window.setTitle('知行 Learnflow · 开发测试版'); console.log('DESKTOP_DEV_READY'); }
   if (smoke) {
     await require('./smoke.cjs').run(window, { ...store, loadState: async () => learning.exportState() }, dataDirectory);
-    await store.flush(); await imageStore.flush(); await speechStore.flush(); await webSearchStore.flush(); app.quit();
+    await store.flush(); await qualityStore.flush(); await imageStore.flush(); await speechStore.flush(); await webSearchStore.flush(); app.quit();
   }
 }
 app.on('window-all-closed', () => app.quit());
 app.on('before-quit', event => {
   if (shuttingDown) return;
   event.preventDefault(); shuttingDown = true;
-  Promise.all([store?.flush(), imageStore?.flush(), speechStore?.flush(), webSearchStore?.flush()]).finally(() => { learning?.close(); speechStore?.close(); server?.closeAllConnections(); server?.close(); app.quit(); });
+  Promise.all([store?.flush(), qualityStore?.flush(), imageStore?.flush(), speechStore?.flush(), webSearchStore?.flush()]).finally(() => { learning?.close(); speechStore?.close(); server?.closeAllConnections(); server?.close(); app.quit(); });
 });

@@ -10,6 +10,7 @@ import { validOutline, validBlockSpec, validBlockContent, revisedContent, restor
 import { referencedImages } from '../public/illustrations.js';
 import { removePlanFromBackups } from './course-backups.mjs';
 import { validAnnotations } from '../public/annotations.js';
+import { validQualityReport } from '../public/course-quality.js';
 import { knowledgeCardMarkdown, knowledgeGeneration, knowledgeLayoutCurrent, normalizeKnowledgeCard, readKnowledgeCard, readKnowledgeCards, recoverKnowledgeCardSwap, refreshKnowledgeCatalog, removeKnowledgeCards, replaceKnowledgeCards, saveKnowledgeCard } from './knowledge-cards.mjs';
 
 const exists = async file => { try { await stat(file); return true; } catch (error) { if (error.code === 'ENOENT') return false; throw error; } };
@@ -83,6 +84,7 @@ function replaceAll(db, state) {
     }
     db.prepare('INSERT INTO meta VALUES (?, ?)').run('active_plan', state.active);
     db.prepare('INSERT INTO meta VALUES (?, ?)').run('knowledge_generation', randomUUID());
+    for (const report of state.qualityReports || []) db.prepare('INSERT INTO meta VALUES (?, ?)').run(`quality:${report.id}`, JSON.stringify(report));
   });
 }
 
@@ -102,7 +104,8 @@ function readOverview(db) {
   const progress = {};
   for (const row of db.prepare('SELECT * FROM progress').all()) progress[row.lesson_id] = { completed: !!row.completed, attempts: row.attempts, lastScore: row.last_score, bestScore: row.best_score, lastAnswers: fromJSON(row.last_answers_json), ...(row.updated === null ? {} : { updated: row.updated }) };
   const notes = db.prepare('SELECT * FROM notes ORDER BY rowid').all().map(noteFromRow);
-  return { version: 1, plans, active: db.prepare("SELECT value FROM meta WHERE key = 'active_plan'").get()?.value || plans[0]?.id, lessons: {}, progress, notes, reflections: {}, chats: {} };
+  const reports = db.prepare("SELECT value FROM meta WHERE key GLOB 'quality:*'").all().map(row => fromJSON(row.value));
+  return { version: 1, plans, active: db.prepare("SELECT value FROM meta WHERE key = 'active_plan'").get()?.value || plans[0]?.id, lessons: {}, progress, notes, reflections: {}, chats: {}, ...(reports.length ? { qualityReports: reports } : {}) };
 }
 
 function readExport(db) {
@@ -152,6 +155,7 @@ export async function createSqliteStore(directory) {
       const expected = { ...state, notes: state.notes.map(normalizeKnowledgeCard), chats: state.chats || {} };
       if (expected.annotations && !Object.keys(expected.annotations).length) delete expected.annotations;
       if (expected.blockCourses && !Object.keys(expected.blockCourses).length) delete expected.blockCourses;
+      if (expected.qualityReports && !expected.qualityReports.length) delete expected.qualityReports;
       if (!isDeepStrictEqual(restored, expected)) throw new Error('旧学习数据回读校验失败，原文件已保留。');
     } finally { candidate.close(); }
     if (sourceBytes && !(await readFile(sourcePath)).equals(sourceBytes)) throw new Error('迁移时旧学习数据发生变化，已保留原文件，请重启后重试。');
@@ -239,6 +243,17 @@ export async function createSqliteStore(directory) {
   function planDeletionPreview(planId) { syncKnowledgeIndex(db, directory); return readPlanDeletionPreview(planId); }
   return {
     filename, overview, getLesson, exportState, planDeletionPreview,
+    qualityReports(scope, targetId) { return (overview().qualityReports || []).filter(r => r.scope === scope && r.targetId === targetId).sort((a, b) => b.created - a.created); },
+    saveQualityReport(report) {
+      if (!validQualityReport(report)) throw new Error('课程评价报告格式不正确。');
+      const owner = db.prepare('SELECT 1 FROM plans WHERE id = ?').get(report.planId);
+      if (!owner || (report.scope === 'route' ? report.targetId !== report.planId : !db.prepare('SELECT 1 FROM lessons WHERE id = ? AND plan_id = ?').get(report.targetId, report.planId))) throw new Error('被评价的课程已删除，未保存报告。');
+      transaction(db, () => {
+        db.prepare('INSERT INTO meta (key, value) VALUES (?, ?)').run(`quality:${report.id}`, JSON.stringify(report));
+        const history = db.prepare("SELECT key, value FROM meta WHERE key GLOB 'quality:*'").all().filter(row => { const r = fromJSON(row.value); return r.scope === report.scope && r.targetId === report.targetId; }).sort((a, b) => fromJSON(b.value).created - fromJSON(a.value).created);
+        for (const old of history.slice(10)) db.prepare('DELETE FROM meta WHERE key = ?').run(old.key);
+      });
+    },
     cardMarkdown(id) { if (!db.prepare('SELECT 1 FROM notes WHERE id = ?').get(id)) throw new Error('知识卡片不存在。'); return knowledgeCardMarkdown(directory, id); },
     savePlan(plan) {
       if (!validState({ version: 1, plans: [plan], active: plan.id, lessons: {}, progress: {}, notes: [], reflections: {}, chats: {} })) throw new Error('学习路线格式不正确。');
@@ -265,6 +280,7 @@ export async function createSqliteStore(directory) {
         const next = current === planId ? db.prepare('SELECT id FROM plans WHERE id <> ? ORDER BY position LIMIT 1').get(planId)?.id : current;
         db.prepare('DELETE FROM plans WHERE id = ?').run(planId);
         db.prepare('DELETE FROM meta WHERE key = ?').run(`plan_brief:${planId}`);
+        for (const row of db.prepare("SELECT key, value FROM meta WHERE key GLOB 'quality:*'").all()) if (fromJSON(row.value).planId === planId) db.prepare('DELETE FROM meta WHERE key = ?').run(row.key);
         for (const lessonId of lessonIds) db.prepare('DELETE FROM meta WHERE key = ?').run(`annotations:${lessonId}`);
         db.prepare("UPDATE meta SET value = ? WHERE key = 'knowledge_generation'").run(randomUUID());
         db.prepare("UPDATE meta SET value = ? WHERE key = 'active_plan'").run(next);

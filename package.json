@@ -1,6 +1,6 @@
 {
   "name": "learnflow",
-  "version": "1.1.7",
+  "version": "1.1.8",
   "main": "desktop/main.cjs",
   "private": true,
   "type": "module",
@@ -37,6 +37,8 @@
       "commons-images.mjs",
       "web-images.mjs",
       "speech-model.mjs",
+      "course-quality.mjs",
+      "test-support/audio.mjs",
       "package.json"
     ],
     "asar": true,

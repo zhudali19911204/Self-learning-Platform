@@ -18,6 +18,7 @@ import { validAnnotations, personalNotesForSource, personalNotesMarkdown } from 
 import { knowledgeCatalog, knowledgeDomain, knowledgeDomainColors, knowledgeTopic, retrieveKnowledge, validKnowledgeOrganization } from '../public/knowledge-index.js';
 import { courseKnowledgeTree, knowledgeTree, knowledgeGraph, filterKnowledgeGraph } from '../public/knowledge-views.js';
 import { createGraphMotion, stepGraphMotion } from '../public/graph-motion.js';
+import { qualityRubric, qualityLabels } from '../public/course-quality.js';
 const DOMPurify = createDOMPurify(new JSDOM('').window);
 const source = (await readFile(new URL('../public/app.js', import.meta.url), 'utf8')).replace(/^import .* from '\.\/[^']+';$/gm, '');
 
@@ -74,6 +75,58 @@ test('configuration saves cannot race across the three model cards', async () =>
   finish(); await first;
   await app.submit('image-settings-form', { apiKey: '', timeout: '180' });
   assert.equal(calls, 2);
+});
+
+test('independent reviewer saves only its role and preserves generator drafts; rejected mutual model keeps the key draft', async t => {
+  const generation = { provider: 'ollama', model: 'generator-a', baseUrl: '', localOnly: true, jsonMode: 'auto', timeoutMs: 120000, maxTokens: 8192, hasApiKey: false };
+  let reviewer = { ...generation, model: 'reviewer-b' }, reviews = 0, saves = [];
+  const app = realSettingsHarness({ load: async () => ({ settings: generation, status: { mode: 'ai', model: generation.model }, qualitySettings: reviewer, qualityStatus: { mode: 'ai', model: reviewer.model } }),
+    evaluateQuality: async () => { reviews++; },
+    saveQualitySettings: async value => {
+      saves.push(value);
+      if (value.model === generation.model) throw new Error('生成与评审模型必须不同。');
+      const { apiKey, keyAction, ...cfg } = value; reviewer = { ...cfg, hasApiKey: !!apiKey };
+      return { settings: reviewer, status: { mode: 'ai', model: reviewer.model } };
+    } });
+  t.after(() => app.close()); await app.ready(); app.run("navigate('settings')");
+  let form = app.document.querySelector('#quality-settings-form');
+  assert.equal(form.elements.namedItem('apiKey').value, '');
+  assert.equal(form.querySelector('select[name=keyAction]'), null);
+  const generatorField = app.document.querySelector('#model-name');
+  generatorField.value = 'pending-generation-draft'; await app.fire('input', generatorField);
+  form.elements.namedItem('apiKey').value = 'review-only-test-key';
+  await app.fire('input', form.elements.namedItem('apiKey')); await app.fire('submit', form);
+  assert.equal(saves.length, 1); assert.equal(saves[0].keyAction, 'replace');
+  assert.equal(saves[0].apiKey, 'review-only-test-key');
+  assert.equal(app.document.querySelector('#model-name').value, 'pending-generation-draft');
+  assert.equal(app.run('desktopSettings.model'), generation.model); assert.equal(reviews, 0);
+  form = app.document.querySelector('#quality-settings-form');
+  form.elements.namedItem('model').value = generation.model;
+  form.elements.namedItem('apiKey').value = 'keep-rejected-draft';
+  await app.fire('input', form.elements.namedItem('model')); await app.fire('submit', form);
+  assert.match(app.document.querySelector('#quality-settings-error').textContent, /必须不同/);
+  assert.equal(form.elements.namedItem('apiKey').value, 'keep-rejected-draft');
+  assert.equal(app.run('qualitySettings.model'), 'reviewer-b'); assert.equal(reviews, 0);
+});
+
+test('opening quality reports never evaluates automatically, and failures preserve existing reports and course data', async t => {
+  const report = { id: 'review-old', scope: 'lesson', targetId: 'p1', fingerprint: 'old-content', created: Date.now(), reviewer: { model: 'reviewer-b' }, generator: { model: 'generator-a' }, rubricVersion: 'course-quality-v1', partial: true, score: 75, status: 'needs_revision', summary: '旧内容的审查建议。', dimensions: qualityRubric.map(r => ({ id: r.id, rating: 3, reason: '需要更多可验证的例子。' })), issues: [{ unitId: 'section-0', severity: 'minor', origin: 'ai', quote: '<script>not executable</script>', reason: '解释应更具体。', suggestion: '补充例子。' }] };
+  const view = { scope: 'lesson', targetId: 'p1', title: '测试课程', objective: '验证学习目标', fingerprint: 'current-content', rules: { ready: 1, total: 2, partial: true, issues: [] }, units: [{ id: 'section-0', title: '讲解', objective: '目标', pending: false }], reports: [report], currentReportId: null };
+  let inspections = 0, reviews = 0;
+  const app = realSettingsHarness({ load: async () => ({ status: { mode: 'ai', model: 'generator-a' }, qualityStatus: { mode: 'ai', model: 'reviewer-b' } }), inspectQuality: async () => { inspections++; return view; }, evaluateQuality: async () => { reviews++; throw new Error('评审模型暂时不可用。'); } });
+  t.after(() => app.close()); await app.ready();
+  const courseBefore = app.run('JSON.stringify(state.lessons)');
+  await app.run("openQuality('lesson','p1')");
+  const dialog = app.document.querySelector('#quality-dialog');
+  assert.equal(dialog.open, true); assert.equal(inspections, 1); assert.equal(reviews, 0);
+  assert.match(dialog.textContent, /旧内容版本/); assert.match(dialog.textContent, /未经人工校准/);
+  assert.equal(dialog.querySelector('script'), null);
+  await assert.rejects(app.run('locateQualityIssue(0)'), /历史版本/);
+  await app.run('evaluateQuality()');
+  assert.equal(reviews, 1); assert.equal(dialog.open, true);
+  assert.match(dialog.textContent, /评审模型暂时不可用/);
+  assert.equal(app.run('qualityView.reports[0].id'), report.id);
+  assert.equal(app.run('JSON.stringify(state.lessons)'), courseBefore);
 });
 
 test('web search consent uses a real keyless DOM form, persists checked and unchecked values and reloads', async t => {
@@ -411,17 +464,17 @@ test('image settings save failures expose the cause in both notices and preserve
 // This harness checks application state transitions, not browser rendering.
 // Keyless-form regressions need real elements.namedItem() and actual FormData.
 function realSettingsHarness(bridge) {
-  const dom = new JSDOM('<div id="app"></div><div id="toast"></div><button id="annotation-quick-add" data-action="add-annotation" hidden></button><dialog id="annotation-dialog"></dialog><dialog id="knowledge-draft-dialog"></dialog><dialog id="knowledge-organize-dialog"></dialog>', { url: 'http://localhost' });
+  const dom = new JSDOM('<div id="app"></div><div id="toast"></div><button id="annotation-quick-add" data-action="add-annotation" hidden></button><dialog id="annotation-dialog"></dialog><dialog id="knowledge-draft-dialog"></dialog><dialog id="knowledge-organize-dialog"></dialog><dialog id="quality-dialog"></dialog>', { url: 'http://localhost' });
   const document = dom.window.document, listeners = new Map();
   document.querySelector('#knowledge-organize-dialog').showModal = function () { this.open = true; };
   document.querySelector('#knowledge-organize-dialog').close = function () { this.open = false; };
-  for (const id of ['annotation-dialog', 'knowledge-draft-dialog']) {
+  for (const id of ['annotation-dialog', 'knowledge-draft-dialog', 'quality-dialog']) {
     document.querySelector(`#${id}`).showModal = function () { this.open = true; };
     document.querySelector(`#${id}`).close = function () { this.open = false; };
   }
   document.addEventListener = (name, listener) => { const group = listeners.get(name) || []; group.push(listener); listeners.set(name, group); };
   dom.window.learnflowDesktop = bridge; dom.window.scrollTo = () => {};
-  const context = vm.createContext({
+  const context = vm.createContext({ qualityRubric, qualityLabels,
     demoPlan, demoLessons, lessonFromBlocks, validOutline, validBlockContent, validBlockSpec, blockGenerationContext, revisedContent, restoredContent, assistedBlockTypes, Marked, DOMPurify, createMarkdownRenderer, validQuestionnaire, validClarification, learningBriefFrom, validIllustration, validImageProposal, speechDefaults, speechVoices, listeningText, speechTurns, speechRequest, validAudioId, validKnowledgeSource, validKnowledgeDraft, localKnowledgeDraft, knowledgeTags, knowledgeConditions, validAnnotations, personalNotesForSource, personalNotesMarkdown, knowledgeCatalog, knowledgeDomain, knowledgeDomainColors, knowledgeTopic, retrieveKnowledge, validKnowledgeOrganization, courseKnowledgeTree, knowledgeTree, knowledgeGraph, filterKnowledgeGraph, createGraphMotion, stepGraphMotion, structuredClone, crypto: webcrypto, AbortSignal,
     document, window: dom.window, FormData: dom.window.FormData, setTimeout: () => 1, clearTimeout() {}
   });
@@ -438,7 +491,7 @@ function harness(saved, fetchImpl, desktopBridge) {
     if (!nodes.has(selector)) nodes.set(selector, { innerHTML: '', textContent: '', open: false, attributes: {}, setAttribute(name, value) { this.attributes[name] = value; }, classList: { add() {}, remove() {} }, scrollIntoView() {}, focus() {}, showModal() { this.open = true; }, close() { this.open = false; } });
     return nodes.get(selector);
   };
-  const context = vm.createContext({
+  const context = vm.createContext({ qualityRubric, qualityLabels,
     demoPlan, demoLessons, lessonFromBlocks, validOutline, validBlockContent, validBlockSpec, blockGenerationContext, revisedContent, restoredContent, assistedBlockTypes, Marked, DOMPurify, createMarkdownRenderer, validQuestionnaire, validClarification, learningBriefFrom, validIllustration, validImageProposal, speechDefaults, speechVoices, listeningText, speechTurns, speechRequest, validAudioId, validKnowledgeSource, validKnowledgeDraft, localKnowledgeDraft, knowledgeTags, knowledgeConditions, validAnnotations, personalNotesForSource, personalNotesMarkdown, knowledgeCatalog, knowledgeDomain, knowledgeDomainColors, knowledgeTopic, retrieveKnowledge, validKnowledgeOrganization, courseKnowledgeTree, knowledgeTree, knowledgeGraph, filterKnowledgeGraph, createGraphMotion, stepGraphMotion, structuredClone, crypto: webcrypto, AbortSignal,
     document: { querySelector: node, addEventListener(name, listener) { const group = listeners.get(name) || []; group.push(listener); listeners.set(name, group); } },
     localStorage: { get length() { return storage.size; }, key: index => [...storage.keys()][index] ?? null, getItem: key => storage.get(key) ?? null, setItem: (key, value) => storage.set(key, value), removeItem: key => storage.delete(key) },

@@ -17,6 +17,7 @@ assets['/speech.js'] = ['speech.js', 'text/javascript'];
 assets['/knowledge-draft.js'] = ['knowledge-draft.js', 'text/javascript'];
 assets['/annotations.js'] = ['annotations.js', 'text/javascript'];
 assets['/knowledge-index.js'] = ['knowledge-index.js', 'text/javascript'];
+assets['/course-quality.js'] = ['course-quality.js', 'text/javascript'];
 assets['/knowledge-views.js'] = ['knowledge-views.js', 'text/javascript'];
 assets['/graph-motion.js'] = ['graph-motion.js', 'text/javascript'];
 const strings = (v, max = 20) => Array.isArray(v) && v.length > 0 && v.length <= max && v.every(x => str(x, 5000));
