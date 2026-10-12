@@ -75,7 +75,7 @@ export function createQualityService({ learning, getReviewer, getGenerator }) {
     const snapshot = snapshotFor(scope, targetId), fingerprint = qualityFingerprint(snapshot);
     const reports = learning.qualityReports(scope, targetId);
     const rules = qualityRules(snapshot);
-    return { fingerprint, title: snapshot.title, scope, targetId, objective: snapshot.objective || snapshot.goal, units: snapshot.units.map(({ id, title, objective, pending }) => ({ id, title, objective, pending: !!pending })), rules, reports, currentReportId: reports.find(r => r.fingerprint === fingerprint)?.id || null };
+    return { fingerprint, title: snapshot.title, scope, targetId, objective: snapshot.objective || snapshot.goal, units: snapshot.units.map(({ id, type, title, objective, pending }) => ({ id, type, title, objective, pending: !!pending })), rules, reports, dispositions: learning.qualityDispositions?.(targetId) || [], jobs: scope === 'lesson' ? (learning.revisionJobs?.(targetId) || []).map(({ id, title, status, updated }) => ({ id, title, status, updated })) : [], currentReportId: reports.find(r => r.fingerprint === fingerprint)?.id || null };
   }
   async function evaluate(scope, targetId, expectedFingerprint) {
     const requestId = `${scope}:${targetId}`;
@@ -90,20 +90,26 @@ export function createQualityService({ learning, getReviewer, getGenerator }) {
     busy.add(requestId);
     try {
       const result = await reviewer.generate(qualityReviewInstruction, qualityReviewerInput(snapshot), value => validQualityJudgment(value, snapshot));
-      const issues = [...rules.issues, ...result.issues.map(i => ({ unitId: i.unitId, severity: i.severity, kind: i.kind, quote: i.quote, reason: i.reason, suggestion: i.suggestion, origin: 'ai' }))];
-      for (const solution of result.solutions) {
-        const q = snapshot.units.find(u => u.id === solution.unitId).questions[solution.questionIndex];
-        if (solution.ambiguous || solution.answer === -1 || solution.answer !== q.answer) issues.push(issue(solution.unitId, 'major', 'quiz', `第${solution.questionIndex + 1}题：${solution.ambiguous ? '评审认为可能存在多解' : solution.answer === -1 ? '评审无法确定唯一答案' : '独立解题答案与保存答案不一致'}。${solution.reason}`, '核对题目条件、标准答案和解析后再修订；模型分歧不等于事实已经核验。', q.prompt.slice(0, 600), 'ai'));
-      }
-      const dimensions = result.dimensions.map(d => ({ id: d.id, rating: d.rating, reason: d.reason }));
-      const rubric = applicableQualityRubric(snapshot), totalWeight = rubric.reduce((sum, r) => sum + r.weight, 0);
-      const score = Math.round(dimensions.reduce((sum, d) => sum + d.rating / 4 * rubric.find(r => r.id === d.id).weight, 0) / totalWeight * 100);
-      const weakCore = dimensions.some(d => ['facts', 'alignment', 'quiz'].includes(d.id) && d.rating < 3);
-      const report = { version: 1, id: randomUUID(), scope, targetId, planId: snapshot.planId, title: snapshot.title, fingerprint, rubricVersion: qualityRubricVersion, created: Date.now(), reviewer: { provider: reviewer.status().provider || '', model: reviewer.status().model }, generator: { provider: generator.provider || '', model: generator.model || '' }, partial: rules.partial, verification: 'unverified', score, status: issues.some(i => ['critical', 'major'].includes(i.severity)) || weakCore || score < 85 ? 'needs_revision' : 'reviewed', summary: result.summary, dimensions, issues };
-      if (!validQualityReport(report)) throw new Error('评价报告格式无效，未保存。');
+      const report = makeQualityReport(snapshot, result, reviewer.status(), generator);
       learning.saveQualityReport(report);
       return inspect(scope, targetId);
     } finally { busy.delete(requestId); }
   }
   return { inspect, evaluate };
+}
+
+export function makeQualityReport(snapshot, result, reviewer, generator) {
+  if (!validQualityJudgment(result, snapshot)) throw new Error('评价报告格式无效，未保存。');
+  assertDistinctQualityModels(generator, reviewer);
+  const issues = [...qualityRules(snapshot).issues, ...result.issues.map(i => ({ unitId: i.unitId, severity: i.severity, kind: i.kind, quote: i.quote, reason: i.reason, suggestion: i.suggestion, origin: 'ai' }))];
+  for (const s of result.solutions) {
+    const q = snapshot.units.find(u => u.id === s.unitId).questions[s.questionIndex];
+    if (s.ambiguous || s.answer === -1 || s.answer !== q.answer) issues.push(issue(s.unitId, 'major', 'quiz', `第${s.questionIndex + 1}题：${s.ambiguous ? '评审认为可能存在多解' : s.answer === -1 ? '评审无法确定唯一答案' : '独立解题答案与保存答案不一致'}。${s.reason}`, '核对题目条件、标准答案和解析后再修订；模型分歧不等于事实已经核验。', q.prompt.slice(0, 600), 'ai'));
+  }
+  const dimensions = result.dimensions.map(d => ({ id: d.id, rating: d.rating, reason: d.reason })), rubric = applicableQualityRubric(snapshot);
+  const score = Math.round(dimensions.reduce((sum, d) => sum + d.rating / 4 * rubric.find(r => r.id === d.id).weight, 0) / rubric.reduce((sum, r) => sum + r.weight, 0) * 100);
+  const weakCore = dimensions.some(d => ['facts', 'alignment', 'quiz'].includes(d.id) && d.rating < 3);
+  const report = { version: 1, id: randomUUID(), scope: snapshot.scope, targetId: snapshot.targetId, planId: snapshot.planId, title: snapshot.title, fingerprint: qualityFingerprint(snapshot), rubricVersion: qualityRubricVersion, created: Date.now(), reviewer: { provider: reviewer.provider || '', model: reviewer.model }, generator: { provider: generator.provider || '', model: generator.model || '' }, partial: qualityRules(snapshot).partial, verification: 'unverified', score, status: issues.some(i => ['critical', 'major'].includes(i.severity)) || weakCore || score < 85 ? 'needs_revision' : 'reviewed', summary: result.summary, dimensions, issues };
+  if (!validQualityReport(report)) throw new Error('评价报告格式无效，未保存。');
+  return report;
 }

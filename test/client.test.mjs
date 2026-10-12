@@ -19,6 +19,7 @@ import { knowledgeCatalog, knowledgeDomain, knowledgeDomainColors, knowledgeTopi
 import { courseKnowledgeTree, knowledgeTree, knowledgeGraph, filterKnowledgeGraph } from '../public/knowledge-views.js';
 import { createGraphMotion, stepGraphMotion } from '../public/graph-motion.js';
 import { qualityRubric, qualityLabels } from '../public/course-quality.js';
+import { revisionTypes, revisionStatuses, revisionCheckLabels, revisionContent, revisionText, revisionDiff } from '../public/course-revision.js';
 const DOMPurify = createDOMPurify(new JSDOM('').window);
 const source = (await readFile(new URL('../public/app.js', import.meta.url), 'utf8')).replace(/^import .* from '\.\/[^']+';$/gm, '');
 
@@ -127,6 +128,32 @@ test('opening quality reports never evaluates automatically, and failures preser
   assert.match(dialog.textContent, /评审模型暂时不可用/);
   assert.equal(app.run('qualityView.reports[0].id'), report.id);
   assert.equal(app.run('JSON.stringify(state.lessons)'), courseBefore);
+});
+
+test('quality workflow entry is free, invalid quiz edits stay visible without a paid review, and saved edits invalidate review', async t => {
+  const units=[{id:'reading-1',type:'reading',title:'讲解',objective:'理解提交',text:'提交前配置身份。'},{id:'quiz-1',type:'quiz',title:'测验',objective:'判断提交时机',questions:[{prompt:'何时配置？',options:['提交前','提交后','删除时','无关'],answer:0,explanation:'提交前配置。'}]}];
+  const report={id:'r1',scope:'lesson',targetId:'p1',fingerprint:'current',score:75,status:'needs_revision',partial:false,summary:'需要具体解释。',created:Date.now(),reviewer:{model:'reviewer-b',provider:'compatible'},generator:{model:'generator-a'},rubricVersion:'course-quality-v1',dimensions:qualityRubric.map(r=>({id:r.id,rating:3,reason:'需补充说明。'})),issues:units.map(u=>({unitId:u.id,kind:u.type==='quiz'?'quiz':'clarity',severity:'minor',quote:u.text||u.questions[0].prompt,reason:'解释不足。',suggestion:'补充具体步骤。',origin:'ai'}))};
+  let job={id:'j1',lessonId:'p1',planId:demoPlan.id,title:'测试课',rev:1,status:'draft',created:Date.now(),updated:Date.now(),sourceReport:report,issueIndexes:[0,1],baseSnapshot:{units},changes:units.map(u=>({unitId:u.id,content:revisionContent(u),note:'补充说明。'})),review:null};
+  const view=()=>({job:structuredClone(job),stale:false,running:false,linkedCards:0});let paid=0,edits=0;
+  const app=realSettingsHarness({load:async()=>({status:{mode:'ai',model:'generator-a'},qualityStatus:{mode:'ai',model:'reviewer-b'}}),
+    inspectQuality:async()=>({scope:'lesson',targetId:'p1',fingerprint:'current',title:'测试课',objective:'理解提交',units,rules:{ready:2,total:2,partial:false,issues:[]},reports:[report],currentReportId:report.id,jobs:[]}),
+    createRevision:async(id,indexes)=>{assert.equal(id,'r1');assert.deepEqual(Array.from(indexes),[0,1]);return view();},inspectRevision:async()=>view(),
+    editRevision:async(id,rev,changes)=>{edits++;job={...job,changes:structuredClone(changes),rev:rev+1,review:null};return view();},
+    reviewRevision:async()=>{paid++;job={...job,rev:job.rev+1,review:{report:{...report,score:100,status:'reviewed'},checks:[{issueIndex:0,status:'not_found',reason:'已经补充。'},{issueIndex:1,status:'not_found',reason:'已经补充。'}]}};return view();}});
+  t.after(()=>app.close());await app.ready();await app.run("openQuality('lesson','p1')");
+  app.document.querySelectorAll('[name=revision-issue]').forEach(input=>{input.checked=true;});
+  await app.run("action('quality-create-revision',document.querySelector('[data-action=quality-create-revision]'))");
+  assert.equal(app.document.querySelector('#quality-revision-dialog').open,true);assert.equal(paid,0);
+  let field=app.document.querySelector('#revision-edit-quiz-1');field.value='not JSON';await app.fire('input',field);
+  await app.run("runQualityRevision('review')");assert.equal(paid,0);assert.equal(edits,0);
+  assert.equal(app.document.querySelector('#revision-edit-quiz-1').value,'not JSON');
+  assert.match(app.document.querySelector('#quality-revision-dialog').textContent,/不是有效的题目 JSON/);
+  field=app.document.querySelector('#revision-edit-quiz-1');field.value=JSON.stringify(units[1].questions);await app.fire('input',field);
+  await app.run("runQualityRevision('review')");assert.equal(paid,1);assert.ok(app.document.querySelector('.revision-review'));
+  field=app.document.querySelector('#revision-edit-reading-1');field.value+='\n检查身份配置。';await app.fire('input',field);
+  assert.equal(app.document.querySelector('[data-action=quality-apply-revision]').disabled,true);
+  await app.run("runQualityRevision('save')");assert.equal(paid,1);assert.equal(job.review,null);
+  assert.equal(app.document.querySelector('.revision-review'),null);
 });
 
 test('web search consent uses a real keyless DOM form, persists checked and unchecked values and reloads', async t => {
@@ -468,13 +495,14 @@ function realSettingsHarness(bridge) {
   const document = dom.window.document, listeners = new Map();
   document.querySelector('#knowledge-organize-dialog').showModal = function () { this.open = true; };
   document.querySelector('#knowledge-organize-dialog').close = function () { this.open = false; };
-  for (const id of ['annotation-dialog', 'knowledge-draft-dialog', 'quality-dialog']) {
+  const workflowDialog = document.createElement('dialog'); workflowDialog.id = 'quality-revision-dialog'; document.body.append(workflowDialog);
+  for (const id of ['annotation-dialog', 'knowledge-draft-dialog', 'quality-dialog','quality-revision-dialog']) {
     document.querySelector(`#${id}`).showModal = function () { this.open = true; };
     document.querySelector(`#${id}`).close = function () { this.open = false; };
   }
   document.addEventListener = (name, listener) => { const group = listeners.get(name) || []; group.push(listener); listeners.set(name, group); };
   dom.window.learnflowDesktop = bridge; dom.window.scrollTo = () => {};
-  const context = vm.createContext({ qualityRubric, qualityLabels,
+  const context = vm.createContext({ qualityRubric, qualityLabels, revisionTypes, revisionStatuses, revisionCheckLabels, revisionContent, revisionText, revisionDiff,
     demoPlan, demoLessons, lessonFromBlocks, validOutline, validBlockContent, validBlockSpec, blockGenerationContext, revisedContent, restoredContent, assistedBlockTypes, Marked, DOMPurify, createMarkdownRenderer, validQuestionnaire, validClarification, learningBriefFrom, validIllustration, validImageProposal, speechDefaults, speechVoices, listeningText, speechTurns, speechRequest, validAudioId, validKnowledgeSource, validKnowledgeDraft, localKnowledgeDraft, knowledgeTags, knowledgeConditions, validAnnotations, personalNotesForSource, personalNotesMarkdown, knowledgeCatalog, knowledgeDomain, knowledgeDomainColors, knowledgeTopic, retrieveKnowledge, validKnowledgeOrganization, courseKnowledgeTree, knowledgeTree, knowledgeGraph, filterKnowledgeGraph, createGraphMotion, stepGraphMotion, structuredClone, crypto: webcrypto, AbortSignal,
     document, window: dom.window, FormData: dom.window.FormData, setTimeout: () => 1, clearTimeout() {}
   });
@@ -491,7 +519,7 @@ function harness(saved, fetchImpl, desktopBridge) {
     if (!nodes.has(selector)) nodes.set(selector, { innerHTML: '', textContent: '', open: false, attributes: {}, setAttribute(name, value) { this.attributes[name] = value; }, classList: { add() {}, remove() {} }, scrollIntoView() {}, focus() {}, showModal() { this.open = true; }, close() { this.open = false; } });
     return nodes.get(selector);
   };
-  const context = vm.createContext({ qualityRubric, qualityLabels,
+  const context = vm.createContext({ qualityRubric, qualityLabels, revisionTypes, revisionStatuses, revisionCheckLabels, revisionContent, revisionText, revisionDiff,
     demoPlan, demoLessons, lessonFromBlocks, validOutline, validBlockContent, validBlockSpec, blockGenerationContext, revisedContent, restoredContent, assistedBlockTypes, Marked, DOMPurify, createMarkdownRenderer, validQuestionnaire, validClarification, learningBriefFrom, validIllustration, validImageProposal, speechDefaults, speechVoices, listeningText, speechTurns, speechRequest, validAudioId, validKnowledgeSource, validKnowledgeDraft, localKnowledgeDraft, knowledgeTags, knowledgeConditions, validAnnotations, personalNotesForSource, personalNotesMarkdown, knowledgeCatalog, knowledgeDomain, knowledgeDomainColors, knowledgeTopic, retrieveKnowledge, validKnowledgeOrganization, courseKnowledgeTree, knowledgeTree, knowledgeGraph, filterKnowledgeGraph, createGraphMotion, stepGraphMotion, structuredClone, crypto: webcrypto, AbortSignal,
     document: { querySelector: node, addEventListener(name, listener) { const group = listeners.get(name) || []; group.push(listener); listeners.set(name, group); } },
     localStorage: { get length() { return storage.size; }, key: index => [...storage.keys()][index] ?? null, getItem: key => storage.get(key) ?? null, setItem: (key, value) => storage.set(key, value), removeItem: key => storage.delete(key) },

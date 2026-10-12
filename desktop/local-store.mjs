@@ -9,6 +9,7 @@ import { createModelProfiles } from './model-profiles.mjs';
 import { normalizeKnowledgeCard } from './knowledge-cards.mjs';
 import { validAnnotations } from '../public/annotations.js';
 import { validQualityReport } from '../public/course-quality.js';
+import { validRevisionJob, validQualityDisposition, validQuizRecord } from '../public/course-revision.js';
 
 export const defaults = { provider: 'ollama', model: '', baseUrl: '', jsonMode: 'auto', timeoutMs: 120000, maxTokens: 8192, localOnly: true };
 const id = v => typeof v === 'string' && /^[a-zA-Z0-9_-]{1,160}$/.test(v) && !['__proto__', 'constructor', 'prototype'].includes(v);
@@ -23,6 +24,11 @@ export function validState(v) {
   const planIds = v.plans.map(p => p.id), lessonIds = v.plans.flatMap(p => p.lessons.map(l => l.id));
   if (new Set(planIds).size !== planIds.length || new Set(lessonIds).size !== lessonIds.length || !planIds.includes(v.active)) return false;
   if (v.qualityReports !== undefined && (!Array.isArray(v.qualityReports) || v.qualityReports.length > 10000 || new Set(v.qualityReports.map(r => r?.id)).size !== v.qualityReports.length || !v.qualityReports.every(r => validQualityReport(r) && planIds.includes(r.planId) && (r.scope === 'route' ? r.targetId === r.planId : v.plans.find(p => p.id === r.planId).lessons.some(l => l.id === r.targetId))))) return false;
+  const owned = r => planIds.includes(r.planId) && v.plans.find(p => p.id === r.planId).lessons.some(l => l.id === (r.lessonId || r.targetId));
+  if (v.qualityJobs !== undefined && (!Array.isArray(v.qualityJobs) || v.qualityJobs.length > 2000 || new Set(v.qualityJobs.map(j => j?.id)).size !== v.qualityJobs.length || !v.qualityJobs.every(j => validRevisionJob(j) && owned(j)))) return false;
+  if (v.qualityDispositions !== undefined && (!Array.isArray(v.qualityDispositions) || v.qualityDispositions.length > 10000 || !v.qualityDispositions.every(d => validQualityDisposition(d) && owned(d)))) return false;
+  if (v.quizRecords !== undefined && (!dict(v.quizRecords, validQuizRecord) || Object.keys(v.quizRecords).some(k => !lessonIds.includes(k)))) return false;
+  if (v.revisionNotices !== undefined && (!dict(v.revisionNotices, n => object(n) && Number.isFinite(n.updated) && id(n.jobId)) || Object.keys(v.revisionNotices).some(k => !lessonIds.includes(k)))) return false;
   if (!dict(v.lessons, validLesson) || !dict(v.reflections, s => string(s, 5000))) return false;
   if (v.annotations !== undefined && (!dict(v.annotations, validAnnotations) || Object.keys(v.annotations).some(key => !lessonIds.includes(key)))) return false;
   if (v.blockCourses !== undefined && (!dict(v.blockCourses, validBlockCourse) || Object.keys(v.blockCourses).some(key => !lessonIds.includes(key)))) return false;

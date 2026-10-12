@@ -1,6 +1,6 @@
 import { DatabaseSync, backup } from 'node:sqlite';
 import { mkdir, readFile, rename, stat } from 'node:fs/promises';
-import { randomUUID } from 'node:crypto';
+import { randomUUID, createHash } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
 import path from 'node:path';
 import { demoPlan, demoLessons } from '../public/demo.js';
@@ -11,6 +11,8 @@ import { referencedImages } from '../public/illustrations.js';
 import { removePlanFromBackups } from './course-backups.mjs';
 import { validAnnotations } from '../public/annotations.js';
 import { validQualityReport } from '../public/course-quality.js';
+import { validRevisionJob, validQualityDisposition, revisionContent, revisionSnapshot } from '../public/course-revision.js';
+import { qualitySnapshot, qualityFingerprint } from '../course-quality.mjs';
 import { knowledgeCardMarkdown, knowledgeGeneration, knowledgeLayoutCurrent, normalizeKnowledgeCard, readKnowledgeCard, readKnowledgeCards, recoverKnowledgeCardSwap, refreshKnowledgeCatalog, removeKnowledgeCards, replaceKnowledgeCards, saveKnowledgeCard } from './knowledge-cards.mjs';
 
 const exists = async file => { try { await stat(file); return true; } catch (error) { if (error.code === 'ENOENT') return false; throw error; } };
@@ -85,6 +87,9 @@ function replaceAll(db, state) {
     db.prepare('INSERT INTO meta VALUES (?, ?)').run('active_plan', state.active);
     db.prepare('INSERT INTO meta VALUES (?, ?)').run('knowledge_generation', randomUUID());
     for (const report of state.qualityReports || []) db.prepare('INSERT INTO meta VALUES (?, ?)').run(`quality:${report.id}`, JSON.stringify(report));
+    for (const job of state.qualityJobs || []) db.prepare('INSERT INTO meta VALUES (?, ?)').run(`revision:${job.id}`, JSON.stringify(job));
+    for (const d of state.qualityDispositions || []) db.prepare('INSERT INTO meta VALUES (?, ?)').run(`quality_note:${d.reportId}:${d.issueIndex}`, JSON.stringify(d));
+    for (const field of ['quizRecords', 'revisionNotices']) for (const [lessonId, value] of Object.entries(state[field] || {})) db.prepare('INSERT INTO meta VALUES (?, ?)').run(`${field}:${lessonId}`, JSON.stringify(value));
   });
 }
 
@@ -105,11 +110,20 @@ function readOverview(db) {
   for (const row of db.prepare('SELECT * FROM progress').all()) progress[row.lesson_id] = { completed: !!row.completed, attempts: row.attempts, lastScore: row.last_score, bestScore: row.best_score, lastAnswers: fromJSON(row.last_answers_json), ...(row.updated === null ? {} : { updated: row.updated }) };
   const notes = db.prepare('SELECT * FROM notes ORDER BY rowid').all().map(noteFromRow);
   const reports = db.prepare("SELECT value FROM meta WHERE key GLOB 'quality:*'").all().map(row => fromJSON(row.value));
-  return { version: 1, plans, active: db.prepare("SELECT value FROM meta WHERE key = 'active_plan'").get()?.value || plans[0]?.id, lessons: {}, progress, notes, reflections: {}, chats: {}, ...(reports.length ? { qualityReports: reports } : {}) };
+  const extras = {};
+  for (const field of ['quizRecords', 'revisionNotices']) {
+    const rows = db.prepare('SELECT key, value FROM meta WHERE key GLOB ?').all(`${field}:*`);
+    if (rows.length) extras[field] = Object.fromEntries(rows.map(r => [r.key.slice(field.length + 1), fromJSON(r.value)]));
+  }
+  return { version: 1, plans, active: db.prepare("SELECT value FROM meta WHERE key = 'active_plan'").get()?.value || plans[0]?.id, lessons: {}, progress, notes, reflections: {}, chats: {}, ...(reports.length ? { qualityReports: reports } : {}), ...extras };
 }
 
 function readExport(db) {
   const state = readOverview(db);
+  for (const [field, prefix] of [['qualityJobs', 'revision'], ['qualityDispositions', 'quality_note']]) {
+    const rows = db.prepare('SELECT value FROM meta WHERE key GLOB ?').all(`${prefix}:*`);
+    if (rows.length) state[field] = rows.map(r => fromJSON(r.value));
+  }
   for (const row of db.prepare('SELECT id, content_json FROM lessons WHERE content_json IS NOT NULL').all()) state.lessons[row.id] = fromJSON(row.content_json);
   for (const row of db.prepare('SELECT lesson_id, content FROM reflections').all()) state.reflections[row.lesson_id] = row.content;
   for (const row of db.prepare("SELECT key, value FROM meta WHERE key GLOB 'annotations:*'").all()) (state.annotations ||= {})[row.key.slice('annotations:'.length)] = fromJSON(row.value);
@@ -156,6 +170,8 @@ export async function createSqliteStore(directory) {
       if (expected.annotations && !Object.keys(expected.annotations).length) delete expected.annotations;
       if (expected.blockCourses && !Object.keys(expected.blockCourses).length) delete expected.blockCourses;
       if (expected.qualityReports && !expected.qualityReports.length) delete expected.qualityReports;
+      for (const field of ['qualityJobs', 'qualityDispositions']) if (expected[field] && !expected[field].length) delete expected[field];
+      for (const field of ['quizRecords', 'revisionNotices']) if (expected[field] && !Object.keys(expected[field]).length) delete expected[field];
       if (!isDeepStrictEqual(restored, expected)) throw new Error('旧学习数据回读校验失败，原文件已保留。');
     } finally { candidate.close(); }
     if (sourceBytes && !(await readFile(sourcePath)).equals(sourceBytes)) throw new Error('迁移时旧学习数据发生变化，已保留原文件，请重启后重试。');
@@ -226,7 +242,33 @@ export async function createSqliteStore(directory) {
     const chats = db.prepare('SELECT role, content FROM chat_messages WHERE lesson_id = ? ORDER BY id DESC LIMIT 20').all(lessonId).reverse();
     const outline = db.prepare('SELECT intro FROM lesson_outlines WHERE lesson_id = ?').get(lessonId);
     const blockCourse = outline ? { intro: outline.intro, blocks: db.prepare('SELECT id, type, title, objective, content_json FROM lesson_blocks WHERE lesson_id = ? ORDER BY position').all(lessonId).map(block => ({ id: block.id, type: block.type, title: block.title, objective: block.objective, content: block.content_json ? fromJSON(block.content_json) : null })) } : null;
-    return { lesson: row.content_json ? fromJSON(row.content_json) : null, blockCourse, reflection, annotations, chats };
+    const quizRecord = db.prepare('SELECT value FROM meta WHERE key = ?').get(`quizRecords:${lessonId}`);
+    return { lesson: row.content_json ? fromJSON(row.content_json) : null, blockCourse, reflection, annotations, chats, ...(quizRecord ? { quizRecord: fromJSON(quizRecord.value) } : {}) };
+  }
+  const metaSet = (key, value) => db.prepare('INSERT INTO meta VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value').run(key, JSON.stringify(value));
+  const metaRows = prefix => db.prepare('SELECT value FROM meta WHERE key GLOB ?').all(`${prefix}:*`).map(r => fromJSON(r.value));
+  function insertReport(report) {
+    db.prepare('INSERT INTO meta (key, value) VALUES (?, ?)').run(`quality:${report.id}`, JSON.stringify(report));
+    const history = metaRows('quality').filter(r => r.scope === report.scope && r.targetId === report.targetId).sort((a, b) => b.created - a.created);
+    for (const old of history.slice(10)) db.prepare('DELETE FROM meta WHERE key = ?').run(`quality:${old.id}`);
+  }
+  const quizQuestions = detail => detail.blockCourse ? detail.blockCourse.blocks.filter(b => b.type === 'quiz' && b.content).flatMap(b => b.content.questions) : detail.lesson?.questions || [];
+  const quizHash = questions => createHash('sha256').update(JSON.stringify(questions)).digest('hex');
+  function trackQuizChange(lessonId, before, after) {
+    const oldHash = quizHash(before), newHash = quizHash(after);
+    if (oldHash === newHash) return;
+    const old = fromJSON(db.prepare('SELECT value FROM meta WHERE key = ?').get(`quizRecords:${lessonId}`)?.value || 'null');
+    const progress = overview().progress[lessonId];
+    const record = old || { version: 1, currentFingerprint: oldHash, progressFingerprint: progress ? oldHash : null, history: [] };
+    if (progress && record.progressFingerprint === oldHash) record.history = [...record.history.filter(h => h.fingerprint !== oldHash), { fingerprint: oldHash, questions: before, progress, updated: Date.now() }].slice(-50);
+    record.currentFingerprint = newHash;
+    // Restore a version's own saved progress, never grade old answers against new questions.
+    const historical = record.history.find(h => h.fingerprint === newHash);
+    if (historical) { writeProgress(lessonId, historical.progress); record.progressFingerprint = newHash; }
+    metaSet(`quizRecords:${lessonId}`, record);
+  }
+  function writeProgress(lessonId, value) {
+    db.prepare('INSERT INTO progress VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT(lesson_id) DO UPDATE SET completed=excluded.completed, attempts=excluded.attempts, last_score=excluded.last_score, best_score=excluded.best_score, last_answers_json=excluded.last_answers_json, updated=excluded.updated').run(lessonId, Number(value.completed), value.attempts, value.lastScore, value.bestScore, JSON.stringify(value.lastAnswers), value.updated ?? null);
   }
   const exportState = () => { syncKnowledgeIndex(db, directory); return readExport(db); };
   function readPlanDeletionPreview(planId) {
@@ -243,16 +285,68 @@ export async function createSqliteStore(directory) {
   function planDeletionPreview(planId) { syncKnowledgeIndex(db, directory); return readPlanDeletionPreview(planId); }
   return {
     filename, overview, getLesson, exportState, planDeletionPreview,
+    revisionJobs(lessonId) { return metaRows('revision').filter(j => j.lessonId === lessonId).sort((a, b) => b.updated - a.updated); },
+    revisionJob(jobId) { const row = db.prepare('SELECT value FROM meta WHERE key = ?').get(`revision:${jobId}`); return row ? fromJSON(row.value) : null; },
+    saveRevisionJob(job, expectedRev) {
+      if (!validRevisionJob(job) || qualityFingerprint(job.baseSnapshot) !== job.baseFingerprint) throw new Error('修订任务格式不正确。');
+      requireLesson(job.lessonId);
+      if (db.prepare('SELECT plan_id FROM lessons WHERE id = ?').get(job.lessonId).plan_id !== job.planId) throw new Error('修订课程归属无效。');
+      transaction(db, () => {
+        const previous = fromJSON(db.prepare('SELECT value FROM meta WHERE key = ?').get(`revision:${job.id}`)?.value || 'null');
+        if ((previous?.rev || 0) !== expectedRev) throw new Error('修订任务已更新，未覆盖当前草稿。');
+        if (!previous && (metaRows('revision').length >= 2000 || metaRows('revision').filter(j => j.lessonId === job.lessonId && ['draft', 'generating', 'reviewing'].includes(j.status)).length >= 10)) throw new Error('修订任务过多，请先处理已有草稿。');
+        metaSet(`revision:${job.id}`, job);
+        const closed = metaRows('revision').filter(j => j.lessonId === job.lessonId && ['applied', 'restored', 'discarded'].includes(j.status)).sort((a, b) => b.updated - a.updated);
+        for (const old of closed.slice(10)) db.prepare('DELETE FROM meta WHERE key = ?').run(`revision:${old.id}`);
+      });
+    },
+    qualityDispositions(lessonId) { return metaRows('quality_note').filter(d => d.lessonId === lessonId); },
+    saveQualityDisposition(value) {
+      if (!validQualityDisposition(value)) throw new Error('问题处理说明格式不正确。');
+      requireLesson(value.lessonId); metaSet(`quality_note:${value.reportId}:${value.issueIndex}`, value);
+    },
+    applyRevisionJob(jobId, expectedRev, restore) {
+      return transaction(db, () => {
+        const job = fromJSON(db.prepare('SELECT value FROM meta WHERE key = ?').get(`revision:${jobId}`)?.value || 'null');
+        if (!validRevisionJob(job) || job.rev !== expectedRev || (restore ? job.status !== 'applied' : job.status !== 'draft')) throw new Error('修订任务已更新或结束。');
+        const detail = getLesson(job.lessonId), current = qualitySnapshot(overview(), 'lesson', job.lessonId, detail);
+        const candidate = revisionSnapshot(job.baseSnapshot, job.changes), candidateHash = qualityFingerprint(candidate);
+        if (qualityFingerprint(job.baseSnapshot) !== job.baseFingerprint || qualityFingerprint(current) !== (restore ? job.appliedFingerprint : job.baseFingerprint)) throw new Error('课程已变化，未覆盖新内容；请重新评价当前版本。');
+        if (!job.review || job.review.fingerprint !== candidateHash || job.review.report.fingerprint !== candidateHash) throw new Error('当前草稿尚未复核。');
+        const oldQuestions = quizQuestions(detail);
+        for (const change of job.changes) {
+          const unit = job.baseSnapshot.units.find(u => u.id === change.unitId);
+          const value = restore ? revisionContent(unit) : change.content;
+          if (detail.blockCourse) {
+            const block = detail.blockCourse.blocks.find(b => b.id === change.unitId);
+            if (!block || block.type !== unit.type) throw new Error('目标模块已变化。');
+            const images = Object.fromEntries(['illustration', 'imageProposal'].filter(k => block.content[k]).map(k => [k, block.content[k]]));
+            const next = block.type === 'quiz' ? structuredClone(value) : revisedContent(block.type, block.content, { ...value, ...images });
+            db.prepare('UPDATE lesson_blocks SET content_json = ? WHERE lesson_id = ? AND id = ?').run(JSON.stringify(next), job.lessonId, block.id);
+          } else {
+            const lesson = detail.lesson;
+            if (unit.id.startsWith('section-')) lesson.sections[Number(unit.id.slice(8))].body = value.text;
+            else if (unit.id === 'legacy-example') lesson.example = value.text;
+            else if (unit.id === 'legacy-practice') lesson.challenge = value.text;
+            else if (unit.id === 'legacy-quiz') lesson.questions = structuredClone(value.questions);
+            else throw new Error('旧课程模块不支持此修订。');
+          }
+        }
+        if (!detail.blockCourse) db.prepare('UPDATE lessons SET content_json = ? WHERE id = ?').run(JSON.stringify(detail.lesson), job.lessonId);
+        const nextSnapshot = qualitySnapshot(overview(), 'lesson', job.lessonId, getLesson(job.lessonId));
+        if (qualityFingerprint(nextSnapshot) !== (restore ? job.baseFingerprint : candidateHash)) throw new Error('应用结果校验失败，已回滚。');
+        trackQuizChange(job.lessonId, oldQuestions, quizQuestions(getLesson(job.lessonId)));
+        if (!restore) insertReport(job.review.report);
+        metaSet(`revision:${job.id}`, { ...job, rev: job.rev + 1, status: restore ? 'restored' : 'applied', appliedFingerprint: job.appliedFingerprint || candidateHash, appliedAt: job.appliedAt || Date.now(), updated: Date.now() });
+        metaSet(`revisionNotices:${job.lessonId}`, { updated: Date.now(), jobId: job.id });
+      });
+    },
     qualityReports(scope, targetId) { return (overview().qualityReports || []).filter(r => r.scope === scope && r.targetId === targetId).sort((a, b) => b.created - a.created); },
     saveQualityReport(report) {
       if (!validQualityReport(report)) throw new Error('课程评价报告格式不正确。');
       const owner = db.prepare('SELECT 1 FROM plans WHERE id = ?').get(report.planId);
       if (!owner || (report.scope === 'route' ? report.targetId !== report.planId : !db.prepare('SELECT 1 FROM lessons WHERE id = ? AND plan_id = ?').get(report.targetId, report.planId))) throw new Error('被评价的课程已删除，未保存报告。');
-      transaction(db, () => {
-        db.prepare('INSERT INTO meta (key, value) VALUES (?, ?)').run(`quality:${report.id}`, JSON.stringify(report));
-        const history = db.prepare("SELECT key, value FROM meta WHERE key GLOB 'quality:*'").all().filter(row => { const r = fromJSON(row.value); return r.scope === report.scope && r.targetId === report.targetId; }).sort((a, b) => fromJSON(b.value).created - fromJSON(a.value).created);
-        for (const old of history.slice(10)) db.prepare('DELETE FROM meta WHERE key = ?').run(old.key);
-      });
+      transaction(db, () => insertReport(report));
     },
     cardMarkdown(id) { if (!db.prepare('SELECT 1 FROM notes WHERE id = ?').get(id)) throw new Error('知识卡片不存在。'); return knowledgeCardMarkdown(directory, id); },
     savePlan(plan) {
@@ -281,6 +375,8 @@ export async function createSqliteStore(directory) {
         db.prepare('DELETE FROM plans WHERE id = ?').run(planId);
         db.prepare('DELETE FROM meta WHERE key = ?').run(`plan_brief:${planId}`);
         for (const row of db.prepare("SELECT key, value FROM meta WHERE key GLOB 'quality:*'").all()) if (fromJSON(row.value).planId === planId) db.prepare('DELETE FROM meta WHERE key = ?').run(row.key);
+        for (const prefix of ['revision', 'quality_note']) for (const row of db.prepare('SELECT key, value FROM meta WHERE key GLOB ?').all(`${prefix}:*`)) if (fromJSON(row.value).planId === planId) db.prepare('DELETE FROM meta WHERE key = ?').run(row.key);
+        for (const lessonId of lessonIds) for (const field of ['quizRecords', 'revisionNotices']) db.prepare('DELETE FROM meta WHERE key = ?').run(`${field}:${lessonId}`);
         for (const lessonId of lessonIds) db.prepare('DELETE FROM meta WHERE key = ?').run(`annotations:${lessonId}`);
         db.prepare("UPDATE meta SET value = ? WHERE key = 'knowledge_generation'").run(randomUUID());
         db.prepare("UPDATE meta SET value = ? WHERE key = 'active_plan'").run(next);
@@ -295,7 +391,11 @@ export async function createSqliteStore(directory) {
     saveLesson(lessonId, content) {
       requireLesson(lessonId);
       if (!validLesson(content)) throw new Error('课程内容格式不正确。');
-      db.prepare('UPDATE lessons SET content_json = ? WHERE id = ?').run(JSON.stringify(content), lessonId);
+      transaction(db, () => {
+        const before = quizQuestions(getLesson(lessonId)), tracked = !!db.prepare('SELECT 1 FROM meta WHERE key = ?').get(`quizRecords:${lessonId}`);
+        db.prepare('UPDATE lessons SET content_json = ? WHERE id = ?').run(JSON.stringify(content), lessonId);
+        if (tracked) trackQuizChange(lessonId,before,quizQuestions(getLesson(lessonId)));
+      });
     },
     saveOutline(lessonId, outline) {
       requireLesson(lessonId);
@@ -328,8 +428,12 @@ export async function createSqliteStore(directory) {
       if (block.content_json !== null) throw new Error('内容块已生成。');
       if (!validBlockContent(block.type, content)) throw new Error('内容块正文格式不正确。');
       transaction(db, () => {
+        const before = block.type === 'quiz' ? quizQuestions(getLesson(lessonId)) : [], tracked = !!db.prepare('SELECT 1 FROM meta WHERE key = ?').get(`quizRecords:${lessonId}`);
         db.prepare('UPDATE lesson_blocks SET content_json = ? WHERE lesson_id = ? AND id = ? AND content_json IS NULL').run(JSON.stringify(content), lessonId, blockId);
-        if (block.type === 'quiz') db.prepare("UPDATE progress SET completed = 0, last_score = 0, last_answers_json = '[]' WHERE lesson_id = ?").run(lessonId);
+        if (block.type === 'quiz') {
+          if (tracked) trackQuizChange(lessonId,before,quizQuestions(getLesson(lessonId)));
+          else db.prepare("UPDATE progress SET completed = 0, last_score = 0, last_answers_json = '[]' WHERE lesson_id = ?").run(lessonId);
+        }
       });
     },
     attachIllustration(lessonId, blockId, illustration, expectedContent) {
@@ -374,7 +478,11 @@ export async function createSqliteStore(directory) {
     saveProgress(lessonId, value) {
       requireLesson(lessonId);
       if (!value || typeof value.completed !== 'boolean' || !Number.isInteger(value.attempts) || value.attempts < 0 || ![value.lastScore, value.bestScore].every(n => Number.isInteger(n) && n >= 0 && n <= 100) || !Array.isArray(value.lastAnswers) || value.lastAnswers.length > 100 || !value.lastAnswers.every(n => Number.isInteger(n) && n >= 0 && n < 4)) throw new Error('练习成绩格式不正确。');
-      db.prepare('INSERT INTO progress VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT(lesson_id) DO UPDATE SET completed=excluded.completed, attempts=excluded.attempts, last_score=excluded.last_score, best_score=excluded.best_score, last_answers_json=excluded.last_answers_json, updated=excluded.updated').run(lessonId, Number(value.completed), value.attempts, value.lastScore, value.bestScore, JSON.stringify(value.lastAnswers), value.updated ?? null);
+      const record = fromJSON(db.prepare('SELECT value FROM meta WHERE key = ?').get(`quizRecords:${lessonId}`)?.value || 'null');
+      if (record) {
+        if (value.quizFingerprint !== record.currentFingerprint || quizHash(quizQuestions(getLesson(lessonId))) !== record.currentFingerprint) throw new Error('题目版本已变化，请重新打开练习；成绩未覆盖。');
+        transaction(db, () => { writeProgress(lessonId, value); metaSet(`quizRecords:${lessonId}`, { ...record, progressFingerprint: record.currentFingerprint }); });
+      } else writeProgress(lessonId, value);
     },
     saveReflection(lessonId, value) {
       requireLesson(lessonId);

@@ -15,11 +15,12 @@ function withoutPlan(state, planId) {
   const next = { ...state, plans: state.plans.filter(item => item.id !== planId) };
   if (!next.plans.length) return next;
   if (next.active === planId) next.active = next.plans[0].id;
-  for (const key of ['lessons', 'blockCourses', 'progress', 'reflections', 'annotations', 'chats']) {
+  for (const key of ['lessons', 'blockCourses', 'progress', 'reflections', 'annotations', 'chats', 'quizRecords', 'revisionNotices']) {
     if (next[key]) next[key] = Object.fromEntries(Object.entries(next[key]).filter(([lessonId]) => !lessonIds.has(lessonId)));
   }
   next.notes = next.notes.filter(note => !lessonIds.has(note.lessonId));
   if (next.qualityReports) next.qualityReports = next.qualityReports.filter(report => report.planId !== planId);
+  for (const key of ['qualityJobs', 'qualityDispositions']) if (next[key]) next[key] = next[key].filter(r => r.planId !== planId);
   if (next.imageAssets) {
     const used = new Set(referencedImages(next));
     next.imageAssets = next.imageAssets.filter(asset => used.has(asset.id));

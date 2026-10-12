@@ -7,11 +7,14 @@ const { readFile, writeFile, mkdir, stat } = require('node:fs/promises');
 app.setName('Learnflow');
 const smoke = process.argv.includes('--smoke-test');
 const development = process.argv.includes('--dev-profile');
-if (smoke) app.setPath('userData', path.resolve('.desktop-test'));
+const liveRevision = process.argv.includes('--verify-revision');
+// safeStorage decrypts under the original profile; learning test data stays isolated.
+if (liveRevision) app.setPath('userData', path.resolve('.desktop-dev'));
+else if (smoke) app.setPath('userData', path.resolve('.desktop-test'));
 else if (development) app.setPath('userData', path.resolve('.desktop-dev'));
 let window, server, store, imageStore, speechStore, webSearchStore, qualityStore, learning, base, shuttingDown = false;
 const token = randomBytes(32).toString('hex');
-if (!app.requestSingleInstanceLock()) app.quit();
+if (!app.requestSingleInstanceLock()) { if (liveRevision) console.log('REVISION_LIVE_BUSY','测试版仍在运行，请先保存未提交输入并关闭窗口；未发起真实调用。'); app.quit(); }
 else {
   app.on('second-instance', () => { if (window) { if (window.isMinimized()) window.restore(); window.show(); window.focus(); } });
   app.whenReady().then(start).catch(error => { console.error('Desktop startup failed:', error.message); if (!smoke) dialog.showErrorBox('知行启动失败', error.message); app.exit(1); });
@@ -29,6 +32,7 @@ async function start() {
   const { createLLM } = await import(pathToFileURL(path.join(__dirname, '..', 'llm.mjs')));
   const { assertDistinctQualityModels } = await import(pathToFileURL(path.join(__dirname, '..', 'public', 'course-quality.js')));
   const { createQualityService } = await import(pathToFileURL(path.join(__dirname, '..', 'course-quality.mjs')));
+  const { createRevisionService } = await import(pathToFileURL(path.join(__dirname, '..', 'course-revision.mjs')));
   const { createLocalStore, validState } = await import(pathToFileURL(path.join(__dirname, 'local-store.mjs')));
   const { createSqliteStore } = await import(pathToFileURL(path.join(__dirname, 'sqlite-store.mjs')));
   const { createImageStore } = await import(pathToFileURL(path.join(__dirname, 'image-store.mjs')));
@@ -41,16 +45,17 @@ async function start() {
   const { createSpeechModel } = await import(pathToFileURL(path.join(__dirname, '..', 'speech-model.mjs')));
   const { assistedBlockTypes } = await import(pathToFileURL(path.join(__dirname, '..', 'public', 'blocks.js')));
   const { validImageSuggestion, validImageProposal } = await import(pathToFileURL(path.join(__dirname, '..', 'public', 'illustrations.js')));
-  const dataDirectory = path.join(app.getPath('userData'), 'data');
+  const dataDirectory = liveRevision ? path.resolve('.desktop-test','revision-live','data') : path.join(app.getPath('userData'), 'data');
   await mkdir(dataDirectory, { recursive: true });
   const available = () => safeStorage.isEncryptionAvailable() && (process.platform !== 'linux' || safeStorage.getSelectedStorageBackend() !== 'basic_text');
   const secrets = {
     encrypt: async value => { if (!available()) throw new Error('系统安全存储不可用，无法保存密钥。可使用不需要密钥的本地模型。'); return safeStorage.encryptString(value).toString('base64'); },
     decrypt: async value => { if (!available()) throw new Error('系统安全存储不可用。'); return safeStorage.decryptString(Buffer.from(value, 'base64')); }
   };
-  store = createLocalStore(dataDirectory, secrets, { validateChange: next => assertDistinctQualityModels(next, qualityStore?.getModelConfig()) });
+  const modelDirectory = liveRevision ? path.resolve('.desktop-dev','data') : dataDirectory;
+  store = createLocalStore(modelDirectory, secrets, { validateChange: next => assertDistinctQualityModels(next, qualityStore?.getModelConfig()) });
   await store.initialize();
-  qualityStore = createLocalStore(dataDirectory, secrets, { filename: 'quality-settings.json', validateChange: next => assertDistinctQualityModels(store.getModelConfig(), next) });
+  qualityStore = createLocalStore(modelDirectory, secrets, { filename: 'quality-settings.json', validateChange: next => assertDistinctQualityModels(store.getModelConfig(), next) });
   await qualityStore.initialize();
   imageStore = createImageStore(dataDirectory, secrets, bytes => {
     const decoded = nativeImage.createFromBuffer(bytes), { width, height } = decoded.getSize();
@@ -78,6 +83,14 @@ async function start() {
     return result;
   };
   const qualityService = createQualityService({ learning, getReviewer: getQualityLLM, getGenerator: () => llm.status() });
+  const revisionService = createRevisionService({ learning, getReviewer: getQualityLLM, getGenerator: () => llm });
+  if (liveRevision) {
+    console.log('REVISION_LIVE_CONFIG',JSON.stringify({generation:{mode:llm.status().mode,model:llm.status().model,error:store.getSettings().error||llm.status().configurationError},review:{mode:qualityStatus().mode,model:qualityStatus().model,error:qualityStore.getSettings().error||qualityStatus().configurationError}}));
+    let failed=false;
+    try { await require('./revision-live.cjs').run({learning,getGenerator:()=>llm,getReviewer:getQualityLLM}); }
+    catch (error) { console.log('REVISION_LIVE_RESULT',JSON.stringify({passed:false,message:error.message,automaticRetry:false})); failed=true; }
+    await store.flush(); await qualityStore.flush(); learning.close(); speechStore.close(); app.exit(failed?1:0); return;
+  }
   let roleSaveQueue = Promise.resolve();
   const saveModelRole = task => { const operation = roleSaveQueue.then(task); roleSaveQueue = operation.catch(() => {}); return operation; };
   if (process.argv.includes('--verify-model')) {
@@ -102,6 +115,15 @@ async function start() {
   });
   handle('learnflow:inspect-quality', (scope, id) => qualityService.inspect(scope, id));
   handle('learnflow:evaluate-quality', (scope, id, fingerprint) => qualityService.evaluate(scope, id, fingerprint));
+  handle('learnflow:create-revision', (reportId, issues, fingerprint) => revisionService.create(reportId, issues, fingerprint));
+  handle('learnflow:inspect-revision', id => revisionService.inspect(id));
+  handle('learnflow:generate-revision', (id, rev) => revisionService.generate(id, rev));
+  handle('learnflow:edit-revision', (id, rev, changes) => revisionService.edit(id, rev, changes));
+  handle('learnflow:review-revision', (id, rev) => revisionService.review(id, rev));
+  handle('learnflow:apply-revision', (id, rev, confirmed, risks) => revisionService.apply(id, rev, confirmed, risks));
+  handle('learnflow:restore-revision', (id, rev) => revisionService.restore(id, rev));
+  handle('learnflow:discard-revision', (id, rev) => revisionService.discard(id, rev));
+  handle('learnflow:quality-disposition', (reportId, index, status, note) => revisionService.disposition(reportId, index, status, note));
   handle('learnflow:test-quality-connection', () => {
     assertDistinctQualityModels(llm.status(), getQualityLLM().status());
     return getQualityLLM().testConnection();
@@ -382,7 +404,8 @@ async function start() {
   if (!smoke) window.focus();
   if (development) { window.setTitle('知行 Learnflow · 开发测试版'); console.log('DESKTOP_DEV_READY'); }
   if (smoke) {
-    await require('./smoke.cjs').run(window, { ...store, loadState: async () => learning.exportState() }, dataDirectory);
+    if (process.argv.includes('--revision-only')) await require('./revision-smoke.cjs').run(window,dataDirectory);
+    else await require('./smoke.cjs').run(window, { ...store, loadState: async () => learning.exportState() }, dataDirectory);
     await store.flush(); await qualityStore.flush(); await imageStore.flush(); await speechStore.flush(); await webSearchStore.flush(); app.quit();
   }
 }
