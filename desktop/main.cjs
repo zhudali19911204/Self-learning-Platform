@@ -404,7 +404,8 @@ async function start() {
   if (!smoke) window.focus();
   if (development) { window.setTitle('知行 Learnflow · 开发测试版'); console.log('DESKTOP_DEV_READY'); }
   if (smoke) {
-    if (process.argv.includes('--revision-only')) await require('./revision-smoke.cjs').run(window,dataDirectory);
+    if (process.argv.includes('--generation-only')) await require('./generation-smoke.cjs').run(window,dataDirectory);
+    else if (process.argv.includes('--revision-only')) await require('./revision-smoke.cjs').run(window,dataDirectory);
     else await require('./smoke.cjs').run(window, { ...store, loadState: async () => learning.exportState() }, dataDirectory);
     await store.flush(); await qualityStore.flush(); await imageStore.flush(); await speechStore.flush(); await webSearchStore.flush(); app.quit();
   }

@@ -145,8 +145,8 @@ test('personalized plans prioritize confirmed answers, preserve original goals, 
   assert.equal(result.goal,input.goal);
   assert.deepEqual(result.learningBrief,learningBriefFrom(clarification));
   assert.deepEqual(JSON.parse(sent.messages[1].content).learningBrief,result.learningBrief);
-  assert.match(sent.messages[0].content,/验收方法/);
-  assert.match(sent.messages[0].content,/前置依赖/);
+  assert.match(sent.messages[0].content,/验收依据/);
+  assert.match(sent.messages[0].content,/必要知识方法和先修/);
   assert.match(sent.messages[0].content,/不能覆盖用户回答/);
   assert.equal((await app.post('/api/plan',{...input,clarification:{...clarification,answers:[]}})).status,400);
   assert.equal((await app.post('/api/plan',{...input,clarification:{...clarification,notes:'x'.repeat(1001)}})).status,400);
@@ -165,7 +165,7 @@ test('duplicate learning outcomes are diagnosed and repaired instead of accepted
 });
 test('later course generation carries the confirmed learning brief without requiring it on old routes', async t => {
   const sent=[];
-  const outline={intro:'针对文件整理',blocks:[{type:'reading',title:'规则',objective:'制定规则'},{type:'quiz',title:'检查',objective:'识别错误'}]};
+  const outline={intro:'针对文件整理',blocks:[{type:'reading',title:'规则',objective:'制定规则'},{type:'example',title:'规则预览示例',objective:'按样例核对文件整理规则'},{type:'quiz',title:'检查',objective:'识别错误'}]};
   const app=await serve(t,{model:'test',fetchImpl:async (_url,init) => {
     const payload=JSON.parse(init.body); sent.push(payload);
     return Response.json({message:{content:JSON.stringify(JSON.parse(payload.messages[1].content).block ? {text:'安全预览步骤'} : outline)}});
@@ -192,14 +192,14 @@ test('serves all client assets and demo status; does not expose server files', a
   assert.equal(status.model, null);
   assert.equal(status.provider, 'ollama');
   assert.equal(status.configurationError, null);
-  for (const path of ['/', '/app.js', '/demo.js', '/blocks.js', '/planning.js', '/markdown.js', '/knowledge-index.js', '/knowledge-views.js', '/graph-motion.js', '/vendor/marked.js', '/vendor/purify.js', '/styles.css', '/favicon.svg']) {
+  for (const path of ['/', '/app.js', '/demo.js', '/blocks.js', '/teaching-context.js', '/planning.js', '/markdown.js', '/knowledge-index.js', '/knowledge-views.js', '/graph-motion.js', '/vendor/marked.js', '/vendor/purify.js', '/styles.css', '/favicon.svg']) {
     const r = await app.get(path); assert.equal(r.status, 200); assert.ok((await r.text()).length > 0);
     assert.ok(r.headers.get('content-security-policy').includes("script-src 'self'"));
   }
   for (const path of ['/server.mjs', '/.env', '/package.json', '/diagrams.js', '/vendor/package.json', '/node_modules/marked/package.json', '/unknown']) assert.equal((await app.get(path)).status, 404);
 });
 test('stepwise lesson APIs validate outline and individual block output', async t => {
-  const outline = { intro: '从概念开始', blocks: [{ type: 'reading', title: '概念', objective: '理解概念' }, { type: 'quiz', title: '自测', objective: '检验理解' }] };
+  const outline = { intro: '从概念开始', blocks: [{ type: 'reading', title: '概念', objective: '理解概念' }, { type:'example',title:'变量示例',objective:'通过赋值解释变量变化' }, { type: 'quiz', title: '自测', objective: '检验理解' }] };
   const app = await serve(t, { model: 'test', fetchImpl: mock(outline) });
   const context = { goal: '学习 Python', level: '零基础', title: '变量', objective: '认识变量' };
   assert.deepEqual(await (await app.post('/api/lesson-outline', context)).json(), outline);
@@ -209,15 +209,16 @@ test('stepwise lesson APIs validate outline and individual block output', async 
   const blockApp = await serve(t, { model: 'test', fetchImpl: async (_url, init) => { sent = JSON.parse(init.body); return Response.json({ message: { content: JSON.stringify({ text: '分步讲解正文' }) } }); } });
   const blockRequest = { ...context, intro: outline.intro, block: outline.blocks[0], minutes: 25, outline: outline.blocks, previous: [{ type: 'reading', title: '前一段', excerpt: '已经解释过的概念' }], sequence: { position: 2, total: 4 } };
   assert.deepEqual(await (await blockApp.post('/api/lesson-block', blockRequest)).json(), { text: '分步讲解正文' });
-  assert.match(sent.messages[0].content, /首次出现的术语要定义/);
+  assert.match(sent.messages[0].content, /必要的新术语首次出现时，用易懂的话定义/);
   assert.match(sent.messages[0].content, /text 字段内使用 Markdown 文档格式/);
-  assert.match(sent.messages[0].content, /关键定义或核心结论用 \*\*加粗\*\*/);
+  assert.match(sent.messages[0].content, /关键定义或核心结论少量 \*\*加粗\*\*/);
   assert.match(sent.messages[0].content, /不要生成流程图、架构图、数据图表/);
   assert.match(sent.messages[0].content, /普通 Markdown 表格/);
   assert.doesNotMatch(sent.messages[0].content, /最多 24 个节点、40 条连线/);
   assert.deepEqual(JSON.parse(sent.messages[1].content).previous, blockRequest.previous);
   assert.deepEqual(await (await blockApp.post('/api/lesson-block', { ...blockRequest, block: { type: 'practice', title: '动手做', objective: '独立完成' } })).json(), { text: '分步讲解正文' });
-  assert.match(sent.messages[0].content, /完成标准和两个由浅入深的提示/);
+  assert.match(sent.messages[0].content, /完成标准要可观察/);
+  assert.match(sent.messages[0].content, /两个由浅入深的提示/);
   assert.match(sent.messages[0].content, /不要生成流程图、架构图、数据图表/);
   assert.equal((await blockApp.post('/api/lesson-block', { ...blockRequest, previous: [{ ...blockRequest.previous[0], excerpt: 'x'.repeat(1001) }] })).status, 400);
   assert.equal((await blockApp.post('/api/lesson-block', { ...context, intro: outline.intro, block: { type: 'unknown', title: '错', objective: '错' } })).status, 400);
@@ -315,7 +316,7 @@ test('planning uses a full multi-course example and reports actual count versus 
   const shape = JSON.parse(prompt.slice(prompt.indexOf('{"title":"根据目标命名的路线"')));
   assert.ok(shape.lessons.length >= 3 && shape.lessons.length <= 12);
   assert.ok(shape.lessons.reduce((total, lesson) => total + lesson.minutes, 0) <= input.daily * input.days);
-  assert.match(prompt, /days 表示整个学习周期，不等于课程数量/);
+  assert.match(prompt, /days不是课程数量/);
   for (const count of [0, 1, 2, 13, 30]) {
     const lessons = Array.from({length:count}, (_, index) => ({...demoPlan.lessons[0],title:`课程 ${index}`}));
     const app = await serve(t, {model:'test',fetchImpl:mock({...demoPlan,lessons})});

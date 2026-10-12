@@ -12,6 +12,7 @@ import { knowledgeCatalog, knowledgeDomain, knowledgeDomainColors, knowledgeTopi
 import { courseKnowledgeTree, knowledgeGraph, filterKnowledgeGraph } from './knowledge-views.js';
 import { createGraphMotion, stepGraphMotion } from './graph-motion.js';
 import { qualityRubric, qualityLabels } from './course-quality.js';
+import { teachingContextNotice } from './teaching-context.js';
 import { revisionTypes, revisionStatuses, revisionCheckLabels, revisionContent, revisionText, revisionDiff } from './course-revision.js';
 
 const renderMarkdown = createMarkdownRenderer(Marked, DOMPurify);
@@ -473,7 +474,8 @@ function blockPart(block, index, lessonId, teaching = false) {
   const toggle = canCollapse ? `<button type="button" class="block-collapse-toggle" data-action="toggle-block-collapse" ${attrs} aria-controls="${escape(bodyId)}" aria-expanded="${!collapsed}">${collapsed ? '展开' : '收起'}</button>` : '';
   const body = block.content && block.type !== 'quiz' ? `<div class="block-text markdown-content annotatable" data-annotation-source="block:${escape(block.id)}">${renderMarkdown(block.content.text)}</div>${figure}` : '';
   const bodyMarkup = canCollapse ? `<div id="${escape(bodyId)}" class="block-collapsible-body" ${collapsed ? 'hidden' : ''}>${body}</div>` : body;
-  return `<section class="${teaching ? `teaching-part teaching-${block.type}` : 'reading-section content-block'}" data-block-id="${escape(block.id)}"><div class="teaching-part-heading"><span class="pill purple">${String(index + 1).padStart(2, '0')} · ${labels[block.type]}</span>${actions}</div><div class="block-title-row"><h2 class="block-title">${escape(block.title)}</h2>${toggle}</div><p class="block-objective">${escape(block.objective)}</p>${block.content ? block.type === 'quiz' ? `<p>已生成 ${block.content.questions.length} 道练习题。${button('去练习', 'quiz', 'secondary')}</p>` : bodyMarkup : `<div class="block-pending"><span>此模块尚未生成，可以按需展开。</span>${button('生成这一块', 'generate-block', 'secondary', attrs, 'spark')}</div>`}</section>`;
+  const contextNotice = !block.content ? teachingContextNotice(state.blockCourses?.[lessonId] || {blocks:[block]},block.id) : '';
+  return `<section class="${teaching ? `teaching-part teaching-${block.type}` : 'reading-section content-block'}" data-block-id="${escape(block.id)}"><div class="teaching-part-heading"><span class="pill purple">${String(index + 1).padStart(2, '0')} · ${labels[block.type]}</span>${actions}</div><div class="block-title-row"><h2 class="block-title">${escape(block.title)}</h2>${toggle}</div><p class="block-objective">${escape(block.objective)}</p>${block.content ? block.type === 'quiz' ? `<p>已生成 ${block.content.questions.length} 道练习题。${button('去练习', 'quiz', 'secondary')}</p>` : bodyMarkup : `<div class="block-pending"><span>此模块尚未生成，可以按需展开。</span>${contextNotice ? `<p class="field-hint generation-scope-notice">${escape(contextNotice)}</p>` : ''}${button('生成这一块', 'generate-block', 'secondary', attrs, 'spark')}</div>`}</section>`;
 }
 function teachingSequence(course, lessonId) {
   const units = [];
@@ -1374,7 +1376,7 @@ async function action(name, element) {
   if (name === 'quiz' || name === 'read-tab') return switchLessonTab(name === 'quiz' ? 'quiz' : 'read');
   if (name === 'generate-lesson') {
     const meta = lessonById(id), p = state.plans.find(p => p.lessons.some(l => l.id === id));
-    const outline = await api('lesson-outline', { goal: p.goal, level: p.level, ...(p.learningBrief ? { learningBrief: p.learningBrief } : {}), title: meta.title, objective: meta.objective, route: p.lessons.map(({ title, objective }) => ({ title, objective })), lessonPosition: p.lessons.findIndex(lesson => lesson.id === id) + 1 });
+    const outline = await api('lesson-outline', { goal: p.goal, level: p.level, ...(p.learningBrief ? { learningBrief: p.learningBrief } : {}), title: meta.title, objective: meta.objective, minutes: meta.minutes, route: p.lessons.map(({ title, objective }) => ({ title, objective })), lessonPosition: p.lessons.findIndex(lesson => lesson.id === id) + 1 });
     if (!validOutline(outline)) throw new Error('模型返回的大纲格式不正确，请重试。');
     const course = desktop ? await desktop.saveOutline(id, outline) : { intro: outline.intro, blocks: outline.blocks.map(block => ({ id: crypto.randomUUID(), ...block, content: null })) };
     state.blockCourses ||= {}; state.blockCourses[id] = course; if (!desktop) save(); render(); return;
@@ -1384,6 +1386,7 @@ async function action(name, element) {
     if (!block || block.content) throw new Error('内容块不存在或已生成。');
     const meta = lessonById(id), p = state.plans.find(plan => plan.lessons.some(item => item.id === id));
     const context = blockGenerationContext(state.blockCourses[id], block.id);
+    if (['quiz','summary'].includes(block.type) && !context.teachingContext.sources.some(s=>['reading','example'].includes(s.type))) throw new Error('请先生成至少一个前序讲解或案例，再生成测验或总结；未调用模型。');
     const content = await api('lesson-block', { goal: p.goal, level: p.level, ...(p.learningBrief ? { learningBrief: p.learningBrief } : {}), title: meta.title, objective: meta.objective, minutes: meta.minutes, ...context, block: { type: block.type, title: block.title, objective: block.objective } });
     if (!validBlockContent(block.type, content)) throw new Error('模型返回的内容格式不正确，请重试。');
     if (desktop) await desktop.saveBlock(id, block.id, content);

@@ -4,7 +4,7 @@
 
 ## Windows 桌面版
 
-当前源码版本为 `1.1.9`，对应 Git 标签 `V-1.1.9`。打包后运行 `release/Learnflow-Setup-1.1.9.exe` 安装。也可直接运行 `release/win-unpacked/Learnflow.exe`（需保留同目录的其他文件，不能只拷贝 exe）。安装后从桌面“知行 Learnflow”快捷方式打开，无需安装 Node.js，也不用手动启动 Web 服务。旧版 `0.1.0` 安装包不包含新增的 SQLite 存储；请重新打包或用开发测试版体验最新功能。
+当前源码版本为 `1.2.0`，对应 Git 标签 `V-1.2.0`。打包后运行 `release/Learnflow-Setup-1.2.0.exe` 安装。也可直接运行 `release/win-unpacked/Learnflow.exe`（需保留同目录的其他文件，不能只拷贝 exe）。安装后从桌面“知行 Learnflow”快捷方式打开，无需安装 Node.js，也不用手动启动 Web 服务。旧版 `0.1.0` 安装包不包含新增的 SQLite 存储；请重新打包或用开发测试版体验最新功能。
 
 源码启动及打包：
 
@@ -362,6 +362,14 @@ LLM_JSON_MODE=off
 
 ## 学习闭环
 
+### 首次课程生成优化
+
+当前使用 `course-generation-v2`：路线围绕可验证成果与先修、大纲结合整课时长、内容块强调概念理由/适用边界/完整案例/独立实践。案例优先承接对应讲解原文，测验与总结使用前序已生成正文；长课按目标选取带来源位置的片段，明确未生成与省略范围，不将大纲当已学内容。没有前序讲解或案例时先提示生成教学内容，不自动增加付费调用。
+
+新生成大纲需讲解紧接案例、目标不重复；新生成测验为2–4题且选项不同。旧课程、导入及局部修订继续保持兼容。结构通过不等于事实正确，仍可用独立质量审查与修订闭环核对。实现和对比验收准备见 [课程生成优化实施记录](docs/course-generation-implementation.md)。本轮使用模拟模型验证功能，真实教学效果对比尚未执行。
+
+### 学习流程
+
 1. 从概览开始第一课，或新建 AI 路线。
 2. 阅读讲解与示例，在自己的工具中完成实践任务。页面不会执行用户代码，也不会验证外部动手任务的完成情况。
 3. 提交随堂测验，查看得分和解析。全部答对后记录为已掌握，可以反复练习；后续复习出错不会撤销过去的完成记录，练习页面会优先显示最近答错的课程。
@@ -382,6 +390,7 @@ LLM_JSON_MODE=off
 ```text
 server.mjs            本地 HTTP 服务、业务校验、静态文件
 llm.mjs               云端/本地 LLM 适配、配置校验与连接测试
+course-generation.mjs 版本化课程生成提示词与新生成结果校验
 course-quality.mjs    课程快照、本地检查、独立模型评价与报告
 course-revision.mjs   修订任务、独立复核与确认应用服务
 desktop/main.cjs      Electron 窗口、受限 IPC、系统对话框
@@ -394,6 +403,7 @@ test/server.test.mjs API、模型错误、引用与数据校验测试
 test/llm.test.mjs    服务商协议、鉴权、参数、超时与输出校验测试
 test/desktop.test.mjs 本地读写、密钥保存、数据校验与仅本机策略测试
 test/client.test.mjs 学习状态、练习、Wiki 与保存流程测试
+test/generation.test.mjs 教学上下文覆盖、取样范围与新旧契约兼容测试
 test/quality.test.mjs 独立评审、证据校验、版本失效与报告持久化测试
 test/revision.test.mjs 草稿与版本保护、应用回滚、测验历史及恢复测试
 ```
@@ -412,6 +422,12 @@ npm run desktop -- --smoke-test
 
 ```powershell
 npm run desktop -- --smoke-test --revision-only
+```
+
+仅验证首次生成优化（本机模拟模型，大纲预算、来源覆盖及保存流程）：
+
+```powershell
+npm run desktop -- --smoke-test --generation-only
 ```
 
 真实联调只能在用户明确授权后运行 `npm run desktop -- --verify-revision`。它读取开发测试版的两组已保存配置，最多一次生成、一次复核，使用 `.desktop-test/revision-live/data/` 中的临时课程，并验证应用与恢复。为使用原配置的系统密钥解密环境，需先保存未提交输入并关闭开发测试版；不会强制关闭运行中的窗口，不修改 `.desktop-dev/data/` 中的课程或模型配置。真实调用可能计费，结果不代表课程准确率。

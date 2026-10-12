@@ -19,6 +19,7 @@ import { knowledgeCatalog, knowledgeDomain, knowledgeDomainColors, knowledgeTopi
 import { courseKnowledgeTree, knowledgeTree, knowledgeGraph, filterKnowledgeGraph } from '../public/knowledge-views.js';
 import { createGraphMotion, stepGraphMotion } from '../public/graph-motion.js';
 import { qualityRubric, qualityLabels } from '../public/course-quality.js';
+import { teachingContextNotice } from '../public/teaching-context.js';
 import { revisionTypes, revisionStatuses, revisionCheckLabels, revisionContent, revisionText, revisionDiff } from '../public/course-revision.js';
 const DOMPurify = createDOMPurify(new JSDOM('').window);
 const source = (await readFile(new URL('../public/app.js', import.meta.url), 'utf8')).replace(/^import .* from '\.\/[^']+';$/gm, '');
@@ -502,7 +503,7 @@ function realSettingsHarness(bridge) {
   }
   document.addEventListener = (name, listener) => { const group = listeners.get(name) || []; group.push(listener); listeners.set(name, group); };
   dom.window.learnflowDesktop = bridge; dom.window.scrollTo = () => {};
-  const context = vm.createContext({ qualityRubric, qualityLabels, revisionTypes, revisionStatuses, revisionCheckLabels, revisionContent, revisionText, revisionDiff,
+  const context = vm.createContext({ teachingContextNotice, qualityRubric, qualityLabels, revisionTypes, revisionStatuses, revisionCheckLabels, revisionContent, revisionText, revisionDiff,
     demoPlan, demoLessons, lessonFromBlocks, validOutline, validBlockContent, validBlockSpec, blockGenerationContext, revisedContent, restoredContent, assistedBlockTypes, Marked, DOMPurify, createMarkdownRenderer, validQuestionnaire, validClarification, learningBriefFrom, validIllustration, validImageProposal, speechDefaults, speechVoices, listeningText, speechTurns, speechRequest, validAudioId, validKnowledgeSource, validKnowledgeDraft, localKnowledgeDraft, knowledgeTags, knowledgeConditions, validAnnotations, personalNotesForSource, personalNotesMarkdown, knowledgeCatalog, knowledgeDomain, knowledgeDomainColors, knowledgeTopic, retrieveKnowledge, validKnowledgeOrganization, courseKnowledgeTree, knowledgeTree, knowledgeGraph, filterKnowledgeGraph, createGraphMotion, stepGraphMotion, structuredClone, crypto: webcrypto, AbortSignal,
     document, window: dom.window, FormData: dom.window.FormData, setTimeout: () => 1, clearTimeout() {}
   });
@@ -519,7 +520,7 @@ function harness(saved, fetchImpl, desktopBridge) {
     if (!nodes.has(selector)) nodes.set(selector, { innerHTML: '', textContent: '', open: false, attributes: {}, setAttribute(name, value) { this.attributes[name] = value; }, classList: { add() {}, remove() {} }, scrollIntoView() {}, focus() {}, showModal() { this.open = true; }, close() { this.open = false; } });
     return nodes.get(selector);
   };
-  const context = vm.createContext({ qualityRubric, qualityLabels, revisionTypes, revisionStatuses, revisionCheckLabels, revisionContent, revisionText, revisionDiff,
+  const context = vm.createContext({ teachingContextNotice, qualityRubric, qualityLabels, revisionTypes, revisionStatuses, revisionCheckLabels, revisionContent, revisionText, revisionDiff,
     demoPlan, demoLessons, lessonFromBlocks, validOutline, validBlockContent, validBlockSpec, blockGenerationContext, revisedContent, restoredContent, assistedBlockTypes, Marked, DOMPurify, createMarkdownRenderer, validQuestionnaire, validClarification, learningBriefFrom, validIllustration, validImageProposal, speechDefaults, speechVoices, listeningText, speechTurns, speechRequest, validAudioId, validKnowledgeSource, validKnowledgeDraft, localKnowledgeDraft, knowledgeTags, knowledgeConditions, validAnnotations, personalNotesForSource, personalNotesMarkdown, knowledgeCatalog, knowledgeDomain, knowledgeDomainColors, knowledgeTopic, retrieveKnowledge, validKnowledgeOrganization, courseKnowledgeTree, knowledgeTree, knowledgeGraph, filterKnowledgeGraph, createGraphMotion, stepGraphMotion, structuredClone, crypto: webcrypto, AbortSignal,
     document: { querySelector: node, addEventListener(name, listener) { const group = listeners.get(name) || []; group.push(listener); listeners.set(name, group); } },
     localStorage: { get length() { return storage.size; }, key: index => [...storage.keys()][index] ?? null, getItem: key => storage.get(key) ?? null, setItem: (key, value) => storage.set(key, value), removeItem: key => storage.delete(key) },
@@ -934,6 +935,16 @@ test('block generation carries bounded nearby outline and prior teaching context
   assert.deepEqual(context.sequence, { position: 31, total: 45 });
   assert.equal(context.outline[0].title, '模块 18');
   assert.equal(context.outline.at(-1).title, '模块 42');
+});
+
+test('lesson generation sends the time budget and does not pay for a quiz before any teaching exists',async t=>{
+  const requests=[];
+  const app=realSettingsHarness({load:async()=>({status:{mode:'ai',model:'test'}}),saveOutline:async(id,outline)=>({...outline,blocks:outline.blocks.map((b,i)=>({...b,id:`new-${i}`,content:null}))}),getLesson:async()=>({lesson:null,blockCourse:null,reflection:'',chats:[]}),request:async(endpoint,data)=>{requests.push({endpoint,data});return {intro:'单课',blocks:[{type:'reading',title:'讲解',objective:'解释具体方法'},{type:'example',title:'案例',objective:'推演方法结果'},{type:'quiz',title:'测验',objective:'判断适用条件'}]};}});
+  t.after(()=>app.close());await app.ready();await app.run("action('generate-lesson',{dataset:{id:'p1'}})");app.run("activeLesson='p1';page='study';render()");
+  assert.equal(requests.length,1);assert.equal(requests[0].endpoint,'lesson-outline');assert.equal(requests[0].data.minutes,demoPlan.lessons[0].minutes);
+  assert.match(app.document.querySelector('[data-block-id="new-2"]').textContent,/请先生成前序讲解或案例/);
+  await assert.rejects(app.run("action('generate-block',{dataset:{id:'p1',block:'new-2'}})"),/未调用模型/);assert.equal(requests.length,1);
+  assert.match(app.document.querySelector('[data-block-id="new-1"]').textContent,/配套讲解尚未生成/);
 });
 
 test('teaching units pair adjacent examples and regenerate only the requested block with recoverable history', async () => {

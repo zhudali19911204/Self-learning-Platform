@@ -1,4 +1,5 @@
 import { validImageProposal, validIllustration } from './illustrations.js';
+import { buildTeachingContext } from './teaching-context.js';
 export const blockTypes = ['reading', 'example', 'practice', 'quiz', 'summary'];
 export const assistedBlockTypes = Object.freeze(['reading', 'example', 'practice']);
 const str = (value, max) => typeof value === 'string' && value.trim().length > 0 && value.length <= max;
@@ -36,7 +37,7 @@ export function blockGenerationContext(course, blockId) {
       if (related.length === 2) break;
     }
   }
-  return { intro: course.intro.slice(0, 2000), outline, previous, related, sequence: { position: index + 1, total: course.blocks.length } };
+  return { intro: course.intro.slice(0, 2000), outline, previous, related, teachingContext: buildTeachingContext(course,blockId), sequence: { position: index + 1, total: course.blocks.length } };
 }
 export function lessonFromBlocks(course) {
   if (!course) return null;
