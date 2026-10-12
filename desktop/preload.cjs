@@ -6,6 +6,7 @@ async function invoke(channel, ...args) {
 }
 contextBridge.exposeInMainWorld('learnflowDesktop', Object.freeze({
   load: () => invoke('learnflow:load'),
+  saveSettingsLayout: value => invoke('learnflow:save-settings-layout', value),
   getLesson: id => invoke('learnflow:get-lesson', id),
   savePlan: value => invoke('learnflow:save-plan', value),
   setActivePlan: id => invoke('learnflow:set-active-plan', id),

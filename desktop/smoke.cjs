@@ -6,7 +6,7 @@ const http = require('node:http');
 exports.run = async (window, store, directory) => {
   const { demoPlan } = await import('../public/demo.js');
   const { cardPathFor } = await import('./knowledge-cards.mjs');
-  const evaluate = code => window.webContents.executeJavaScript(code).catch(error => { console.error('SMOKE_FAILED_STEP', code.slice(0, 220)); throw error; });
+  const evaluate = code => window.webContents.executeJavaScript(code, true).catch(error => { console.error('SMOKE_FAILED_STEP', code.slice(0, 220)); throw error; });
   const wait = expression => evaluate(`new Promise((resolve, reject) => { let attempts = 0; const timer = setInterval(() => { try { if (${expression}) { clearInterval(timer); resolve(true); } else if (++attempts > 150) { clearInterval(timer); reject(new Error('Desktop check timed out')); } } catch (error) { clearInterval(timer); reject(error); } }, 100); })`);
   await wait("document.querySelector('main h1')");
   const localSettings = { provider: 'ollama', model: '', baseUrl: '', keyAction: 'clear', apiKey: '', localOnly: true, jsonMode: 'auto', timeoutMs: 120000, maxTokens: 8192 };
@@ -16,6 +16,7 @@ exports.run = async (window, store, directory) => {
   await evaluate(`window.learnflowDesktop.saveImageSettings(${JSON.stringify({...imageDefaults,keyAction:'clear',apiKey:''})})`);
   await evaluate('window.learnflowDesktop.saveWebSearchSettings({enabled:false})');
   await evaluate(`window.learnflowDesktop.saveSettings(${JSON.stringify(localSettings)})`);
+  await evaluate('window.learnflowDesktop.saveSettingsLayout({generator:true,reviewer:false,images:false,speech:false})');
   window.webContents.reload();
   await new Promise(resolve => window.webContents.once('did-finish-load', resolve));
   await wait("document.querySelector('main h1')");
@@ -23,9 +24,10 @@ exports.run = async (window, store, directory) => {
   // Exercise settings through the real form and IPC bridge.
   await evaluate("document.querySelector('[data-page=settings]').click()");
   await wait("document.querySelector('#desktop-settings-form')");
-  assert.equal(await evaluate("document.querySelectorAll('.model-settings-grid > .model-settings-card').length"), 3);
+  assert.equal(await evaluate("document.querySelectorAll('.model-settings-grid > .model-settings-card').length"), 4);
   assert.equal(await evaluate("document.querySelectorAll('select[name=keyAction]').length"), 0);
   assert.equal(await evaluate("[...document.querySelectorAll('.model-advanced')].every(item => !item.open)"), true);
+  await require('./settings-smoke.cjs').run(window, directory);
   // Exercise the keyless consent form through actual click/change/submit events.
   const beforeSearchSave = await evaluate("document.querySelector('#connection-result').textContent");
   await evaluate("document.querySelector('#web-search-settings-form [name=enabled]').click();document.querySelector('#web-search-settings-form').requestSubmit()");
@@ -553,7 +555,7 @@ exports.run = async (window, store, directory) => {
     await evaluate("document.querySelector('[data-action=check-image-connection]').click()");
     await wait("document.querySelector('#image-connection-result')?.textContent.includes('已在列表中找到模型')");
     assert.equal(nativeChecks,1);assert.equal(nativeRequests.length,0);
-    await evaluate("document.querySelector('.image-settings-panel').scrollIntoView({block:'start'}); new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))");
+    await evaluate("if(!document.querySelector('#settings-images').open)document.querySelector('#settings-images>summary').click();document.querySelector('.image-settings-panel').scrollIntoView({block:'start'}); new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))");
     assert.equal(await evaluate("document.documentElement.scrollWidth <= innerWidth + 1"),true,'native settings hints should not cause horizontal overflow');
     await writeFile(path.join(directory,'..','bailian-settings-smoke.png'),(await window.webContents.capturePage()).toPNG());
     await evaluate(`document.querySelector('[data-page=routes]').click(); document.querySelector('[data-action=open-lesson][data-id="${lessonId}"]').click()`);

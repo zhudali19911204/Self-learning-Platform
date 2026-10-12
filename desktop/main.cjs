@@ -12,7 +12,7 @@ const liveRevision = process.argv.includes('--verify-revision');
 if (liveRevision) app.setPath('userData', path.resolve('.desktop-dev'));
 else if (smoke) app.setPath('userData', path.resolve('.desktop-test'));
 else if (development) app.setPath('userData', path.resolve('.desktop-dev'));
-let window, server, store, imageStore, speechStore, webSearchStore, qualityStore, learning, base, shuttingDown = false;
+let window, server, store, imageStore, speechStore, webSearchStore, qualityStore, settingsLayoutStore, learning, base, shuttingDown = false;
 const token = randomBytes(32).toString('hex');
 if (!app.requestSingleInstanceLock()) { if (liveRevision) console.log('REVISION_LIVE_BUSY','测试版仍在运行，请先保存未提交输入并关闭窗口；未发起真实调用。'); app.quit(); }
 else {
@@ -34,6 +34,7 @@ async function start() {
   const { createQualityService } = await import(pathToFileURL(path.join(__dirname, '..', 'course-quality.mjs')));
   const { createRevisionService } = await import(pathToFileURL(path.join(__dirname, '..', 'course-revision.mjs')));
   const { createLocalStore, validState } = await import(pathToFileURL(path.join(__dirname, 'local-store.mjs')));
+  const { createSettingsLayoutStore } = await import(pathToFileURL(path.join(__dirname, 'settings-layout.mjs')));
   const { createSqliteStore } = await import(pathToFileURL(path.join(__dirname, 'sqlite-store.mjs')));
   const { createImageStore } = await import(pathToFileURL(path.join(__dirname, 'image-store.mjs')));
   const { createImageModel } = await import(pathToFileURL(path.join(__dirname, '..', 'image-model.mjs')));
@@ -47,6 +48,8 @@ async function start() {
   const { validImageSuggestion, validImageProposal } = await import(pathToFileURL(path.join(__dirname, '..', 'public', 'illustrations.js')));
   const dataDirectory = liveRevision ? path.resolve('.desktop-test','revision-live','data') : path.join(app.getPath('userData'), 'data');
   await mkdir(dataDirectory, { recursive: true });
+  settingsLayoutStore = createSettingsLayoutStore(dataDirectory);
+  await settingsLayoutStore.initialize();
   const available = () => safeStorage.isEncryptionAvailable() && (process.platform !== 'linux' || safeStorage.getSelectedStorageBackend() !== 'basic_text');
   const secrets = {
     encrypt: async value => { if (!available()) throw new Error('系统安全存储不可用，无法保存密钥。可使用不需要密钥的本地模型。'); return safeStorage.encryptString(value).toString('base64'); },
@@ -109,10 +112,12 @@ async function start() {
   await new Promise((resolve, reject) => { server.once('error', reject); server.listen(0, '127.0.0.1', resolve); });
   base = `http://127.0.0.1:${server.address().port}`;
   handle('learnflow:load', async () => {
+    await settingsLayoutStore.flush();
     let state = null, stateError = '';
     try { state = learning.overview(); } catch (error) { stateError = error.message; }
-    return { settings: store.getSettings(), qualitySettings: qualityStore.getSettings(), qualityStatus: qualityStatus(), imageSettings: imageStore.getSettings(), speechSettings: speechStore.getSettings(), webSearchSettings: webSearchStore.getSettings(), state, stateError, status: llm.status(), dataDirectory, startPage: process.argv.includes('--settings') ? 'settings' : 'home' };
+    return { settings: store.getSettings(), settingsLayout: settingsLayoutStore.get(), qualitySettings: qualityStore.getSettings(), qualityStatus: qualityStatus(), imageSettings: imageStore.getSettings(), speechSettings: speechStore.getSettings(), webSearchSettings: webSearchStore.getSettings(), state, stateError, status: llm.status(), dataDirectory, startPage: process.argv.includes('--settings') ? 'settings' : 'home' };
   });
+  handle('learnflow:save-settings-layout', value => settingsLayoutStore.save(value));
   handle('learnflow:inspect-quality', (scope, id) => qualityService.inspect(scope, id));
   handle('learnflow:evaluate-quality', (scope, id, fingerprint) => qualityService.evaluate(scope, id, fingerprint));
   handle('learnflow:create-revision', (reportId, issues, fingerprint) => revisionService.create(reportId, issues, fingerprint));
@@ -389,6 +394,11 @@ async function start() {
     webPreferences: { preload: path.join(__dirname, 'preload.cjs'), contextIsolation: true, nodeIntegration: false, sandbox: true, spellcheck: false }
   });
   window.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
+  window.webContents.on('will-prevent-unload', event => {
+    // Cancelling this Electron event explicitly permits the renderer to unload.
+    // Automated checks only use disposable profiles and must never show a dialog.
+    if (smoke || dialog.showMessageBoxSync(window, { type: 'question', title: '未保存的设置', message: '还有未保存或正在保存的模型设置。', detail: '请返回设置页保存需要的配置，等待正在进行的保存完成。继续关闭会丢弃未保存的参数与新填密钥；已保存配置和学习数据不会被删除。', buttons: ['返回继续设置', '放弃未保存修改并关闭'], defaultId: 0, cancelId: 0, noLink: true }) === 1) event.preventDefault();
+  });
   if (smoke) window.webContents.on('console-message', details => { if (details.level === 'error') console.error('SMOKE_RENDERER', details.message); });
   window.webContents.on('will-navigate', (event, url) => { if (url !== base + '/') event.preventDefault(); });
   window.webContents.on('will-attach-webview', event => event.preventDefault());
@@ -404,7 +414,8 @@ async function start() {
   if (!smoke) window.focus();
   if (development) { window.setTitle('知行 Learnflow · 开发测试版'); console.log('DESKTOP_DEV_READY'); }
   if (smoke) {
-    if (process.argv.includes('--generation-only')) await require('./generation-smoke.cjs').run(window,dataDirectory);
+    if (process.argv.includes('--settings-only')) await require('./settings-smoke.cjs').run(window,dataDirectory);
+    else if (process.argv.includes('--generation-only')) await require('./generation-smoke.cjs').run(window,dataDirectory);
     else if (process.argv.includes('--revision-only')) await require('./revision-smoke.cjs').run(window,dataDirectory);
     else await require('./smoke.cjs').run(window, { ...store, loadState: async () => learning.exportState() }, dataDirectory);
     await store.flush(); await qualityStore.flush(); await imageStore.flush(); await speechStore.flush(); await webSearchStore.flush(); app.quit();
@@ -413,6 +424,9 @@ async function start() {
 app.on('window-all-closed', () => app.quit());
 app.on('before-quit', event => {
   if (shuttingDown) return;
+  // Let the renderer's unsaved-settings guard decide before closing stores.
+  // Cancelling exit must leave the database and model services usable.
+  if (window && !window.isDestroyed()) { event.preventDefault(); window.close(); return; }
   event.preventDefault(); shuttingDown = true;
-  Promise.all([store?.flush(), qualityStore?.flush(), imageStore?.flush(), speechStore?.flush(), webSearchStore?.flush()]).finally(() => { learning?.close(); speechStore?.close(); server?.closeAllConnections(); server?.close(); app.quit(); });
+  Promise.all([store?.flush(), qualityStore?.flush(), imageStore?.flush(), speechStore?.flush(), webSearchStore?.flush(), settingsLayoutStore?.flush()]).finally(() => { learning?.close(); speechStore?.close(); server?.closeAllConnections(); server?.close(); app.quit(); });
 });

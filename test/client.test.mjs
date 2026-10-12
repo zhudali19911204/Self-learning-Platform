@@ -18,29 +18,36 @@ import { validAnnotations, personalNotesForSource, personalNotesMarkdown } from 
 import { knowledgeCatalog, knowledgeDomain, knowledgeDomainColors, knowledgeTopic, retrieveKnowledge, validKnowledgeOrganization } from '../public/knowledge-index.js';
 import { courseKnowledgeTree, knowledgeTree, knowledgeGraph, filterKnowledgeGraph } from '../public/knowledge-views.js';
 import { createGraphMotion, stepGraphMotion } from '../public/graph-motion.js';
-import { qualityRubric, qualityLabels } from '../public/course-quality.js';
+import { qualityRubric, qualityLabels, qualityModelId } from '../public/course-quality.js';
 import { teachingContextNotice } from '../public/teaching-context.js';
 import { revisionTypes, revisionStatuses, revisionCheckLabels, revisionContent, revisionText, revisionDiff } from '../public/course-revision.js';
 const DOMPurify = createDOMPurify(new JSDOM('').window);
 const source = (await readFile(new URL('../public/app.js', import.meta.url), 'utf8')).replace(/^import .* from '\.\/[^']+';$/gm, '');
 
-test('desktop settings keep all three models on one page with direct empty key inputs and folded advanced options', async () => {
+test('desktop settings keep four model roles on one expandable page with direct keys and grouped data actions', async () => {
   const app = harness(null, null, { load: async () => ({ settings: { provider: 'ollama', hasApiKey: true }, status: { mode: 'demo' }, imageSettings: { hasApiKey: true }, speechSettings: { hasApiKey: true } }) });
   await Promise.resolve(); app.run("navigate('settings')");
   const doc = new JSDOM(app.node('#app').innerHTML).window.document;
-  assert.equal(doc.querySelectorAll('.model-settings-grid > .model-settings-card').length, 3);
-  for (const id of ['desktop-settings-form', 'image-settings-form', 'speech-settings-form']) {
+  assert.equal(doc.querySelectorAll('.model-settings-grid > .model-settings-card').length, 4);
+  assert.equal(doc.querySelector('#settings-generator').open, true);
+  for (const id of ['reviewer', 'images', 'speech']) assert.equal(doc.querySelector('#settings-' + id).open, false);
+  for (const id of ['desktop-settings-form', 'quality-settings-form', 'image-settings-form', 'speech-settings-form']) {
     const form = doc.getElementById(id);
     assert.ok(form.closest('.model-settings-grid'));
     assert.equal(form.querySelector('[name=apiKey]').value, '');
-    assert.match(form.querySelector('[name=apiKey]').placeholder, /留空保留/);
+    assert.match(form.querySelector('[name=apiKey]').placeholder, /留空保留|没有可留空/);
     assert.equal(form.querySelector('select[name=keyAction]'), null);
     assert.equal(form.querySelector('[name=keyAction]').type, 'hidden');
     assert.equal(form.querySelector('.model-advanced').open, false);
-    assert.ok(form.querySelector('[data-action=clear-model-key]'));
+    if (id !== 'quality-settings-form') assert.ok(form.querySelector('[data-action=clear-model-key]'));
+    assert.equal(form.querySelector('[data-model-check]').type, 'button');
   }
   assert.ok(doc.querySelector('.settings-data-panel'));
   assert.equal(doc.querySelector('.model-settings-grid .settings-data-panel'), null);
+  assert.ok(doc.querySelector('#web-search-settings-form').closest('#settings-images'));
+  assert.equal(doc.querySelectorAll('.settings-data-groups > section').length, 3);
+  assert.equal(doc.querySelectorAll('.settings-section-nav button').length, 2);
+  assert.match(doc.querySelector('#settings-data').textContent, /不含模型配置、密钥和朗读音频/);
 });
 
 test('direct API key entry automatically replaces keys for every model; blank preserves and explicit clear deletes', async () => {
@@ -63,6 +70,115 @@ test('direct API key entry automatically replaces keys for every model; blank pr
   }
   assert.ok(!app.node('#app').innerHTML.includes('local-test-only'));
   assert.equal(app.storage.size, 0);
+});
+
+test('settings expansions persist only layout booleans, keep drafts across folding and navigation and never contact models', async t => {
+  const layoutSaves = [];
+  const cfg = { provider: 'ollama', model: 'generator', baseUrl: '', localOnly: true, jsonMode: 'auto', timeoutMs: 120000, maxTokens: 8192 };
+  const app = realSettingsHarness({ load: async () => ({ settings: cfg, status: { mode: 'ai', model: cfg.model }, settingsLayout: { generator: false, reviewer: true, images: false, speech: true } }),
+    saveSettingsLayout: async value => { layoutSaves.push(value); }, request: async () => { throw new Error('Opening settings must not contact models'); } });
+  t.after(() => app.close()); await app.ready(); app.run("navigate('settings')");
+  const doc = app.document;
+  assert.equal(doc.querySelector('#settings-generator').open, false);
+  assert.equal(doc.querySelector('#settings-reviewer').open, true);
+  const field = doc.querySelector('#model-key'); field.value = 'unsaved-layout-test-key'; await app.fire('input', field);
+  await app.fire('click', doc.querySelector('#settings-generator > summary'));
+  assert.equal(doc.querySelector('#settings-generator').open, true);
+  app.run("navigate('wiki'); navigate('settings')");
+  assert.equal(doc.querySelector('#settings-generator').open, true);
+  assert.equal(doc.querySelector('#settings-reviewer').open, true);
+  assert.equal(doc.querySelector('#model-key').value, 'unsaved-layout-test-key');
+  assert.match(doc.querySelector('#settings-state-desktop-settings-form').textContent, /修改未保存/);
+  assert.equal(layoutSaves.length, 1);
+  assert.deepEqual(Object.keys(layoutSaves[0]).sort(), ['generator', 'images', 'reviewer', 'speech']);
+  assert.ok(Object.values(layoutSaves[0]).every(value => typeof value === 'boolean'));
+  assert.ok(!JSON.stringify(layoutSaves).includes('unsaved-layout-test-key'));
+});
+
+test('saved is not verified; explicit connection checks update status, dirty drafts block testing and saves reset checks', async t => {
+  const cfg = { provider: 'ollama', model: 'generator', baseUrl: '', localOnly: true, jsonMode: 'auto', timeoutMs: 120000, maxTokens: 8192 };
+  let calls = 0;
+  const app = realSettingsHarness({ load: async () => ({ settings: cfg, status: { mode: 'ai', model: cfg.model } }),
+    request: async () => { if (++calls === 2) throw new Error('模拟鉴权失败'); return { provider: 'ollama', model: cfg.model, latencyMs: 100 }; },
+    saveSettings: async value => { const { apiKey, keyAction, ...settings } = value; return { settings, status: { mode: 'ai', model: settings.model } }; } });
+  t.after(() => app.close()); await app.ready(); app.run("navigate('settings')");
+  const doc = app.document;
+  assert.match(doc.querySelector('#settings-state-desktop-settings-form').textContent, /已保存/);
+  assert.match(doc.querySelector('#settings-check-desktop-settings-form').textContent, /未验证/);
+  assert.equal(calls, 0);
+  await app.fire('click', doc.querySelector('[data-action=test-connection]'));
+  assert.equal(calls, 1); assert.match(doc.querySelector('#settings-check-desktop-settings-form').textContent, /最近检查通过/);
+  const model = doc.querySelector('#model-name'); model.value = 'new-generator'; await app.fire('input', model);
+  assert.equal(doc.querySelector('[data-action=test-connection]').disabled, true);
+  await app.fire('click', doc.querySelector('[data-action=test-connection]')); assert.equal(calls, 1);
+  await app.fire('submit', doc.querySelector('#desktop-settings-form'));
+  assert.match(doc.querySelector('#settings-state-desktop-settings-form').textContent, /已保存/);
+  assert.match(doc.querySelector('#settings-check-desktop-settings-form').textContent, /未验证/);
+  assert.equal(doc.querySelector('[data-action=test-connection]').disabled, false);
+  assert.equal(calls, 1, 'Saving must not automatically test');
+  await app.fire('click', doc.querySelector('[data-action=test-connection]'));
+  assert.match(doc.querySelector('#settings-check-desktop-settings-form').textContent, /检查失败/);
+  assert.match(doc.querySelector('#connection-result').textContent, /模拟鉴权失败/);
+});
+
+test('late connection results cannot validate a changed saved configuration, and in-flight saves lock only their own fields', async t => {
+  const cfg = { provider: 'ollama', model: 'generator', baseUrl: '', localOnly: true, jsonMode: 'auto', timeoutMs: 120000, maxTokens: 8192 };
+  let finishCheck, finishSave;
+  const app = realSettingsHarness({ load: async () => ({ settings: cfg, status: { mode: 'ai', model: cfg.model } }),
+    request: () => new Promise(resolve => { finishCheck = resolve; }),
+    saveSettings: value => new Promise(resolve => { finishSave = () => { const { apiKey, keyAction, ...settings } = value; resolve({ settings, status: { mode: 'ai', model: settings.model } }); }; }) });
+  t.after(() => app.close()); await app.ready(); app.run("navigate('settings')");
+  const doc = app.document;
+  const checking = app.fire('click', doc.querySelector('[data-action=test-connection]'));
+  await Promise.resolve();
+  const field = doc.querySelector('#model-name'); field.value = 'changed'; await app.fire('input', field);
+  const saving = app.fire('submit', doc.querySelector('#desktop-settings-form'));
+  await Promise.resolve();
+  assert.equal(field.disabled, true); assert.equal(doc.querySelector('#image-model-name').disabled, false);
+  finishSave(); await saving;
+  finishCheck({ provider: 'ollama', model: 'generator', latencyMs: 100 }); await checking;
+  assert.match(doc.querySelector('#settings-check-desktop-settings-form').textContent, /未验证/);
+  assert.match(doc.querySelector('#connection-result').textContent, /配置已保存/);
+  assert.equal(doc.querySelector('#model-name').disabled, false);
+});
+
+test('settings warn before closing unsaved drafts, preserve stored configuration and point dependent tools to expanded settings', async t => {
+  const cfg = { provider: 'ollama', model: 'generator', baseUrl: '', localOnly: true, jsonMode: 'auto', timeoutMs: 120000, maxTokens: 8192 };
+  const app = realSettingsHarness({ load: async () => ({ settings: cfg, status: { mode: 'ai', model: cfg.model }, qualitySettings: { ...cfg, model: 'reviewer' } }),
+    saveSettings: async value => { const { apiKey, keyAction, ...settings } = value; return { settings, status: { mode: 'ai', model: settings.model } }; } });
+  t.after(() => app.close()); await app.ready(); app.run("navigate('settings')");
+  assert.equal(app.run("window.dispatchEvent(new window.Event('beforeunload', {cancelable:true}))"), true);
+  const field = app.document.querySelector('#model-name'); field.value = ' REVIEWER:latest '; await app.fire('input', field);
+  assert.match(app.document.querySelector('#model-conflict').textContent, /另一角色/);
+  assert.equal(app.run("window.dispatchEvent(new window.Event('beforeunload', {cancelable:true}))"), false);
+  assert.equal(app.run('desktopSettings.model'), 'generator');
+  field.value = 'new-generator'; await app.fire('input', field); await app.fire('submit', app.document.querySelector('#desktop-settings-form'));
+  assert.equal(app.run("window.dispatchEvent(new window.Event('beforeunload', {cancelable:true}))"), true);
+  app.document.querySelector('.web-search-settings-panel').scrollIntoView = () => {};
+  await app.run("action('quality-settings', {dataset:{}})");
+  assert.equal(app.document.querySelector('#settings-reviewer').open, true);
+  app.document.querySelector('#illustration-dialog')?.close?.();
+  app.run("jumpToSettings('images')");
+  assert.equal(app.document.querySelector('#settings-images').open, true);
+  app.document.querySelector('#web-search-settings-form [name=enabled]').checked = true;
+  await app.fire('change', app.document.querySelector('#web-search-settings-form [name=enabled]'));
+  assert.match(app.document.querySelector('#settings-web-state').textContent, /修改未保存/);
+  assert.equal(app.run('imageSettings?.enabled || false'), false);
+});
+
+test('visiting a saved provider without editing its parameters does not leave a phantom unsaved-service warning after save', async t => {
+  const cfg = { provider: 'ollama', model: 'generator', baseUrl: '', localOnly: true, jsonMode: 'auto', timeoutMs: 120000, maxTokens: 8192, hasApiKey: false };
+  const cloud = { ...cfg, provider: 'qwen', model: 'cloud-generator', baseUrl: 'https://example.org/v1', localOnly: false };
+  const saved = { ...cfg, profiles: { ollama: cfg, qwen: cloud } };
+  const app = realSettingsHarness({ load: async () => ({ settings: saved, status: { mode: 'ai', model: cfg.model } }),
+    saveSettings: async () => ({ settings: saved, status: { mode: 'ai', model: cfg.model } }) });
+  t.after(() => app.close()); await app.ready(); app.run("navigate('settings')");
+  const select = app.document.querySelector('#model-provider');
+  select.value = 'qwen'; await app.fire('change', select);
+  select.value = 'ollama'; await app.fire('change', select);
+  await app.fire('submit', app.document.querySelector('#desktop-settings-form'));
+  assert.equal(app.run('hasUnsavedModelSettings()'), false);
+  assert.equal(app.document.querySelector('#settings-unsaved-note').hidden, true);
 });
 
 test('configuration saves cannot race across the three model cards', async () => {
@@ -503,7 +619,7 @@ function realSettingsHarness(bridge) {
   }
   document.addEventListener = (name, listener) => { const group = listeners.get(name) || []; group.push(listener); listeners.set(name, group); };
   dom.window.learnflowDesktop = bridge; dom.window.scrollTo = () => {};
-  const context = vm.createContext({ teachingContextNotice, qualityRubric, qualityLabels, revisionTypes, revisionStatuses, revisionCheckLabels, revisionContent, revisionText, revisionDiff,
+  const context = vm.createContext({ teachingContextNotice, qualityRubric, qualityLabels, qualityModelId, revisionTypes, revisionStatuses, revisionCheckLabels, revisionContent, revisionText, revisionDiff,
     demoPlan, demoLessons, lessonFromBlocks, validOutline, validBlockContent, validBlockSpec, blockGenerationContext, revisedContent, restoredContent, assistedBlockTypes, Marked, DOMPurify, createMarkdownRenderer, validQuestionnaire, validClarification, learningBriefFrom, validIllustration, validImageProposal, speechDefaults, speechVoices, listeningText, speechTurns, speechRequest, validAudioId, validKnowledgeSource, validKnowledgeDraft, localKnowledgeDraft, knowledgeTags, knowledgeConditions, validAnnotations, personalNotesForSource, personalNotesMarkdown, knowledgeCatalog, knowledgeDomain, knowledgeDomainColors, knowledgeTopic, retrieveKnowledge, validKnowledgeOrganization, courseKnowledgeTree, knowledgeTree, knowledgeGraph, filterKnowledgeGraph, createGraphMotion, stepGraphMotion, structuredClone, crypto: webcrypto, AbortSignal,
     document, window: dom.window, FormData: dom.window.FormData, setTimeout: () => 1, clearTimeout() {}
   });
@@ -520,7 +636,7 @@ function harness(saved, fetchImpl, desktopBridge) {
     if (!nodes.has(selector)) nodes.set(selector, { innerHTML: '', textContent: '', open: false, attributes: {}, setAttribute(name, value) { this.attributes[name] = value; }, classList: { add() {}, remove() {} }, scrollIntoView() {}, focus() {}, showModal() { this.open = true; }, close() { this.open = false; } });
     return nodes.get(selector);
   };
-  const context = vm.createContext({ teachingContextNotice, qualityRubric, qualityLabels, revisionTypes, revisionStatuses, revisionCheckLabels, revisionContent, revisionText, revisionDiff,
+  const context = vm.createContext({ teachingContextNotice, qualityRubric, qualityLabels, qualityModelId, revisionTypes, revisionStatuses, revisionCheckLabels, revisionContent, revisionText, revisionDiff,
     demoPlan, demoLessons, lessonFromBlocks, validOutline, validBlockContent, validBlockSpec, blockGenerationContext, revisedContent, restoredContent, assistedBlockTypes, Marked, DOMPurify, createMarkdownRenderer, validQuestionnaire, validClarification, learningBriefFrom, validIllustration, validImageProposal, speechDefaults, speechVoices, listeningText, speechTurns, speechRequest, validAudioId, validKnowledgeSource, validKnowledgeDraft, localKnowledgeDraft, knowledgeTags, knowledgeConditions, validAnnotations, personalNotesForSource, personalNotesMarkdown, knowledgeCatalog, knowledgeDomain, knowledgeDomainColors, knowledgeTopic, retrieveKnowledge, validKnowledgeOrganization, courseKnowledgeTree, knowledgeTree, knowledgeGraph, filterKnowledgeGraph, createGraphMotion, stepGraphMotion, structuredClone, crypto: webcrypto, AbortSignal,
     document: { querySelector: node, addEventListener(name, listener) { const group = listeners.get(name) || []; group.push(listener); listeners.set(name, group); } },
     localStorage: { get length() { return storage.size; }, key: index => [...storage.keys()][index] ?? null, getItem: key => storage.get(key) ?? null, setItem: (key, value) => storage.set(key, value), removeItem: key => storage.delete(key) },
