@@ -20,6 +20,7 @@ import { courseKnowledgeTree, knowledgeTree, knowledgeGraph, filterKnowledgeGrap
 import { createGraphMotion, stepGraphMotion } from '../public/graph-motion.js';
 import { qualityRubric, qualityLabels, qualityModelId } from '../public/course-quality.js';
 import { teachingContextNotice } from '../public/teaching-context.js';
+import { officialSource, validSourceSearch, courseReferences } from '../public/course-sources.js';
 import { revisionTypes, revisionStatuses, revisionCheckLabels, revisionContent, revisionText, revisionDiff } from '../public/course-revision.js';
 const DOMPurify = createDOMPurify(new JSDOM('').window);
 const source = (await readFile(new URL('../public/app.js', import.meta.url), 'utf8')).replace(/^import .* from '\.\/[^']+';$/gm, '');
@@ -606,6 +607,40 @@ test('image settings save failures expose the cause in both notices and preserve
 });
 
 // This harness checks application state transitions, not browser rendering.
+test('course search has one independent persistent switch; generation locks it and references stay at the end', async t => {
+  let preference = { enabled: false, revision: 0 }, requests = 0, finish, openedSource;
+  const course = { intro: 'Git 课程', blocks: [{ id: 'b1', type: 'reading', title: '提交身份', objective: '区分认证', content: null }, { id: 'q1', type: 'quiz', title: '练习', objective: '检查', content: null }] };
+  const grounding = { version: 1, citations: [{ excerptId: 'S1E1', claim: '提交身份不是密码。', quote: 'The author is not authentication.', url: 'https://git-scm.com/docs/git-config', title: 'Git config <script>unsafe</script>', publisher: 'Git', retrievedAt: 1000 }] };
+  const app = realSettingsHarness({ load: async () => ({ status: { mode: 'ai' }, settings: {} }),
+    getLesson: async () => ({ blockCourse: structuredClone(course), sourceSearch: preference, chats: [] }),
+    setCourseSourceSearch: async (_id, enabled) => preference = { enabled, revision: preference.revision + 1 },
+    openCourseSource: async url => { openedSource = url; },
+    request: async (_path, input) => { requests++; assert.equal(input.sourceSearch.enabled, true); return new Promise(resolve => { finish = resolve; }); },
+    saveBlock: async (_id, blockId, content) => { course.blocks.find(b => b.id === blockId).content = content; },
+  });
+  t.after(() => app.close()); await app.ready(); await app.run("openLesson('p1')");
+  const doc = app.document;
+  assert.equal(doc.querySelectorAll('[role=switch]').length, 1); assert.equal(doc.querySelector('[role=switch]').getAttribute('aria-checked'), 'false');
+  await app.fire('click', doc.querySelector('[data-action=toggle-course-search]'));
+  assert.equal(preference.enabled, true); assert.equal(requests, 0, 'toggling alone never searches');
+  const pending = app.run("action('generate-block',{dataset:{id:'p1',block:'b1'}})"); await Promise.resolve();
+  assert.equal(doc.querySelector('[role=switch]').disabled, true);
+  await assert.rejects(app.run("action('toggle-course-search',{dataset:{id:'p1'}})"), /等待/);
+  await assert.rejects(app.run("action('generate-block',{dataset:{id:'p1',block:'b1'}})"), /正在生成/);
+  finish({ text: '提交身份不是密码。[S1E1]', grounding }); await pending;
+  assert.equal(requests, 1); assert.equal(doc.querySelectorAll('.course-references').length, 1); assert.equal(doc.querySelector('.course-references script'), null);
+  assert.equal(doc.querySelector('.block-sequence').lastElementChild.className, 'course-references');
+  const sourceLink = doc.querySelector('.block-text .course-inline-citation');
+  assert.equal(sourceLink.textContent, '[S1E1]');
+  await app.fire('click', sourceLink);
+  assert.equal(openedSource, grounding.citations[0].url);
+  assert.equal(doc.querySelector('.course-references').open, false);
+  await app.fire('click', doc.querySelector('[data-action=toggle-course-search]'));
+  assert.equal(preference.enabled, false); assert.ok(doc.querySelector('.course-references'));
+  await app.run("openLesson('p1')");
+  assert.equal(doc.querySelector('[role=switch]').getAttribute('aria-checked'), 'false'); assert.ok(doc.querySelector('.course-references')); assert.equal(requests, 1);
+});
+
 // Keyless-form regressions need real elements.namedItem() and actual FormData.
 function realSettingsHarness(bridge) {
   const dom = new JSDOM('<div id="app"></div><div id="toast"></div><button id="annotation-quick-add" data-action="add-annotation" hidden></button><dialog id="annotation-dialog"></dialog><dialog id="knowledge-draft-dialog"></dialog><dialog id="knowledge-organize-dialog"></dialog><dialog id="quality-dialog"></dialog>', { url: 'http://localhost' });
@@ -619,7 +654,7 @@ function realSettingsHarness(bridge) {
   }
   document.addEventListener = (name, listener) => { const group = listeners.get(name) || []; group.push(listener); listeners.set(name, group); };
   dom.window.learnflowDesktop = bridge; dom.window.scrollTo = () => {};
-  const context = vm.createContext({ teachingContextNotice, qualityRubric, qualityLabels, qualityModelId, revisionTypes, revisionStatuses, revisionCheckLabels, revisionContent, revisionText, revisionDiff,
+  const context = vm.createContext({ officialSource, validSourceSearch, courseReferences, teachingContextNotice, qualityRubric, qualityLabels, qualityModelId, revisionTypes, revisionStatuses, revisionCheckLabels, revisionContent, revisionText, revisionDiff,
     demoPlan, demoLessons, lessonFromBlocks, validOutline, validBlockContent, validBlockSpec, blockGenerationContext, revisedContent, restoredContent, assistedBlockTypes, Marked, DOMPurify, createMarkdownRenderer, validQuestionnaire, validClarification, learningBriefFrom, validIllustration, validImageProposal, speechDefaults, speechVoices, listeningText, speechTurns, speechRequest, validAudioId, validKnowledgeSource, validKnowledgeDraft, localKnowledgeDraft, knowledgeTags, knowledgeConditions, validAnnotations, personalNotesForSource, personalNotesMarkdown, knowledgeCatalog, knowledgeDomain, knowledgeDomainColors, knowledgeTopic, retrieveKnowledge, validKnowledgeOrganization, courseKnowledgeTree, knowledgeTree, knowledgeGraph, filterKnowledgeGraph, createGraphMotion, stepGraphMotion, structuredClone, crypto: webcrypto, AbortSignal,
     document, window: dom.window, FormData: dom.window.FormData, setTimeout: () => 1, clearTimeout() {}
   });
@@ -636,7 +671,7 @@ function harness(saved, fetchImpl, desktopBridge) {
     if (!nodes.has(selector)) nodes.set(selector, { innerHTML: '', textContent: '', open: false, attributes: {}, setAttribute(name, value) { this.attributes[name] = value; }, classList: { add() {}, remove() {} }, scrollIntoView() {}, focus() {}, showModal() { this.open = true; }, close() { this.open = false; } });
     return nodes.get(selector);
   };
-  const context = vm.createContext({ teachingContextNotice, qualityRubric, qualityLabels, qualityModelId, revisionTypes, revisionStatuses, revisionCheckLabels, revisionContent, revisionText, revisionDiff,
+  const context = vm.createContext({ officialSource, validSourceSearch, courseReferences, teachingContextNotice, qualityRubric, qualityLabels, qualityModelId, revisionTypes, revisionStatuses, revisionCheckLabels, revisionContent, revisionText, revisionDiff,
     demoPlan, demoLessons, lessonFromBlocks, validOutline, validBlockContent, validBlockSpec, blockGenerationContext, revisedContent, restoredContent, assistedBlockTypes, Marked, DOMPurify, createMarkdownRenderer, validQuestionnaire, validClarification, learningBriefFrom, validIllustration, validImageProposal, speechDefaults, speechVoices, listeningText, speechTurns, speechRequest, validAudioId, validKnowledgeSource, validKnowledgeDraft, localKnowledgeDraft, knowledgeTags, knowledgeConditions, validAnnotations, personalNotesForSource, personalNotesMarkdown, knowledgeCatalog, knowledgeDomain, knowledgeDomainColors, knowledgeTopic, retrieveKnowledge, validKnowledgeOrganization, courseKnowledgeTree, knowledgeTree, knowledgeGraph, filterKnowledgeGraph, createGraphMotion, stepGraphMotion, structuredClone, crypto: webcrypto, AbortSignal,
     document: { querySelector: node, addEventListener(name, listener) { const group = listeners.get(name) || []; group.push(listener); listeners.set(name, group); } },
     localStorage: { get length() { return storage.size; }, key: index => [...storage.keys()][index] ?? null, getItem: key => storage.get(key) ?? null, setItem: (key, value) => storage.set(key, value), removeItem: key => storage.delete(key) },

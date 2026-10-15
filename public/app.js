@@ -13,6 +13,7 @@ import { courseKnowledgeTree, knowledgeGraph, filterKnowledgeGraph } from './kno
 import { createGraphMotion, stepGraphMotion } from './graph-motion.js';
 import { qualityRubric, qualityLabels, qualityModelId } from './course-quality.js';
 import { teachingContextNotice } from './teaching-context.js';
+import { officialSource, validSourceSearch, courseReferences } from './course-sources.js';
 import { revisionTypes, revisionStatuses, revisionCheckLabels, revisionContent, revisionText, revisionDiff } from './course-revision.js';
 
 const renderMarkdown = createMarkdownRenderer(Marked, DOMPurify);
@@ -66,6 +67,7 @@ let graphTagFilter = '', graphStatusFilter = '', graphTypeFilter = 'all', graphR
 let readingReturn = null;
 let syllabusCollapsed = false, annotationDraft = null, pendingAnnotationAnchor = null;
 const collapsedBlocks = new Set();
+const courseGenerationBusy = new Set(), courseSearchMessages = new Map();
 let status = { mode: 'loading' };
 let connectionResult = '';
 let qualitySettings = null, qualityStatus = { mode: 'demo' }, qualityConnectionResult = '', qualityView = null, qualityBusy = false;
@@ -351,7 +353,8 @@ let toastTimer;
 function toast(message) { $('#toast').textContent = message; $('#toast').classList.add('visible'); clearTimeout(toastTimer); toastTimer = setTimeout(() => $('#toast').classList.remove('visible'), 4500); }
 async function api(path, body) {
   if (desktop) return desktop.request(path, body);
-  const r = await fetch(`/api/${path}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body), signal: AbortSignal.timeout((Number.isInteger(status.timeoutMs) && status.timeoutMs >= 1000 && status.timeoutMs <= 600000 ? status.timeoutMs : 120000) + 10000) });
+  const timeout = Number.isInteger(status.timeoutMs) && status.timeoutMs >= 1000 && status.timeoutMs <= 600000 ? status.timeoutMs : 120000;
+  const r = await fetch(`/api/${path}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body), signal: AbortSignal.timeout(path === 'lesson-block' ? timeout * 2 + 120000 : timeout + 10000) });
   const value = await r.json(); if (!r.ok) throw new Error(value.error || '请求失败，请重试。'); return value;
 }
 const pill = (text, cls = '') => `<span class="pill ${cls}">${escape(text)}</span>`;
@@ -394,6 +397,7 @@ function render() {
   refreshSettingsStates();
   decorateKnowledgeActions();
   decorateQualityActions();
+  decorateCourseSearch();
   decorateRevisionNotices();
   paintAnnotations();
   decorateGraphToolbar();
@@ -518,6 +522,37 @@ function decorateQualityActions() {
   entry.textContent = (state.qualityReports || []).some(r => r.scope === scope && r.targetId === targetId) ? '质量审查 · 查看报告' : '质量审查';
   if (scope === 'route') host.append(entry); else host.after(entry);
 }
+function courseSearchPreference(id) {
+  const value = state.sourceSearch?.[id];
+  return validSourceSearch(value) ? value : { enabled: false, revision: 0 };
+}
+function decorateCourseSearch() {
+  if (page !== 'study' || !document.createElement || (!state.blockCourses?.[activeLesson] && contentFor(activeLesson))) return;
+  const host = $('.lesson-objective'); if (!host?.after) return;
+  document.querySelector('.course-source-controls')?.remove();
+  const preference = courseSearchPreference(activeLesson), busy = courseGenerationBusy.has(activeLesson);
+  const controls = document.createElement('div'); controls.className = 'course-source-controls';
+  controls.innerHTML = `<button type="button" class="course-search-switch" role="switch" aria-checked="${preference.enabled}" aria-describedby="course-search-help" data-action="toggle-course-search" data-id="${escape(activeLesson)}" ${busy ? 'disabled' : ''}><span class="switch-track" aria-hidden="true"></span>联网搜索</button><span id="course-search-help" class="field-hint">${preference.enabled ? '生成正文时搜索并读取网页资料 · 搜索可能计费' : '已关闭 · 使用模型本身生成正文'}</span><p class="course-search-status ${courseSearchMessages.get(activeLesson)?.error ? 'error-text' : ''}" role="status" aria-live="polite">${escape(courseSearchMessages.get(activeLesson)?.text || '')}</p>`;
+  host.after(controls);
+  document.querySelectorAll('[data-action="generate-block"], [data-action="request-revision"]').forEach(button => { button.disabled = busy; });
+}
+async function courseBlockRequest(id, request) {
+  if (courseGenerationBusy.has(id)) throw new Error('本课正在生成，请等待当前请求结束。');
+  const sourceSearch = { ...courseSearchPreference(id) };
+  courseGenerationBusy.add(id);
+  courseSearchMessages.set(id, { text: sourceSearch.enabled ? '正在查找网页资料并生成正文，请稍候…' : '正在生成正文…' }); decorateCourseSearch();
+  try {
+    const content = await api('lesson-block', { ...request, lessonId: id, sourceSearch });
+    if (courseSearchPreference(id).revision !== sourceSearch.revision) throw new Error('联网搜索设置已变化，请重新生成。');
+    courseSearchMessages.set(id, { text: sourceSearch.enabled ? '已基于网页资料生成，参考文档见课程末尾。' : '' });
+    return content;
+  } catch (error) { courseSearchMessages.set(id, { text: error.message, error: true }); throw error; }
+  finally { courseGenerationBusy.delete(id); decorateCourseSearch(); }
+}
+function courseReferencesFooter(course) {
+  const references = courseReferences(course); if (!references.length) return '';
+  return `<details class="course-references" aria-label="参考文档"><summary class="course-references-toggle"><h2>参考文档</h2><span class="course-references-count">${references.length} 篇</span><span class="course-references-toggle-label" aria-hidden="true"></span></summary><p class="field-hint">以下为当前正文实际引用的网页资料。未列出引用的模块可能在关闭联网搜索时生成；引用存在不代表内容已逐条核验。</p><ol>${references.map(ref => `<li><div class="reference-title">${officialSource(ref.url) ? desktop ? `<button type="button" class="text-button" data-action="open-course-source" data-url="${escape(ref.url)}">${escape(ref.title)} ↗</button>` : `<a href="${escape(ref.url)}" target="_blank" rel="noopener noreferrer">${escape(ref.title)} ↗</a>` : escape(ref.title)}</div><p>${escape(ref.publisher)} · 读取于 ${escape(new Date(ref.retrievedAt).toLocaleDateString('zh-CN'))}</p><p class="reference-url">${escape(ref.url)}</p><p>用于：${escape(ref.blocks.join('、'))}</p><details><summary>查看引用依据</summary>${ref.evidence.map(e => `<p class="reference-claim">课程表述：${escape(e.claim)}</p><blockquote>${escape(e.quote)}</blockquote>`).join('')}</details></li>`).join('')}</ol></details>`;
+}
 function home() {
   const p = plan(), next = nextLesson();
   const allCompleted = Object.values(state.progress).filter(v => v.completed).length;
@@ -564,7 +599,7 @@ function blockPart(block, index, lessonId, teaching = false) {
   const collapsed = canCollapse && collapsedBlocks.has(collapseKey);
   const bodyId = `block-body-${lessonId}-${block.id}`;
   const toggle = canCollapse ? `<button type="button" class="block-collapse-toggle" data-action="toggle-block-collapse" ${attrs} aria-controls="${escape(bodyId)}" aria-expanded="${!collapsed}">${collapsed ? '展开' : '收起'}</button>` : '';
-  const body = block.content && block.type !== 'quiz' ? `<div class="block-text markdown-content annotatable" data-annotation-source="block:${escape(block.id)}">${renderMarkdown(block.content.text)}</div>${figure}` : '';
+  const body = block.content && block.type !== 'quiz' ? `<div class="block-text markdown-content annotatable" data-annotation-source="block:${escape(block.id)}">${renderMarkdown(block.content.text, { grounding: block.content.grounding, desktop: !!desktop })}</div>${figure}` : '';
   const bodyMarkup = canCollapse ? `<div id="${escape(bodyId)}" class="block-collapsible-body" ${collapsed ? 'hidden' : ''}>${body}</div>` : body;
   const contextNotice = !block.content ? teachingContextNotice(state.blockCourses?.[lessonId] || {blocks:[block]},block.id) : '';
   return `<section class="${teaching ? `teaching-part teaching-${block.type}` : 'reading-section content-block'}" data-block-id="${escape(block.id)}"><div class="teaching-part-heading"><span class="pill purple">${String(index + 1).padStart(2, '0')} · ${labels[block.type]}</span>${actions}</div><div class="block-title-row"><h2 class="block-title">${escape(block.title)}</h2>${toggle}</div><p class="block-objective">${escape(block.objective)}</p>${block.content ? block.type === 'quiz' ? `<p>已生成 ${block.content.questions.length} 道练习题。${button('去练习', 'quiz', 'secondary')}</p>` : bodyMarkup : `<div class="block-pending"><span>此模块尚未生成，可以按需展开。</span>${contextNotice ? `<p class="field-hint generation-scope-notice">${escape(contextNotice)}</p>` : ''}${button('生成这一块', 'generate-block', 'secondary', attrs, 'spark')}</div>`}</section>`;
@@ -581,7 +616,7 @@ function teachingSequence(course, lessonId) {
     }
     units.push(`<article class="teaching-unit" aria-label="讲解与配套案例">${parts.join('')}</article>`);
   }
-  return units.join('');
+  return units.join('') + courseReferencesFooter(course);
 }
 function updateNotePreview(draft) {
   const value = draft || { title: $('#note-title').value, content: $('#note-content').value };
@@ -1182,6 +1217,7 @@ async function openLesson(id, tab = 'read') {
     state.reflections = { [id]: detail.reflection };
     state.annotations = { [id]: detail.annotations || [] };
     state.chats = { [id]: detail.chats };
+    (state.sourceSearch ||= {})[id] = detail.sourceSearch || { enabled: false, revision: 0 };
     if (detail.quizRecord) (state.quizRecords ||= {})[id] = detail.quizRecord;
   }
   readingReturn = null; activeLesson = id; lessonTab = ['read', 'quiz', 'chat'].includes(tab) ? tab : 'read'; navigate('study');
@@ -1453,7 +1489,7 @@ async function action(name, element) {
     const next = structuredClone(state);
     next.plans = next.plans.filter(route => route.id !== id);
     if (next.active === id) next.active = next.plans[0].id;
-    for (const lessonId of lessonIds) for (const collection of ['lessons', 'blockCourses', 'progress', 'reflections', 'chats']) if (next[collection]) delete next[collection][lessonId];
+    for (const lessonId of lessonIds) for (const collection of ['lessons', 'blockCourses', 'progress', 'reflections', 'chats', 'sourceSearch', 'sourceBundles']) if (next[collection]) delete next[collection][lessonId];
     next.notes = next.notes.filter(note => !lessonIds.has(note.lessonId));
     try { localStorage.setItem(backupKey, JSON.stringify(state)); localStorage.setItem(key, JSON.stringify(next)); }
     catch { throw new Error('浏览器空间不足，无法先保存删除前备份；路线未删除。'); }
@@ -1468,6 +1504,14 @@ async function action(name, element) {
     state = restored; activeLesson = null; activeNote = null; answer = null; navigate('routes'); toast('已恢复删除前的学习记录。'); return;
   }
   if (name === 'open-lesson') return openLesson(id);
+  if (name === 'toggle-course-search') {
+    if (courseGenerationBusy.has(id)) throw new Error('请等待本课生成完成后再切换。');
+    const old = courseSearchPreference(id);
+    const next = desktop ? await desktop.setCourseSourceSearch(id, !old.enabled) : { enabled: !old.enabled, revision: old.revision + 1 };
+    (state.sourceSearch ||= {})[id] = next;
+    courseSearchMessages.delete(id); if (!desktop) save(); decorateCourseSearch(); return;
+  }
+  if (name === 'open-course-source') { if (desktop) await desktop.openCourseSource(element.dataset.url); return; }
   if (name === 'open-quiz') return openLesson(id, 'quiz');
   if (name === 'quick-ask') return switchLessonTab('chat', true);
   if (name === 'back-to-reading') return switchLessonTab('read');
@@ -1486,7 +1530,7 @@ async function action(name, element) {
     const meta = lessonById(id), p = state.plans.find(plan => plan.lessons.some(item => item.id === id));
     const context = blockGenerationContext(state.blockCourses[id], block.id);
     if (['quiz','summary'].includes(block.type) && !context.teachingContext.sources.some(s=>['reading','example'].includes(s.type))) throw new Error('请先生成至少一个前序讲解或案例，再生成测验或总结；未调用模型。');
-    const content = await api('lesson-block', { goal: p.goal, level: p.level, ...(p.learningBrief ? { learningBrief: p.learningBrief } : {}), title: meta.title, objective: meta.objective, minutes: meta.minutes, ...context, block: { type: block.type, title: block.title, objective: block.objective } });
+    const content = await courseBlockRequest(id, { goal: p.goal, level: p.level, ...(p.learningBrief ? { learningBrief: p.learningBrief } : {}), title: meta.title, objective: meta.objective, minutes: meta.minutes, ...context, block: { type: block.type, title: block.title, objective: block.objective } });
     if (!validBlockContent(block.type, content)) throw new Error('模型返回的内容格式不正确，请重试。');
     if (desktop) await desktop.saveBlock(id, block.id, content);
     block.content = content;
@@ -1987,7 +2031,7 @@ document.addEventListener('submit', async event => {
       submit.innerHTML = '<span class="spinner"></span>正在按你的要求重新生成…';
       const meta = lessonById(id), p = state.plans.find(route => route.lessons.some(item => item.id === id));
       const previous = block.content, context = blockGenerationContext(state.blockCourses[id], block.id);
-      const content = await api('lesson-block', { goal: p.goal, level: p.level, ...(p.learningBrief ? { learningBrief: p.learningBrief } : {}), title: meta.title, objective: meta.objective, minutes: meta.minutes, ...context, block: { type: block.type, title: block.title, objective: block.objective }, revisionRequest: request, currentExcerpt: previous.text.slice(0, 12000) });
+      const content = await courseBlockRequest(id, { goal: p.goal, level: p.level, ...(p.learningBrief ? { learningBrief: p.learningBrief } : {}), title: meta.title, objective: meta.objective, minutes: meta.minutes, ...context, block: { type: block.type, title: block.title, objective: block.objective }, revisionRequest: request, currentExcerpt: previous.text.slice(0, 12000) });
       if (!validBlockContent(block.type, content)) throw new Error('模型返回的内容格式不正确，原内容已保留，请重试。');
       if (block.content !== previous) throw new Error('内容已更新，原请求未覆盖当前内容，请重新提交。');
       block.content = desktop ? await desktop.reviseBlock(id, block.id, content, previous.text) : revisedContent(block.type, previous, content);

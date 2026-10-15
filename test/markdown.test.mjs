@@ -72,6 +72,41 @@ test('Markdown references remain readable without initiating remote navigation',
   assert.equal(element.querySelector('code').textContent, 'https://example.com/doc');
 });
 
+test('course citation markers link only to saved official sources without changing annotation text', () => {
+  const citation = { excerptId: 'S2E1', claim: '配置提交身份。', quote: 'Configure author identity.', url: 'https://git-scm.com/docs/git-config', title: 'Git config', publisher: 'Git', retrievedAt: 1000 };
+  const grounding = { version: 1, citations: [citation, { ...citation, excerptId: 'S3E1', url: 'https://docs.python.org/3/tutorial/', title: 'Python' }] };
+  const source = '配置提交身份。[S2E1][S3E1] 未知[S1E1]\n\n`[S2E1]`\n\n```text\n[S3E1]\n```';
+  const element = window.document.createElement('div');
+  element.innerHTML = render(source, { grounding, desktop: true });
+  assert.equal(element.textContent, documentFor(source).textContent, 'annotation offsets remain unchanged');
+  const links = [...element.querySelectorAll('a')];
+  assert.equal(links.length, 2);
+  assert.deepEqual(links.map(a => a.textContent), ['[S2E1]', '[S3E1]']);
+  assert.equal(links[0].href, citation.url);
+  assert.equal(links[0].dataset.action, 'open-course-source');
+  assert.equal(links[0].dataset.url, citation.url);
+  assert.match(links[0].title, /Git config/);
+  assert.equal(element.querySelector('code a'), null);
+  element.innerHTML = render('[S2E1]', { grounding });
+  assert.equal(element.querySelector('a').target, '_blank');
+  assert.equal(element.querySelector('a').rel, 'noopener noreferrer');
+  assert.equal(element.querySelector('[data-action]'), null);
+  for (const citations of [
+    [{ ...citation, url: 'https://www.zhihu.com/question/123' }],
+    [{ ...citation, url: 'javascript:alert(1)' }],
+    [citation, { ...citation, url: 'https://docs.python.org/3/tutorial/' }],
+    [{ ...citation, excerptId: 'S1E1' }],
+  ]) {
+    element.innerHTML = render('[S2E1]', { grounding: { version: 1, citations }, desktop: true });
+    assert.equal(element.querySelector('a'), null, 'untrusted, ambiguous and other-module IDs never become links');
+  }
+  element.innerHTML = render('[S2E1]\n\n<a data-action="delete-plan" href="javascript:alert(1)">bad</a>', {
+    grounding: { version: 1, citations: [{ ...citation, title: '\"><img src=x onerror=alert(1)>' }] }, desktop: true,
+  });
+  assert.equal(element.querySelector('img, script, [onerror], [data-action="delete-plan"]'), null);
+  assert.equal(element.querySelectorAll('a').length, 1);
+});
+
 test('a renderer failure falls back to escaped text instead of raw HTML or a blank lesson', () => {
   const fallback = createMarkdownRenderer(Marked, { sanitize() { throw new Error('test failure'); } });
   const element = window.document.createElement('div');

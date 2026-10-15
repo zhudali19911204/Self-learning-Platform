@@ -13,12 +13,12 @@ import { demoPlan } from '../public/demo.js';
 
 const gen = { mode:'ai',provider:'compatible',model:'generator-a' }, reviewer = { mode:'ai',provider:'compatible',model:'reviewer-b' };
 function judgment(s, issues = []) { return { summary:'结合当前材料审查，事实未外部核验。', dimensions:applicableQualityRubric(s).map(r=>({id:r.id,rating:4,reason:'根据目标核对该维度。'})),issues,solutions:s.units.flatMap(u=>(u.questions||[]).map((q,questionIndex)=>({unitId:u.id,questionIndex,answer:q.answer,ambiguous:false,reason:'独立核对题目条件。'}))) }; }
-async function fixture(t, legacy = false) {
+async function fixture(t, legacy = false, grounding) {
   const directory = await mkdtemp(path.join(tmpdir(),'learnflow-revision-')); let learning = await createSqliteStore(directory);
   t.after(async()=>{learning.close();await rm(directory,{recursive:true,force:true});});
   if (!legacy) {
     const outline = learning.saveOutline('p1',{intro:'核对提交身份。',blocks:[{type:'reading',title:'身份配置',objective:'能配置提交身份'},{type:'quiz',title:'提交时机',objective:'能判断配置时机'}]});
-    learning.saveBlock('p1',outline.blocks[0].id,{text:'提交前配置身份。'});
+    learning.saveBlock('p1',outline.blocks[0].id,{text:'提交前配置身份。', ...(grounding ? { grounding } : {})});
     learning.saveBlock('p1',outline.blocks[1].id,{questions:[{prompt:'何时配置身份？',options:['提交前','提交后','删除时','无关'],answer:0,explanation:'提交前需要身份。'}]});
   }
   const snapshot = qualitySnapshot(learning.overview(),'lesson','p1',learning.getLesson('p1'));
@@ -41,6 +41,21 @@ async function fixture(t, legacy = false) {
   return {learning,service,snapshot,report,calls,setGen:fn=>genImpl=fn,setReview:fn=>reviewImpl=fn,reopen:async()=>{learning.close();learning=await createSqliteStore(directory);return learning;}};
 }
 async function reviewed(f, indexes=[0]) { let v=f.service.create(f.report.id,indexes,f.report.fingerprint);v=await f.service.generate(v.job.id,v.job.rev);return f.service.review(v.job.id,v.job.rev); }
+
+test('source-backed block evidence is saved for revision undo, not attached to an ungrounded new draft', async t => {
+  const grounding = { version: 1, citations: [{ excerptId: 'S1E1', url: 'https://git-scm.com/docs/git-config', title: 'Git config', publisher: 'Git', retrievedAt: 1000, quote: 'Set the author name before committing.', claim: '提交前配置身份。' }] };
+  const f = await fixture(t, false, grounding);
+  const draft = f.service.create(f.report.id, [0], f.report.fingerprint);
+  f.learning.setSourceSearch('p1', true);
+  await assert.rejects(f.service.generate(draft.job.id, draft.job.rev), /批量修订暂不支持/); assert.equal(f.calls.gen, 0);
+  f.learning.setSourceSearch('p1', false);
+  let value = await f.service.generate(draft.job.id, draft.job.rev);
+  value = await f.service.review(value.job.id, value.job.rev);
+  value = f.service.apply(value.job.id, value.job.rev, true, true);
+  assert.equal(f.learning.getLesson('p1').blockCourse.blocks[0].content.grounding, undefined);
+  value = f.service.restore(value.job.id, value.job.rev);
+  assert.deepEqual(f.learning.getLesson('p1').blockCourse.blocks[0].content.grounding, grounding);
+});
 
 test('revision jobs are free to create and inspect; generation and review leave original courses untouched until atomic apply',async t=>{
   const f=await fixture(t);

@@ -89,7 +89,7 @@ function replaceAll(db, state) {
     for (const report of state.qualityReports || []) db.prepare('INSERT INTO meta VALUES (?, ?)').run(`quality:${report.id}`, JSON.stringify(report));
     for (const job of state.qualityJobs || []) db.prepare('INSERT INTO meta VALUES (?, ?)').run(`revision:${job.id}`, JSON.stringify(job));
     for (const d of state.qualityDispositions || []) db.prepare('INSERT INTO meta VALUES (?, ?)').run(`quality_note:${d.reportId}:${d.issueIndex}`, JSON.stringify(d));
-    for (const field of ['quizRecords', 'revisionNotices']) for (const [lessonId, value] of Object.entries(state[field] || {})) db.prepare('INSERT INTO meta VALUES (?, ?)').run(`${field}:${lessonId}`, JSON.stringify(value));
+    for (const field of ['quizRecords', 'revisionNotices', 'sourceSearch', 'sourceBundles']) for (const [lessonId, value] of Object.entries(state[field] || {})) db.prepare('INSERT INTO meta VALUES (?, ?)').run(`${field}:${lessonId}`, JSON.stringify(value));
   });
 }
 
@@ -111,7 +111,7 @@ function readOverview(db) {
   const notes = db.prepare('SELECT * FROM notes ORDER BY rowid').all().map(noteFromRow);
   const reports = db.prepare("SELECT value FROM meta WHERE key GLOB 'quality:*'").all().map(row => fromJSON(row.value));
   const extras = {};
-  for (const field of ['quizRecords', 'revisionNotices']) {
+  for (const field of ['quizRecords', 'revisionNotices', 'sourceSearch']) {
     const rows = db.prepare('SELECT key, value FROM meta WHERE key GLOB ?').all(`${field}:*`);
     if (rows.length) extras[field] = Object.fromEntries(rows.map(r => [r.key.slice(field.length + 1), fromJSON(r.value)]));
   }
@@ -124,6 +124,8 @@ function readExport(db) {
     const rows = db.prepare('SELECT value FROM meta WHERE key GLOB ?').all(`${prefix}:*`);
     if (rows.length) state[field] = rows.map(r => fromJSON(r.value));
   }
+  const sourceRows = db.prepare("SELECT key, value FROM meta WHERE key GLOB 'sourceBundles:*'").all();
+  if (sourceRows.length) state.sourceBundles = Object.fromEntries(sourceRows.map(row => [row.key.slice('sourceBundles:'.length), fromJSON(row.value)]));
   for (const row of db.prepare('SELECT id, content_json FROM lessons WHERE content_json IS NOT NULL').all()) state.lessons[row.id] = fromJSON(row.content_json);
   for (const row of db.prepare('SELECT lesson_id, content FROM reflections').all()) state.reflections[row.lesson_id] = row.content;
   for (const row of db.prepare("SELECT key, value FROM meta WHERE key GLOB 'annotations:*'").all()) (state.annotations ||= {})[row.key.slice('annotations:'.length)] = fromJSON(row.value);
@@ -171,7 +173,7 @@ export async function createSqliteStore(directory) {
       if (expected.blockCourses && !Object.keys(expected.blockCourses).length) delete expected.blockCourses;
       if (expected.qualityReports && !expected.qualityReports.length) delete expected.qualityReports;
       for (const field of ['qualityJobs', 'qualityDispositions']) if (expected[field] && !expected[field].length) delete expected[field];
-      for (const field of ['quizRecords', 'revisionNotices']) if (expected[field] && !Object.keys(expected[field]).length) delete expected[field];
+      for (const field of ['quizRecords', 'revisionNotices', 'sourceSearch', 'sourceBundles']) if (expected[field] && !Object.keys(expected[field]).length) delete expected[field];
       if (!isDeepStrictEqual(restored, expected)) throw new Error('旧学习数据回读校验失败，原文件已保留。');
     } finally { candidate.close(); }
     if (sourceBytes && !(await readFile(sourcePath)).equals(sourceBytes)) throw new Error('迁移时旧学习数据发生变化，已保留原文件，请重启后重试。');
@@ -243,7 +245,8 @@ export async function createSqliteStore(directory) {
     const outline = db.prepare('SELECT intro FROM lesson_outlines WHERE lesson_id = ?').get(lessonId);
     const blockCourse = outline ? { intro: outline.intro, blocks: db.prepare('SELECT id, type, title, objective, content_json FROM lesson_blocks WHERE lesson_id = ? ORDER BY position').all(lessonId).map(block => ({ id: block.id, type: block.type, title: block.title, objective: block.objective, content: block.content_json ? fromJSON(block.content_json) : null })) } : null;
     const quizRecord = db.prepare('SELECT value FROM meta WHERE key = ?').get(`quizRecords:${lessonId}`);
-    return { lesson: row.content_json ? fromJSON(row.content_json) : null, blockCourse, reflection, annotations, chats, ...(quizRecord ? { quizRecord: fromJSON(quizRecord.value) } : {}) };
+    const sourceSearch = fromJSON(db.prepare('SELECT value FROM meta WHERE key = ?').get(`sourceSearch:${lessonId}`)?.value || '{"enabled":false,"revision":0}');
+    return { lesson: row.content_json ? fromJSON(row.content_json) : null, blockCourse, reflection, annotations, chats, sourceSearch, ...(quizRecord ? { quizRecord: fromJSON(quizRecord.value) } : {}) };
   }
   const metaSet = (key, value) => db.prepare('INSERT INTO meta VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value').run(key, JSON.stringify(value));
   const metaRows = prefix => db.prepare('SELECT value FROM meta WHERE key GLOB ?').all(`${prefix}:*`).map(r => fromJSON(r.value));
@@ -285,6 +288,14 @@ export async function createSqliteStore(directory) {
   function planDeletionPreview(planId) { syncKnowledgeIndex(db, directory); return readPlanDeletionPreview(planId); }
   return {
     filename, overview, getLesson, exportState, planDeletionPreview,
+    setSourceSearch(lessonId, enabled) {
+      requireLesson(lessonId);
+      if (typeof enabled !== 'boolean') throw new Error('联网搜索开关无效。');
+      const previous = getLesson(lessonId).sourceSearch;
+      const value = { enabled, revision: previous.revision + 1 };
+      metaSet(`sourceSearch:${lessonId}`, value);
+      return value;
+    },
     revisionJobs(lessonId) { return metaRows('revision').filter(j => j.lessonId === lessonId).sort((a, b) => b.updated - a.updated); },
     revisionJob(jobId) { const row = db.prepare('SELECT value FROM meta WHERE key = ?').get(`revision:${jobId}`); return row ? fromJSON(row.value) : null; },
     saveRevisionJob(job, expectedRev) {
@@ -316,7 +327,7 @@ export async function createSqliteStore(directory) {
         const oldQuestions = quizQuestions(detail);
         for (const change of job.changes) {
           const unit = job.baseSnapshot.units.find(u => u.id === change.unitId);
-          const value = restore ? revisionContent(unit) : change.content;
+          const value = restore ? { ...revisionContent(unit), ...(job.sourceGrounding?.[unit.id] ? { grounding: structuredClone(job.sourceGrounding[unit.id]) } : {}) } : change.content;
           if (detail.blockCourse) {
             const block = detail.blockCourse.blocks.find(b => b.id === change.unitId);
             if (!block || block.type !== unit.type) throw new Error('目标模块已变化。');
@@ -376,7 +387,7 @@ export async function createSqliteStore(directory) {
         db.prepare('DELETE FROM meta WHERE key = ?').run(`plan_brief:${planId}`);
         for (const row of db.prepare("SELECT key, value FROM meta WHERE key GLOB 'quality:*'").all()) if (fromJSON(row.value).planId === planId) db.prepare('DELETE FROM meta WHERE key = ?').run(row.key);
         for (const prefix of ['revision', 'quality_note']) for (const row of db.prepare('SELECT key, value FROM meta WHERE key GLOB ?').all(`${prefix}:*`)) if (fromJSON(row.value).planId === planId) db.prepare('DELETE FROM meta WHERE key = ?').run(row.key);
-        for (const lessonId of lessonIds) for (const field of ['quizRecords', 'revisionNotices']) db.prepare('DELETE FROM meta WHERE key = ?').run(`${field}:${lessonId}`);
+        for (const lessonId of lessonIds) for (const field of ['quizRecords', 'revisionNotices', 'sourceSearch', 'sourceBundles']) db.prepare('DELETE FROM meta WHERE key = ?').run(`${field}:${lessonId}`);
         for (const lessonId of lessonIds) db.prepare('DELETE FROM meta WHERE key = ?').run(`annotations:${lessonId}`);
         db.prepare("UPDATE meta SET value = ? WHERE key = 'knowledge_generation'").run(randomUUID());
         db.prepare("UPDATE meta SET value = ? WHERE key = 'active_plan'").run(next);

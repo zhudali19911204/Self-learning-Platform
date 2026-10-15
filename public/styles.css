@@ -496,3 +496,35 @@ main:has(.knowledge-conversation) .wiki-toolbar{display:none}
 @media(max-width:1100px){.settings-model>summary{flex-wrap:wrap;gap:12px}.settings-model-heading{flex-basis:calc(100% - 130px);order:1}.settings-model-icon{order:0}.settings-toggle{order:2;margin-left:auto}.settings-model-states{order:3;max-width:none;justify-content:flex-start;margin-left:54px;width:100%}}
 @media(max-width:760px){.settings-section-nav>span{display:none}.settings-section-heading{align-items:flex-start;flex-direction:column;gap:6px}.settings-model>summary{padding:18px}.settings-model-body{padding:20px}.settings-fields{grid-template-columns:minmax(0,1fr);gap:16px}.settings-center .desktop-form .form-row{grid-template-columns:minmax(0,1fr)}.settings-center .form-row>div:first-child{grid-column:auto}.settings-form-actions{align-items:flex-start;flex-direction:column}.settings-form-actions>div{width:100%;flex-wrap:wrap}.settings-form-actions .btn{flex:1}.settings-data-overview>span:last-child{margin-left:0;width:100%}.settings-data-groups{padding:0 18px}.settings-center .settings-data-actions .btn{width:auto}.settings-model-heading>span{font-size:12px}}
 @media(prefers-reduced-motion:reduce){.settings-toggle>.icon{transition:none}}
+.course-source-controls { display:flex; flex-wrap:wrap; align-items:center; gap:8px 12px; margin:12px 0 18px; }
+.course-search-switch { display:inline-flex; align-items:center; gap:9px; border:0; background:transparent; padding:6px 0; color:var(--ink, #27213e); font:inherit; font-size:13px; cursor:pointer; }
+.course-search-switch:focus-visible { outline:2px solid #7958d6; outline-offset:5px; border-radius:4px; }
+.course-search-switch:disabled { opacity:.6; cursor:wait; }
+.switch-track { width:34px; height:20px; padding:3px; border-radius:12px; background:#b6b0c4; transition:background .15s; }
+.switch-track::after { content:''; display:block; width:14px; height:14px; border-radius:50%; background:#fff; transition:transform .15s; }
+.course-search-switch[aria-checked=true] .switch-track { background:#7453d8; }
+.course-search-switch[aria-checked=true] .switch-track::after { transform:translateX(14px); }
+.course-search-status { flex-basis:100%; margin:0; font-size:12px; overflow-wrap:anywhere; }
+.course-search-status:empty { display:none; }
+.course-search-status.error-text { color:#a3354c; }
+.course-references { margin:24px 0; padding:24px; border:1px solid #e5ddf3; border-radius:14px; background:#faf8fd; }
+.course-references h2 { margin:0; font-size:20px; }
+.course-references > .course-references-toggle { display:flex; align-items:center; gap:12px; list-style:none; }
+.course-references > .course-references-toggle::-webkit-details-marker { display:none; }
+.course-references > .course-references-toggle:focus-visible { outline:3px solid #ab97ef; outline-offset:6px; border-radius:4px; }
+.course-references-count { color:#766989; font-size:12px; }
+.course-references-toggle-label { margin-left:auto; color:#7453d8; font-size:12px; white-space:nowrap; }
+.course-references-toggle-label::after { content:'展开 ▾'; }
+.course-references[open] > summary .course-references-toggle-label::after { content:'收起 ▴'; }
+.course-references[open] > .course-references-toggle { margin-bottom:12px; }
+.course-references ol { padding-left:22px; }
+.course-references li { padding:12px 0; }
+.course-references li + li { border-top:1px solid #e5ddf3; }
+.course-references p { margin:5px 0; font-size:12px; }
+.reference-title button, .reference-title a { text-align:left; font-size:14px; overflow-wrap:anywhere; }
+.reference-url { color:#766989; overflow-wrap:anywhere; }
+.markdown-content .course-inline-citation { color:#7453d8; text-decoration:underline; text-underline-offset:3px; border-radius:3px; cursor:pointer; }
+.markdown-content .course-inline-citation:hover { background:#eee8fb; }
+.course-references details { margin-top:10px; font-size:12px; }
+.course-references summary { cursor:pointer; }
+.course-references blockquote { margin:10px 0 18px; border-left:3px solid #bca8e3; padding:10px 14px; background:#fff; white-space:pre-wrap; overflow-wrap:anywhere; }

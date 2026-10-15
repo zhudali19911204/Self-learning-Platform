@@ -2,7 +2,11 @@ import http from 'node:http';
 import { readFile } from 'node:fs/promises';
 import { pathToFileURL } from 'node:url';
 import { randomUUID } from 'node:crypto';
-import { createLLM } from './llm.mjs';
+import { createLLM, resolveConfig } from './llm.mjs';
+import { createCourseSources } from './course-sources.mjs';
+import { createCourseClaimMatcher } from './course-claim-matching.mjs';
+import { withInlineCourseCitations } from './course-inline-citations.mjs';
+import { sourceGenerationGuidance, sourceCitationIssue, groundedContent, validSourceSearch } from './public/course-sources.js';
 import { blockCommonGuidance, blockTypeGuidance, blockOutputGuidance, blockRevisionGuidance, outlineGuidance, planGuidance, validGeneratedOutline, validGeneratedBlock } from './course-generation.mjs';
 import { validTeachingContext, cleanTeachingContext } from './public/teaching-context.js';
 import { blockTypes, validBlockSpec, validBlockContent, assistedBlockTypes } from './public/blocks.js';
@@ -22,6 +26,7 @@ assets['/knowledge-index.js'] = ['knowledge-index.js', 'text/javascript'];
 assets['/course-quality.js'] = ['course-quality.js', 'text/javascript'];
 assets['/course-revision.js'] = ['course-revision.js', 'text/javascript'];
 assets['/teaching-context.js'] = ['teaching-context.js', 'text/javascript'];
+assets['/course-sources.js'] = ['course-sources.js', 'text/javascript'];
 assets['/knowledge-views.js'] = ['knowledge-views.js', 'text/javascript'];
 assets['/graph-motion.js'] = ['graph-motion.js', 'text/javascript'];
 const strings = (v, max = 20) => Array.isArray(v) && v.length > 0 && v.length <= max && v.every(x => str(x, 5000));
@@ -79,6 +84,8 @@ function planRepairContext(value, issue) {
 
 export function createApp(config = {}) {
   const defaultLLM = config.getLLM ? null : createLLM(config);
+  const courseSources = config.courseSources || createCourseSources({ getConfig: () => ({ ...resolveConfig(config, config.env ?? process.env), localOnly: config.localOnly }), fetchImpl: config.fetchImpl });
+  const sourceOperations = new Set();
   return http.createServer(async (req, res) => {
     const send = (code, data) => { res.writeHead(code, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' }); res.end(JSON.stringify(data)); };
     res.setHeader('X-Content-Type-Options', 'nosniff');
@@ -172,8 +179,32 @@ export function createApp(config = {}) {
           const instructions = `${blockCommonGuidance}${revising ? blockRevisionGuidance : ''}${blockTypeGuidance[data.block.type]}${textOnlyGuidance}${blockOutputGuidance(data.block.type)}`;
           const suggestImage = config.getImageSettings?.().enabled && assistedBlockTypes.includes(data.block.type);
           const practiceRevision = revising && data.block.type === 'practice' ? '这是实践任务调整，不是单纯重新讲解：保持 block.objective，按用户要求调整任务场景、材料、操作步骤或难度，提供明确的完成标准和自查提示，不直接给出完整答案。听力任务需要可朗读材料时提供清晰分角色的原文，说明这是模拟材料，不声称存在未提供的真实录音或保证合成时长。' : '';
-          result = await generate(instructions + practiceRevision + (suggestImage ? `${illustrationGuidance}在返回 text 的同时，若有必要，可额外返回 imageProposal:{"prompt":"图片生成提示词","caption":"解释配图的中文图注"}；无需配图则省略该字段。不得返回图片地址。` : ''), requested, value => validGeneratedBlock(data.block.type, value));
-          if (data.block.type !== 'quiz') result = { text: result.text, ...(suggestImage && validImageProposal(result.imageProposal) ? { imageProposal: { prompt: result.imageProposal.prompt, caption: result.imageProposal.caption } } : {}) };
+          if (data.sourceSearch !== undefined && !validSourceSearch(data.sourceSearch)) fail('联网搜索开关参数无效。');
+          const currentSearch = () => config.getCourseSourceSearch && data.lessonId ? config.getCourseSourceSearch(data.lessonId) : data.sourceSearch || { enabled: false, revision: 0 };
+          const search = currentSearch();
+          if (config.getCourseSourceSearch && data.sourceSearch?.enabled && !data.lessonId) fail('缺少课程标识，未发起联网搜索。');
+          const checkSearch = () => { const current = currentSearch(); if (current.enabled !== search.enabled || current.revision !== search.revision || (data.sourceSearch && (data.sourceSearch.enabled !== current.enabled || data.sourceSearch.revision !== current.revision))) fail('联网搜索设置已变化，请重新生成。'); };
+          checkSearch();
+          const operation = data.lessonId || 'web-course';
+          if (sourceOperations.has(operation)) fail('本课正在生成，请等待当前请求结束。');
+          sourceOperations.add(operation);
+          try {
+            const documents = search.enabled ? await courseSources.prepare(`${data.title}\n${data.objective}\n${data.block.title}\n${data.block.objective}`.slice(0, 2000)) : null;
+            checkSearch();
+            if (documents) requested.officialDocuments = documents;
+            const matchClaim = createCourseClaimMatcher();
+            result = await generate(instructions + practiceRevision + (documents ? sourceGenerationGuidance : '') + (suggestImage ? `${illustrationGuidance}在返回 text 的同时，若有必要，可额外返回 imageProposal:{"prompt":"图片生成提示词","caption":"解释配图的中文图注"}；无需配图则省略该字段。不得返回图片地址。` : ''), requested, value => {
+              if (documents) value = withInlineCourseCitations(data.block.type, value);
+              if (documents && value?.sourceInsufficient === true) fail(sourceCitationIssue(data.block.type, value, documents), 422);
+              if (!validGeneratedBlock(data.block.type, value)) return false;
+              if (documents) { const issue = sourceCitationIssue(data.block.type, value, documents, matchClaim); if (issue) fail(issue, 422); }
+              return true;
+            });
+            checkSearch();
+            if (documents) result = withInlineCourseCitations(data.block.type, result);
+            const grounding = documents ? groundedContent(data.block.type, result, documents, matchClaim) : undefined;
+            result = { ...(data.block.type === 'quiz' ? { questions: result.questions } : { text: result.text, ...(suggestImage && validImageProposal(result.imageProposal) ? { imageProposal: { prompt: result.imageProposal.prompt, caption: result.imageProposal.caption } } : {}) }), ...(grounding ? { grounding } : {}) };
+          } finally { sourceOperations.delete(operation); }
         } else if (path === '/api/lesson') {
           if (!str(data.goal, 1000) || !str(data.title, 160) || !str(data.objective, 1000) || !str(data.level, 80)) fail('课程参数不完整。');
           result = await generate(`生成充分且可自学的课程，包含 2–8 段讲解、一个完整示例、动手任务、2–5 道四选一单选题和总结。答案为 0–3 的整数下标，解释正确答案。使用纯文本（代码允许换行），不要 Markdown。格式：${lessonShape}`, data, validLesson);

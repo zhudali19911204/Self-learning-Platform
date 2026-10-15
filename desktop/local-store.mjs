@@ -8,6 +8,7 @@ import { validLearningBrief } from '../public/planning.js';
 import { createModelProfiles } from './model-profiles.mjs';
 import { normalizeKnowledgeCard } from './knowledge-cards.mjs';
 import { validAnnotations } from '../public/annotations.js';
+import { validSourceSearch, validLegacySourceBundle } from '../public/course-sources.js';
 import { validQualityReport } from '../public/course-quality.js';
 import { validRevisionJob, validQualityDisposition, validQuizRecord } from '../public/course-revision.js';
 
@@ -22,6 +23,8 @@ export function validState(v) {
   if (!v.plans.every(p => validPlan(p) && id(p.id) && string(p.goal, 1000) && string(p.level, 80) && Number.isInteger(p.daily) && Number.isInteger(p.days) && ['ai', 'demo'].includes(p.source) && p.lessons.every(l => id(l.id)))) return false;
   if (!v.plans.every(p => p.learningBrief === undefined || validLearningBrief(p.learningBrief))) return false;
   const planIds = v.plans.map(p => p.id), lessonIds = v.plans.flatMap(p => p.lessons.map(l => l.id));
+  if (v.sourceSearch !== undefined && (!dict(v.sourceSearch, validSourceSearch) || Object.keys(v.sourceSearch).some(k => !lessonIds.includes(k)))) return false;
+  if (v.sourceBundles !== undefined && (!dict(v.sourceBundles, validLegacySourceBundle) || Object.keys(v.sourceBundles).some(k => !lessonIds.includes(k)))) return false;
   if (new Set(planIds).size !== planIds.length || new Set(lessonIds).size !== lessonIds.length || !planIds.includes(v.active)) return false;
   if (v.qualityReports !== undefined && (!Array.isArray(v.qualityReports) || v.qualityReports.length > 10000 || new Set(v.qualityReports.map(r => r?.id)).size !== v.qualityReports.length || !v.qualityReports.every(r => validQualityReport(r) && planIds.includes(r.planId) && (r.scope === 'route' ? r.targetId === r.planId : v.plans.find(p => p.id === r.planId).lessons.some(l => l.id === r.targetId))))) return false;
   const owned = r => planIds.includes(r.planId) && v.plans.find(p => p.id === r.planId).lessons.some(l => l.id === (r.lessonId || r.targetId));

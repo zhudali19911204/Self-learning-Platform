@@ -46,10 +46,13 @@ export function createRevisionService({ learning, getGenerator, getReviewer }) {
     const units = [...new Set(indexes.map(i => report.issues[i].unitId))];
     if (units.length > 5 || units.some(id => !base.units.some(u => u.id === id && !u.pending && revisionTypes.includes(u.type)))) throw new Error('每轮最多修订5个已生成的讲解、案例、实践或测验模块。');
     const now = Date.now(), job = { version: 1, id: randomUUID(), lessonId: report.targetId, planId: report.planId, title: report.title, rev: 1, created: now, updated: now, status: 'draft', error: '', baseFingerprint: fingerprint, baseSnapshot: base, sourceReport: report, issueIndexes: indexes, changes: [], generator: null, review: null };
+    const evidence = (learning.getLesson(report.targetId).blockCourse?.blocks || []).filter(b => units.includes(b.id) && b.content?.grounding);
+    if (evidence.length) job.sourceGrounding = Object.fromEntries(evidence.map(b => [b.id, structuredClone(b.content.grounding)]));
     learning.saveRevisionJob(job, 0); return inspect(job.id);
   }
   async function generate(id, rev) {
     let job = jobFor(id); guard(job, rev);
+    if (learning.getLesson(job.lessonId).sourceSearch?.enabled) throw new Error('本课已开启官方资料搜索。请使用模块的“换个讲法／换个例子／换个任务”进行联网修订；批量修订暂不支持联网资料，未调用模型。');
     const generator = getGenerator(), reviewer = getReviewer();
     assertDistinctQualityModels(generator.status(), reviewer.status());
     if (generator.status().mode !== 'ai') throw new Error('请先配置生成模型。');

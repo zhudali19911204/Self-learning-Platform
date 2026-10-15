@@ -8,6 +8,8 @@ contextBridge.exposeInMainWorld('learnflowDesktop', Object.freeze({
   load: () => invoke('learnflow:load'),
   saveSettingsLayout: value => invoke('learnflow:save-settings-layout', value),
   getLesson: id => invoke('learnflow:get-lesson', id),
+  setCourseSourceSearch: (id, enabled) => invoke('learnflow:set-course-source-search', id, enabled),
+  openCourseSource: url => invoke('learnflow:open-course-source', url),
   savePlan: value => invoke('learnflow:save-plan', value),
   setActivePlan: id => invoke('learnflow:set-active-plan', id),
   deletePlan: id => invoke('learnflow:delete-plan', id),

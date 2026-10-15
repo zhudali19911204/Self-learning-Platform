@@ -1,5 +1,6 @@
 import { validBlockContent } from './blocks.js';
 import { validQualityId, validQualityReport } from './course-quality.js';
+import { validGrounding } from './course-sources.js';
 
 export const revisionTypes = Object.freeze(['reading', 'example', 'practice', 'quiz']);
 export const revisionStatuses = { draft: '草稿', generating: '生成中／上次调用可能中断', reviewing: '复核中／上次调用可能中断', applied: '已应用', discarded: '已放弃', restored: '已恢复原版' };
@@ -30,6 +31,7 @@ export function validRevisionJob(job) {
   if (!base.units.every(u => u && validQualityId(u.id) && ['reading','example','practice','quiz','summary'].includes(u.type) && str(u.title,160) && str(u.objective,1000) && (u.pending === true || validBlockContent(u.type,revisionContent(u)))) || new Set(base.units.map(u => u.id)).size !== base.units.length) return false;
   if (!Array.isArray(job.issueIndexes) || !job.issueIndexes.length || job.issueIndexes.length > 100 || new Set(job.issueIndexes).size !== job.issueIndexes.length || !job.issueIndexes.every(i => Number.isInteger(i) && job.sourceReport.issues[i])) return false;
   const selected = [...new Set(job.issueIndexes.map(i => job.sourceReport.issues[i].unitId))];
+  if (job.sourceGrounding !== undefined && (!job.sourceGrounding || Array.isArray(job.sourceGrounding) || typeof job.sourceGrounding !== 'object' || !Object.entries(job.sourceGrounding).every(([id, grounding]) => selected.includes(id) && validGrounding(grounding)))) return false;
   if (selected.length > 5 || !selected.every(id => base.units.some(u => u.id === id && !u.pending && revisionTypes.includes(u.type) && validBlockContent(u.type, revisionContent(u))))) return false;
   if (!Array.isArray(job.changes) || (job.changes.length && !validRevisionChanges(job.changes, base, selected))) return false;
   if (job.generator !== null && (!str(job.generator?.model, 200) || !str(job.generator?.provider, 200))) return false;

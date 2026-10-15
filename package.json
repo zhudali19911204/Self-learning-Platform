@@ -1,6 +1,6 @@
 {
   "name": "learnflow",
-  "version": "1.2.1",
+  "version": "1.2.2",
   "main": "desktop/main.cjs",
   "private": true,
   "type": "module",
@@ -40,6 +40,9 @@
       "course-quality.mjs",
       "course-revision.mjs",
       "course-generation.mjs",
+      "course-sources.mjs",
+      "course-claim-matching.mjs",
+      "course-inline-citations.mjs",
       "test-support/audio.mjs",
       "package.json"
     ],
@@ -64,6 +67,7 @@
   "dependencies": {
     "dompurify": "3.4.16",
     "js-yaml": "4.3.2",
-    "marked": "18.0.14"
+    "marked": "18.0.14",
+    "parse5": "8.0.1"
   }
 }

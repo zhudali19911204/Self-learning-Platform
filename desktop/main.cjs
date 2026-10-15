@@ -41,6 +41,8 @@ async function start() {
   const { createCommonsImages } = await import(pathToFileURL(path.join(__dirname, '..', 'commons-images.mjs')));
   const { createWebImageSearch, webImageUrl } = await import(pathToFileURL(path.join(__dirname, '..', 'web-images.mjs')));
   const { createWebSearchStore } = await import(pathToFileURL(path.join(__dirname, 'web-search-store.mjs')));
+  const { createCourseSources } = await import(pathToFileURL(path.join(__dirname, '..', 'course-sources.mjs')));
+  const { officialSource } = await import(pathToFileURL(path.join(__dirname, '..', 'public', 'course-sources.js')));
   const { createSpeechStore } = await import(pathToFileURL(path.join(__dirname, 'speech-store.mjs')));
   const { createSpeechService } = await import(pathToFileURL(path.join(__dirname, 'speech-service.mjs')));
   const { createSpeechModel } = await import(pathToFileURL(path.join(__dirname, '..', 'speech-model.mjs')));
@@ -78,6 +80,8 @@ async function start() {
   const modelFetch = (url, options) => modelSession.fetch(url, { ...options, credentials: 'omit' });
   const speechService = createSpeechService(speechStore, modelFetch);
   let llm = createLLM({ ...store.getModelConfig(), fetchImpl: modelFetch });
+  const sourceFixture = smoke && process.argv.includes('--sources-only') ? (await import('./sources-fixture.mjs')).sourcesFixture() : null;
+  if (sourceFixture) llm = sourceFixture.llm;
   const getQualityLLM = () => createLLM({ ...qualityStore.getModelConfig(), fetchImpl: modelFetch });
   const qualityStatus = () => {
     const result = getQualityLLM().status();
@@ -106,7 +110,9 @@ async function start() {
     app.quit();
     return;
   }
-  server = createApp({ getLLM: () => llm, apiToken: token, getImageSettings: () => imageStore.getSettings(), getImageAsset: async id => {
+  const courseSources = sourceFixture?.courseSources || createCourseSources({ getConfig: () => store.getModelConfig(), fetchImpl: modelFetch });
+  const courseRequests = new Set();
+  server = createApp({ getLLM: () => llm, courseSources, getCourseSourceSearch: id => learning.getLesson(id).sourceSearch, apiToken: token, getImageSettings: () => imageStore.getSettings(), getImageAsset: async id => {
     try { return await imageStore.readAsset(id); } catch { return null; }
   }, getAudioAsset: async id => { try { return await speechStore.readAsset(id); } catch { return null; } } });
   await new Promise((resolve, reject) => { server.once('error', reject); server.listen(0, '127.0.0.1', resolve); });
@@ -118,6 +124,14 @@ async function start() {
     return { settings: store.getSettings(), settingsLayout: settingsLayoutStore.get(), qualitySettings: qualityStore.getSettings(), qualityStatus: qualityStatus(), imageSettings: imageStore.getSettings(), speechSettings: speechStore.getSettings(), webSearchSettings: webSearchStore.getSettings(), state, stateError, status: llm.status(), dataDirectory, startPage: process.argv.includes('--settings') ? 'settings' : 'home' };
   });
   handle('learnflow:save-settings-layout', value => settingsLayoutStore.save(value));
+  handle('learnflow:set-course-source-search', (id, enabled) => {
+    if (courseRequests.has(id)) throw new Error('本课正在生成，请完成后再切换联网搜索。');
+    return learning.setSourceSearch(id, enabled);
+  });
+  handle('learnflow:open-course-source', async value => {
+    const source = officialSource(value); if (!source) throw new Error('该资料链接已被排除或不符合安全要求。');
+    await shell.openExternal(source.url);
+  });
   handle('learnflow:inspect-quality', (scope, id) => qualityService.inspect(scope, id));
   handle('learnflow:evaluate-quality', (scope, id, fingerprint) => qualityService.evaluate(scope, id, fingerprint));
   handle('learnflow:create-revision', (reportId, issues, fingerprint) => revisionService.create(reportId, issues, fingerprint));
@@ -346,15 +360,20 @@ async function start() {
   }));
   handle('learnflow:request', async (endpoint, data) => {
     if (!['status', 'plan-clarify', 'plan', 'lesson', 'lesson-outline', 'lesson-block', 'lesson-ask', 'wiki', 'wiki-draft', 'knowledge-organize', 'ask', 'test-connection'].includes(endpoint)) throw new Error('接口不存在。');
+    const courseId = endpoint === 'lesson-block' ? data?.lessonId : null;
+    if (courseId && courseRequests.has(courseId)) throw new Error('本课正在生成，请稍候。');
+    if (courseId) { learning.getLesson(courseId); courseRequests.add(courseId); }
+    try {
     const response = await fetch(`${base}/api/${endpoint}`, {
       method: endpoint === 'status' ? 'GET' : 'POST',
       headers: { 'Content-Type': 'application/json', 'X-Learnflow-Token': token },
       ...(endpoint === 'status' ? {} : { body: JSON.stringify(data) }),
-      signal: AbortSignal.timeout((llm.status().timeoutMs || 120000) + 10000)
+      signal: AbortSignal.timeout((llm.status().timeoutMs || 120000) * (endpoint === 'lesson-block' ? 2 : 1) + (endpoint === 'lesson-block' ? 120000 : 10000))
     });
     const value = await response.json();
     if (!response.ok) throw new Error(value.error || '请求失败。');
     return value;
+    } finally { if (courseId) courseRequests.delete(courseId); }
   });
   handle('learnflow:export', async (name, content) => {
     if (typeof name !== 'string' || !/\.(json|md)$/.test(name) || typeof content !== 'string' || Buffer.byteLength(content) > 30 * 1024 * 1024) throw new Error('导出内容无效。');
@@ -415,6 +434,7 @@ async function start() {
   if (development) { window.setTitle('知行 Learnflow · 开发测试版'); console.log('DESKTOP_DEV_READY'); }
   if (smoke) {
     if (process.argv.includes('--settings-only')) await require('./settings-smoke.cjs').run(window,dataDirectory);
+    else if (process.argv.includes('--sources-only')) await require('./sources-smoke.cjs').run(window,dataDirectory,sourceFixture);
     else if (process.argv.includes('--generation-only')) await require('./generation-smoke.cjs').run(window,dataDirectory);
     else if (process.argv.includes('--revision-only')) await require('./revision-smoke.cjs').run(window,dataDirectory);
     else await require('./smoke.cjs').run(window, { ...store, loadState: async () => learning.exportState() }, dataDirectory);
