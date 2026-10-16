@@ -12,7 +12,7 @@ import { validSourceSearch, validLegacySourceBundle } from '../public/course-sou
 import { validQualityReport } from '../public/course-quality.js';
 import { validRevisionJob, validQualityDisposition, validQuizRecord } from '../public/course-revision.js';
 
-export const defaults = { provider: 'ollama', model: '', baseUrl: '', jsonMode: 'auto', timeoutMs: 120000, maxTokens: 8192, localOnly: true };
+export const defaults = { provider: 'ollama', model: '', baseUrl: '', jsonMode: 'auto', thinkingMode: 'auto', timeoutMs: 120000, maxTokens: 8192, localOnly: true };
 const id = v => typeof v === 'string' && /^[a-zA-Z0-9_-]{1,160}$/.test(v) && !['__proto__', 'constructor', 'prototype'].includes(v);
 const string = (v, max = 20000) => typeof v === 'string' && v.length <= max;
 const object = v => v && typeof v === 'object' && !Array.isArray(v);
@@ -49,6 +49,8 @@ export function normalizeSettings(input, previous = defaults) {
   }
   next.timeoutMs = input.timeoutMs;
   next.maxTokens = input.maxTokens;
+  next.thinkingMode = input.thinkingMode ?? previous.thinkingMode ?? 'auto';
+  if (!['auto', 'off'].includes(next.thinkingMode)) throw new Error('模型思考配置不正确。');
   if (typeof input.localOnly !== 'boolean') throw new Error('请选择是否仅使用本机模型。');
   next.localOnly = input.localOnly;
   if (!['keep', 'replace', 'clear'].includes(input.keyAction)) throw new Error('密钥操作无效。');

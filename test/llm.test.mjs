@@ -69,7 +69,7 @@ test('invalid configuration fails before network I/O, without disclosing secrets
     { baseUrl: 'https://user:secret@example.test/v1' }, { baseUrl: 'https://example.test/?key=secret' },
     { baseUrl: 'http://localhost:11434/api/chat' }, { baseUrl: 'http://localhost:1234/v1/chat/completions/' },
     { timeoutMs: 0 }, { timeoutMs: 600001 }, { timeoutMs: 'abc' }, { maxTokens: 3 },
-    { jsonMode: 'yes' }, { apiKey: 'secret\nheader' }
+    { jsonMode: 'yes' }, { thinkingMode: 'sometimes' }, { apiKey: 'secret\nheader' }
   ];
   for (const config of cases) {
     let calls = 0;
@@ -102,8 +102,52 @@ test('connection test sends only a fixed prompt with a short output limit', asyn
   assert.equal(result.ok, true);
   assert.equal(result.model, 'test-model');
   assert.ok(result.latencyMs >= 0);
-  assert.equal(sent.max_tokens, 128);
+  assert.equal(sent.max_tokens, 1024);
   assert.deepEqual(JSON.parse(sent.messages[1].content), { task: 'connection-test' });
+});
+
+test('Qwen-compatible thinking controls are opt-in, apply to tests and generation, and preserve provider protocols', async () => {
+  for (const provider of ['compatible', 'vllm', 'lmstudio']) for (const thinkingMode of ['auto', 'off']) {
+    const sent = [];
+    const llm = client({ provider, baseUrl: 'http://localhost:8000/v1', thinkingMode, maxTokens: 10000, fetchImpl: async (_, init) => {
+      sent.push(JSON.parse(init.body)); return Response.json(output(provider));
+    } });
+    await llm.testConnection(); await llm.generate('任务', { task: 'ordinary-generation' }, ok);
+    assert.equal(sent[0].max_tokens, 1024); assert.equal(sent[1].max_tokens, 10000);
+    for (const payload of sent) {
+      assert.deepEqual(payload.chat_template_kwargs, thinkingMode === 'off' ? { enable_thinking: false } : undefined);
+      assert.equal(payload.enable_thinking, undefined);
+      assert.equal(payload.thinking, undefined);
+    }
+  }
+  for (const provider of ['ollama', 'qwen', 'deepseek']) {
+    let sent;
+    const llm = client({ provider, thinkingMode: 'off', apiKey: 'test', fetchImpl: async (_, init) => { sent = JSON.parse(init.body); return Response.json(output(provider)); } });
+    await llm.testConnection(); assert.equal(sent.chat_template_kwargs, undefined);
+    if (provider === 'ollama') assert.equal(sent.think, false);
+    if (provider === 'qwen') assert.equal(sent.enable_thinking, false);
+    if (provider === 'deepseek') assert.deepEqual(sent.thinking, { type: 'disabled' });
+  }
+  assert.equal(resolveConfig({}, { LLM_THINKING_MODE: 'off' }).thinkingMode, 'off');
+  assert.equal(resolveConfig({ thinkingMode: 'auto' }, { LLM_THINKING_MODE: 'off' }).thinkingMode, 'auto');
+});
+
+test('connection tests respect a lower saved budget and never turn reasoning-only responses into success or retries', async () => {
+  for (const maxTokens of [128, 512, 10000]) for (const reason of ['length', 'stop']) {
+    let calls = 0;
+    const llm = client({ provider: 'compatible', baseUrl: 'http://localhost:8000/v1', maxTokens, fetchImpl: async (_, init) => {
+      calls++; assert.equal(JSON.parse(init.body).max_tokens, Math.min(maxTokens, 1024));
+      return Response.json({ choices: [{ message: { content: '', reasoning_content: 'private-thinking-only' }, finish_reason: reason }] });
+    } });
+    await assert.rejects(llm.testConnection(), error => {
+      assert.match(error.message, /已连接模型/); assert.match(error.message, /只返回了思考内容/);
+      assert.match(error.message, /关闭模型思考/); assert.ok(!error.message.includes('private'));
+      assert.ok(error.message.includes(`${Math.min(maxTokens, 1024)} token`)); return true;
+    });
+    assert.equal(calls, 1);
+  }
+  const llm = client({ provider: 'lmstudio', fetchImpl: async () => Response.json(output('lmstudio', '{"ok":true}', 'length')) });
+  await assert.rejects(llm.testConnection(), /已连接模型.*测试输出被截断/);
 });
 
 test('auth, quota, invalid model and parameter failures have actionable, sanitized errors', async () => {

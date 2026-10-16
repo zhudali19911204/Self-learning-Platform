@@ -1,6 +1,6 @@
 {
   "name": "learnflow",
-  "version": "1.2.4",
+  "version": "1.2.5",
   "main": "desktop/main.cjs",
   "private": true,
   "type": "module",

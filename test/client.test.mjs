@@ -182,6 +182,38 @@ test('visiting a saved provider without editing its parameters does not leave a 
   assert.equal(app.document.querySelector('#settings-unsaved-note').hidden, true);
 });
 
+test('custom model thinking mode survives profile switching, navigation and saving for generation and review', async t => {
+  const custom = { provider: 'compatible', model: 'qwen-27b', baseUrl: 'http://localhost:8000/v1', localOnly: true, jsonMode: 'auto', thinkingMode: 'off', timeoutMs: 120000, maxTokens: 10000 };
+  const local = { ...custom, provider: 'ollama', model: 'other-local-model', baseUrl: 'http://localhost:11434', thinkingMode: 'auto' };
+  const saves = [], checks = [];
+  const app = realSettingsHarness({ load: async () => ({ settings: { ...custom, profiles: { compatible: custom, ollama: local } }, qualitySettings: { ...custom, model: 'review-model' }, status: { mode: 'ai' }, qualityStatus: { mode: 'ai' } }),
+    saveSettings: async value => { saves.push(value); return { settings: value, status: { mode: 'ai' } }; },
+    saveQualitySettings: async value => { saves.push(value); return { settings: value, status: { mode: 'ai' } }; },
+    request: async path => { checks.push(path); return { provider: 'custom', model: 'qwen-27b', latencyMs: 10 }; }
+  });
+  t.after(() => app.close()); await app.ready(); app.run("navigate('settings')");
+  const doc = app.document;
+  assert.equal(doc.querySelector('#model-thinking').value, 'off');
+  assert.equal(doc.querySelector('#quality-thinking').value, 'off');
+  const form = doc.querySelector('#desktop-settings-form'), provider = form.elements.namedItem('provider');
+  provider.value = 'ollama'; await app.fire('change', provider);
+  assert.equal(doc.querySelector('#model-thinking').value, 'auto');
+  provider.value = 'compatible'; await app.fire('change', provider);
+  assert.equal(doc.querySelector('#model-thinking').value, 'off');
+  const thinking = doc.querySelector('#model-thinking'); thinking.value = 'auto'; await app.fire('change', thinking);
+  assert.equal(doc.querySelector('[data-action="test-connection"]').disabled, true);
+  app.run("navigate('wiki'); navigate('settings')");
+  assert.equal(doc.querySelector('#model-thinking').value, 'auto');
+  const restored = doc.querySelector('#model-thinking'); restored.value = 'off'; await app.fire('change', restored);
+  await app.fire('submit', doc.querySelector('#desktop-settings-form'));
+  assert.equal(saves[0].thinkingMode, 'off'); assert.equal(saves[0].maxTokens, 10000);
+  await app.fire('click', doc.querySelector('[data-action="test-connection"]'));
+  assert.deepEqual(checks, ['test-connection']);
+  assert.match(doc.querySelector('#connection-result').textContent, /连接成功/);
+  await app.fire('submit', doc.querySelector('#quality-settings-form'));
+  assert.equal(saves[1].thinkingMode, 'off'); assert.equal(saves[1].model, 'review-model');
+});
+
 test('configuration saves cannot race across the three model cards', async () => {
   let finish, calls = 0;
   const app = harness(null, null, { load: async () => ({ settings: {}, status: { mode: 'demo' } }),

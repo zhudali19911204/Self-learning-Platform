@@ -39,6 +39,31 @@ test('LLM services retain independent parameters and encrypted keys across saves
   assert.ok(JSON.parse(disk).profiles.qwen.encryptedApiKey);
 });
 
+test('thinking mode defaults on old profiles and persists per service and per model role', async t => {
+  const target = await directory(t);
+  const old = { version: 1, ...qwen, encryptedApiKey: await secrets.encrypt('legacy-key') };
+  delete old.thinkingMode;
+  const original = JSON.stringify(old);
+  await writeFile(path.join(target, 'settings.json'), original);
+  const generator = createLocalStore(target, secrets); await generator.initialize();
+  assert.equal(generator.getModelConfig().thinkingMode, 'auto');
+  assert.equal(await readFile(path.join(target, 'settings.json'), 'utf8'), original);
+  const custom = { ...defaults, provider: 'compatible', model: 'qwen-27b', baseUrl: 'http://localhost:8000/v1', thinkingMode: 'off', keyAction: 'clear' };
+  await generator.saveSettings(custom);
+  await generator.saveSettings({ ...qwen, keyAction: 'keep' });
+  const reopened = createLocalStore(target, secrets); await reopened.initialize();
+  assert.equal(reopened.getSettings().profiles.compatible.thinkingMode, 'off');
+  assert.equal(reopened.getSettings().profiles.qwen.thinkingMode, 'auto');
+  const reviewer = createLocalStore(target, secrets, { filename: 'quality-settings.json' }); await reviewer.initialize();
+  await reviewer.saveSettings({ ...custom, model: 'different-review-model' });
+  const reopenedReviewer = createLocalStore(target, secrets, { filename: 'quality-settings.json' }); await reopenedReviewer.initialize();
+  assert.equal(reopenedReviewer.getModelConfig().thinkingMode, 'off');
+  assert.equal(reopened.getModelConfig().thinkingMode, 'auto');
+  const before = await readFile(path.join(target, 'settings.json'), 'utf8');
+  await assert.rejects(reopened.saveSettings({ ...custom, thinkingMode: 'anything' }), /思考配置/);
+  assert.equal(await readFile(path.join(target, 'settings.json'), 'utf8'), before);
+});
+
 test('profile keys stay bound to their endpoint and clearing one profile preserves other services', async t => {
   const target = await directory(t), store = createLocalStore(target, secrets); await store.initialize();
   await store.saveSettings({ ...qwen, keyAction: 'replace', apiKey: 'qwen-key' });

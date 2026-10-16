@@ -165,6 +165,9 @@ function settingsPanel(id, formId, title, purpose, active, glyph, body, extra = 
 function settingsFormActions(formId, checkAction, checkTitle, saveTitle) {
   return `<div class="settings-form-actions"><span class="settings-save-state" role="status">保存不联网，也不生成内容。</span><div>${button(checkTitle, checkAction, 'secondary', `type="button" ${modelCheckAllowed(formId) ? '' : 'disabled'} data-model-check="${formId}"`, 'bolt')}<button type="submit" class="btn primary" ${savedSettingsFor(formId)?.error ? 'disabled' : ''}>${saveTitle} ${icon('check')}</button></div></div>`;
 }
+function modelThinkingField(id, cfg) {
+  return `<div><label for="${id}">模型思考</label><select id="${id}" name="thinkingMode"><option value="auto" ${(cfg.thinkingMode || 'auto') === 'auto' ? 'selected' : ''}>服务默认</option><option value="off" ${cfg.thinkingMode === 'off' ? 'selected' : ''}>关闭（Qwen 兼容服务）</option></select><p class="field-hint">自部署 Qwen 若只返回思考或测试被截断，可选择关闭。适用于支持此选项的 llama.cpp、vLLM 等兼容服务。</p></div>`;
+}
 function jumpToSettings(target) {
   if (target === 'reviewer' || target === 'images') {
     rememberSettingsPanel(target, true);
@@ -211,7 +214,7 @@ function savedModelProfile(formId, selected) {
   const selector = image ? 'protocol' : 'provider';
   const base = image
     ? { enabled: false, protocol: selected, model: '', baseUrl: '', size: '1024x1024', responseFormat: 'auto', timeoutMs: 180000, localOnly: true, downloadHosts: '', hasApiKey: false }
-    : { provider: selected, model: '', baseUrl: '', jsonMode: 'auto', timeoutMs: 120000, maxTokens: 8192, localOnly: true, hasApiKey: false };
+    : { provider: selected, model: '', baseUrl: '', jsonMode: 'auto', thinkingMode: 'auto', timeoutMs: 120000, maxTokens: 8192, localOnly: true, hasApiKey: false };
   const saved = settings?.profiles && Object.hasOwn(settings.profiles, selected) ? settings.profiles[selected] : settings?.[selector] === selected ? settings : null;
   return { ...base, ...saved };
 }
@@ -887,7 +890,7 @@ function desktopSettingsPage() {
     <div class="settings-field-wide"><label for="model-url">接口根地址 <small>留空使用服务预设</small></label><input id="model-url" name="baseUrl" maxlength="2000" value="${escape(cfg.baseUrl)}" placeholder="例如 http://127.0.0.1:11434"></div>
     <div class="model-key-field settings-field-wide">${modelKeyField('model-key', 'key-action', cfg)}</div></div>
     <label class="check-label"><input type="checkbox" name="localOnly" ${cfg.localOnly ? 'checked' : ''}>仅使用本机模型</label><p class="field-hint">云端或局域网模型请关闭此项；相关学习内容会发送到所配置的服务。</p>
-    <details class="model-advanced"><summary>高级设置</summary><div class="model-advanced-content"><div class="form-row"><div><label for="json-mode">JSON 模式</label><select id="json-mode" name="jsonMode">${[['auto','自动'],['on','开启'],['off','仅提示词']].map(([v,l]) => `<option value="${v}" ${cfg.jsonMode === v ? 'selected' : ''}>${l}</option>`).join('')}</select></div><div><label for="model-timeout">超时（秒）</label><input id="model-timeout" type="number" name="timeout" min="1" max="600" required value="${cfg.timeoutMs / 1000}"></div><div><label for="model-tokens">输出上限</label><input id="model-tokens" type="number" name="maxTokens" min="128" max="32768" required value="${cfg.maxTokens}"></div></div><p class="field-hint">本机模型需先安装并启动；仅本机模式只允许 localhost、127.0.0.1 或 ::1。修改接口地址不会向新地址沿用旧密钥，需要重新填写。</p></div></details>
+    <details class="model-advanced"><summary>高级设置</summary><div class="model-advanced-content"><div class="form-row"><div><label for="json-mode">JSON 模式</label><select id="json-mode" name="jsonMode">${[['auto','自动'],['on','开启'],['off','仅提示词']].map(([v,l]) => `<option value="${v}" ${cfg.jsonMode === v ? 'selected' : ''}>${l}</option>`).join('')}</select></div><div><label for="model-timeout">超时（秒）</label><input id="model-timeout" type="number" name="timeout" min="1" max="600" required value="${cfg.timeoutMs / 1000}"></div><div><label for="model-tokens">输出上限</label><input id="model-tokens" type="number" name="maxTokens" min="128" max="32768" required value="${cfg.maxTokens}"></div></div>${modelThinkingField('model-thinking', cfg)}<p class="field-hint">本机模型需先安装并启动；仅本机模式只允许 localhost、127.0.0.1 或 ::1。修改接口地址不会向新地址沿用旧密钥，需要重新填写。</p></div></details>
     <p id="settings-error" class="inline-error" role="alert">${escape(cfg.error || '')}</p><div id="remote-permission" hidden class="notice"><p>此操作会关闭“仅使用本机模型”。使用 AI 时，相关内容将发送到你配置的远端服务。</p><button type="button" class="btn secondary" data-action="allow-remote-save">允许远端连接并保存</button></div>
     ${settingsFormActions('desktop-settings-form', 'test-connection', '检查连接', '保存配置')}</form>
     <p id="connection-result" class="settings-result" role="status">${escape(connectionResult || '尚未验证连接。保存配置不代表模型已启动。')}</p><p class="field-hint">检查连接会发送固定短提示，验证鉴权和 JSON 输出；云端可能计费，不发送学习笔记。</p>`;
@@ -911,7 +914,7 @@ function qualitySettingsPanel() {
   <div><label for="quality-model-name">模型名称</label><input id="quality-model-name" name="model" maxlength="200" value="${escape(cfg.model)}" placeholder="与生成模型不同；留空停用评审"><p id="quality-model-conflict" class="inline-error" role="alert"></p></div>
   <div class="settings-field-wide"><label for="quality-model-url">接口根地址 <small>留空使用服务预设</small></label><input id="quality-model-url" name="baseUrl" maxlength="2000" value="${escape(cfg.baseUrl)}" placeholder="例如 http://127.0.0.1:11434"></div><div class="model-key-field settings-field-wide">${modelKeyField('quality-model-key', 'quality-key-action', cfg)}</div></div>
   <label class="check-label"><input type="checkbox" name="localOnly" ${cfg.localOnly ? 'checked' : ''}>仅使用本机评审模型</label><p class="field-hint">云端或局域网模型请关闭此项；保存不会发起课程评价。</p>
-  <details class="model-advanced"><summary>高级设置</summary><div class="model-advanced-content"><div class="form-row"><div><label for="quality-json-mode">JSON 模式</label><select id="quality-json-mode" name="jsonMode">${[['auto','自动'],['on','开启'],['off','仅提示词']].map(([id,label]) => `<option value="${id}" ${id === cfg.jsonMode ? 'selected' : ''}>${label}</option>`).join('')}</select></div><div><label for="quality-timeout">超时（秒）</label><input id="quality-timeout" name="timeout" type="number" min="1" max="600" required value="${cfg.timeoutMs / 1000}"></div><div><label for="quality-tokens">输出上限</label><input id="quality-tokens" name="maxTokens" type="number" min="128" max="32768" required value="${cfg.maxTokens}"></div></div></div></details>
+  <details class="model-advanced"><summary>高级设置</summary><div class="model-advanced-content"><div class="form-row"><div><label for="quality-json-mode">JSON 模式</label><select id="quality-json-mode" name="jsonMode">${[['auto','自动'],['on','开启'],['off','仅提示词']].map(([id,label]) => `<option value="${id}" ${id === cfg.jsonMode ? 'selected' : ''}>${label}</option>`).join('')}</select></div><div><label for="quality-timeout">超时（秒）</label><input id="quality-timeout" name="timeout" type="number" min="1" max="600" required value="${cfg.timeoutMs / 1000}"></div><div><label for="quality-tokens">输出上限</label><input id="quality-tokens" name="maxTokens" type="number" min="128" max="32768" required value="${cfg.maxTokens}"></div></div>${modelThinkingField('quality-thinking', cfg)}</div></details>
   <p id="quality-settings-error" class="inline-error" role="alert">${escape(cfg.error || qualityStatus.configurationError || '')}</p>${settingsFormActions('quality-settings-form', 'test-quality-connection', '检查连接', '保存配置')}</form>
   <p id="quality-connection-result" class="settings-result" role="status">${escape(qualityConnectionResult || '尚未验证连接。主动开始评价时才发送课程需求与正文。')}</p><p class="field-hint">连接检查会发送固定短提示，云端可能计费。课程评价未经人工校准，也未外部核验事实。</p>`;
   return settingsPanel('reviewer', 'quality-settings-form', '课程质量评审', '独立模型检查路线、讲解、案例和测验', cfg.model ? `评审配置：${cfg.provider} · ${cfg.model}` : '未配置 · 不影响正常学习', 'check', body);
@@ -1977,7 +1980,7 @@ document.addEventListener('submit', async event => {
   savingFields.forEach(([field]) => { field.disabled = true; });
   try {
     if (form.id === 'quality-settings-form' && desktop) {
-      const result = await desktop.saveQualitySettings({ provider: values.get('provider'), model: values.get('model'), baseUrl: values.get('baseUrl'), ...modelKeyValues(values), localOnly: values.get('localOnly') === 'on', jsonMode: values.get('jsonMode'), timeoutMs: Number(values.get('timeout')) * 1000, maxTokens: Number(values.get('maxTokens')) });
+      const result = await desktop.saveQualitySettings({ provider: values.get('provider'), model: values.get('model'), baseUrl: values.get('baseUrl'), ...modelKeyValues(values), localOnly: values.get('localOnly') === 'on', jsonMode: values.get('jsonMode'), thinkingMode: values.get('thinkingMode') || 'auto', timeoutMs: Number(values.get('timeout')) * 1000, maxTokens: Number(values.get('maxTokens')) });
       qualitySettings = result.settings; qualityStatus = result.status; qualityConnectionResult = '独立评审模型已保存，可以测试连接或主动评价课程。';
       modelConnectionChecks.delete(form.id);
       clearSavedModelDraft(form); modelFormDrafts.delete(form.id); render(); toast('评审模型配置已保存在本机。');
@@ -2061,7 +2064,7 @@ document.addEventListener('submit', async event => {
       const result = await desktop.saveSettings({
         provider: values.get('provider'), model: values.get('model'), baseUrl: values.get('baseUrl'),
         ...modelKeyValues(values), localOnly: values.get('localOnly') === 'on',
-        jsonMode: values.get('jsonMode'), timeoutMs: Number(values.get('timeout')) * 1000, maxTokens: Number(values.get('maxTokens'))
+        jsonMode: values.get('jsonMode'), thinkingMode: values.get('thinkingMode') || 'auto', timeoutMs: Number(values.get('timeout')) * 1000, maxTokens: Number(values.get('maxTokens'))
       });
       if (result.requiresRemotePermission) {
         $('#settings-error').textContent = result.error;
