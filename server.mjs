@@ -7,7 +7,7 @@ import { createCourseSources } from './course-sources.mjs';
 import { createCourseClaimMatcher } from './course-claim-matching.mjs';
 import { withInlineCourseCitations } from './course-inline-citations.mjs';
 import { sourceGenerationGuidance, sourceCitationIssue, groundedContent, validSourceSearch } from './public/course-sources.js';
-import { blockCommonGuidance, blockTypeGuidance, blockOutputGuidance, blockRevisionGuidance, outlineGuidance, planGuidance, validGeneratedOutline, validGeneratedBlock } from './course-generation.mjs';
+import { blockCommonGuidance, blockTypeGuidance, blockOutputGuidance, blockRevisionGuidance, outlineGuidance, planGuidance, validGeneratedBlock, normalizeOutline, inspectOutline, outlineRepairGuidance, mergeOutlineExamples } from './course-generation.mjs';
 import { validTeachingContext, cleanTeachingContext } from './public/teaching-context.js';
 import { blockTypes, validBlockSpec, validBlockContent, assistedBlockTypes } from './public/blocks.js';
 import { validQuestionnaire, validClarification, learningBriefFrom, validLearningBrief } from './public/planning.js';
@@ -163,7 +163,24 @@ export function createApp(config = {}) {
           if (data.route !== undefined && (!Array.isArray(data.route) || data.route.length < 1 || data.route.length > 12 || !data.route.every(lesson => lesson && str(lesson.title, 160) && str(lesson.objective, 1000)))) fail('路线课程上下文不正确。');
           if (data.lessonPosition !== undefined && (!Number.isInteger(data.lessonPosition) || data.lessonPosition < 1 || data.lessonPosition > (data.route?.length || 12))) fail('当前课程顺序不正确。');
           const outlineRequest = { goal: data.goal, level: data.level, title: data.title, objective: data.objective, ...(data.minutes === undefined ? {} : { minutes: data.minutes }), ...(data.learningBrief ? { learningBrief: data.learningBrief } : {}), ...(data.route === undefined ? {} : { route: data.route.map(({ title, objective }) => ({ title, objective })) }), ...(data.lessonPosition === undefined ? {} : { lessonPosition: data.lessonPosition }) };
-          result = await generate(outlineGuidance, outlineRequest, validGeneratedOutline);
+          if (data.repairDraft !== undefined) {
+            const draft = normalizeOutline(data.repairDraft), check = inspectOutline(draft);
+            if (check.issues.length || !check.missingExamples.length) fail(`待补充大纲不正确：${check.issues.join('；') || '没有缺失的配套案例'}。`);
+            // One explicit repair request, no transport or validation retries.
+            let repaired;
+            await generate(outlineRepairGuidance, { ...outlineRequest, draft, missingExamples: check.missingExamples }, value => {
+              repaired = mergeOutlineExamples(draft, value); return true;
+            });
+            result = repaired;
+          } else {
+            let draft, check;
+            await generate(outlineGuidance, outlineRequest, value => {
+              draft = normalizeOutline(value); check = inspectOutline(draft);
+              if (check.issues.length) fail(`课程大纲未通过校验：${check.issues.join('；')}。`, 502);
+              return true;
+            });
+            result = check.missingExamples.length ? { status: 'needs_examples', draft, missingExamples: check.missingExamples } : draft;
+          }
         } else if (path === '/api/lesson-block') {
           if (!str(data.goal, 1000) || !str(data.title, 160) || !str(data.objective, 1000) || !str(data.level, 80) || !validBlockSpec(data.block) || typeof data.intro !== 'string' || data.intro.length > 20000) fail('内容块参数不完整。');
           if (data.minutes !== undefined && (!Number.isInteger(data.minutes) || data.minutes < 5 || data.minutes > 180)) fail('课程时长不正确。');

@@ -1042,6 +1042,86 @@ test('AI course expands from outline to independently generated blocks', async (
   assert.match(app.node('#app').innerHTML, /这一块的正文/);
 });
 
+test('outline repair shows progress, blocks duplicate clicks and retains draft across navigation for manual retry', async () => {
+  const draft = { intro: '课程目标', blocks: [{ type: 'reading', title: '<案例标记>', objective: '理解' }, { type: 'quiz', title: '练习', objective: '检验' }] };
+  const fixed = { ...draft, blocks: [draft.blocks[0], { type: 'example', title: '配套案例', objective: '应用' }, draft.blocks[1]] };
+  let rejectRepair;
+  const calls = [];
+  const app = harness(null, async (url, options) => {
+    if (url === '/api/status') return { ok: true, json: async () => ({ mode: 'ai' }) };
+    calls.push(JSON.parse(options.body));
+    if (calls.length === 1) return { ok: true, json: async () => ({ status: 'needs_examples', draft }) };
+    if (calls.length === 2) return new Promise((_resolve, reject) => { rejectRepair = reject; });
+    return { ok: true, json: async () => fixed };
+  });
+  app.run("state.plans[0].source='ai'; state.plans[0].lessons[0].id='custom-1'; state.lessons={}; activeLesson='custom-1'; page='study'; render()");
+  assert.match(app.node('#app').innerHTML, /可能增加模型调用费用/);
+  const pending = app.run("action('generate-lesson', {dataset:{id:'custom-1'}})");
+  for (let i = 0; i < 10 && !rejectRepair; i++) await Promise.resolve();
+  assert.equal(calls.length, 2);
+  assert.match(app.node('#app').innerHTML, /正在补充配套案例/);
+  assert.match(app.node('#app').innerHTML, /&lt;案例标记&gt;/);
+  await app.run("action('generate-lesson', {dataset:{id:'custom-1'}})");
+  assert.equal(calls.length, 2);
+  const failed = assert.rejects(pending, /模拟补充失败/);
+  rejectRepair(new Error('模拟补充失败')); await failed;
+  assert.equal(app.run('state.blockCourses?.["custom-1"]'), undefined);
+  app.run("navigate('routes'); navigate('study')");
+  assert.match(app.node('#app').innerHTML, /重新补充/);
+  assert.match(app.node('#app').innerHTML, /原大纲已保留/);
+  assert.equal(calls.length, 2);
+  await app.run("action('generate-lesson', {dataset:{id:'custom-1'}})");
+  assert.equal(calls.length, 3);
+  assert.deepEqual(calls[2], calls[1]);
+  assert.deepEqual(calls[2].repairDraft, draft);
+  assert.equal(app.run('state.blockCourses["custom-1"].blocks.length'), 3);
+  assert.equal(app.run('outlineDrafts.has("custom-1")'), false);
+});
+
+test('desktop outline repair uses actual buttons and save failures retry storage without paying again', async t => {
+  const draft = { intro: '课程目标', blocks: [{ type: 'reading', title: '讲解', objective: '理解' }, { type: 'quiz', title: '练习', objective: '检验' }] };
+  const fixed = { ...draft, blocks: [draft.blocks[0], { type: 'example', title: '案例', objective: '应用' }, draft.blocks[1]] };
+  let calls = 0, saves = 0;
+  const app = realSettingsHarness({ load: async () => ({ status: { mode: 'ai' } }),
+    request: async (path, data) => {
+      assert.equal(path, 'lesson-outline'); calls++;
+      if (calls === 1) return { status: 'needs_examples', draft };
+      assert.deepEqual(JSON.parse(JSON.stringify(data.repairDraft)), draft); return fixed;
+    },
+    saveOutline: async (_id, outline) => {
+      saves++; if (saves === 1) throw new Error('模拟磁盘写入失败');
+      return { intro: outline.intro, blocks: outline.blocks.map((b, i) => ({ ...b, id: `block-${i}`, content: null })) };
+    }
+  });
+  t.after(() => app.close()); await app.ready();
+  app.run("state.plans[0].source='ai'; state.plans[0].lessons[0].id='custom-1'; state.lessons={}; activeLesson='custom-1'; page='study'; render()");
+  await app.fire('click', app.document.querySelector('[data-action="generate-lesson"]'));
+  assert.equal(calls, 2); assert.equal(saves, 1);
+  assert.equal(app.run('state.blockCourses?.["custom-1"]'), undefined);
+  assert.match(app.document.querySelector('.empty-state [role="status"]').textContent, /保存失败/);
+  assert.equal(app.document.querySelector('.empty-state details').open, false);
+  const retry = app.document.querySelector('[data-action="generate-lesson"]');
+  assert.match(retry.textContent, /重新保存/); assert.equal(retry.disabled, false);
+  await app.fire('click', retry);
+  assert.equal(calls, 2); assert.equal(saves, 2);
+  assert.equal(app.run('state.blockCourses["custom-1"].blocks.length'), 3);
+});
+
+test('automatic outline repair succeeds once and does not generate block content', async () => {
+  const draft = { intro: '课程目标', blocks: [{ type: 'reading', title: '讲解', objective: '理解' }, { type: 'quiz', title: '练习', objective: '检验' }] };
+  const fixed = { ...draft, blocks: [draft.blocks[0], { type: 'example', title: '案例', objective: '应用' }, draft.blocks[1]] };
+  const calls = [];
+  const app = harness(null, async (url, options) => {
+    if (url === '/api/status') return { ok: true, json: async () => ({ mode: 'ai' }) };
+    calls.push(JSON.parse(options.body));
+    return { ok: true, json: async () => calls.length === 1 ? { status: 'needs_examples', draft } : fixed };
+  });
+  app.run("state.plans[0].source='ai'; state.plans[0].lessons[0].id='custom-1'; state.lessons={}; activeLesson='custom-1'; page='study'");
+  await app.run("action('generate-lesson', {dataset:{id:'custom-1'}})");
+  assert.equal(calls.length, 2); assert.deepEqual(calls[1].repairDraft, draft);
+  assert.equal(app.run('state.blockCourses["custom-1"].blocks.every(b => b.content === null)'), true);
+});
+
 test('the persistent lesson Q&A shortcut opens the current course in both lesson formats', () => {
   const app = harness();
   app.run("openLesson('p1')");

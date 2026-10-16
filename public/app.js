@@ -68,6 +68,8 @@ let readingReturn = null;
 let syllabusCollapsed = false, annotationDraft = null, pendingAnnotationAnchor = null;
 const collapsedBlocks = new Set();
 const courseGenerationBusy = new Set(), courseSearchMessages = new Map();
+// Session-only drafts are deliberately separate from saved, validated courses.
+const outlineDrafts = new Map();
 let status = { mode: 'loading' };
 let connectionResult = '';
 let qualitySettings = null, qualityStatus = { mode: 'demo' }, qualityConnectionResult = '', qualityView = null, qualityBusy = false;
@@ -582,7 +584,51 @@ function study() {
   <div class="study-layout${syllabusCollapsed ? ' syllabus-collapsed' : ''}"><aside id="course-syllabus" class="syllabus" ${syllabusCollapsed ? 'hidden' : ''}><div class="syllabus-heading">课程目录 <span>${completed()}/${p.lessons.length}</span></div>${p.lessons.map((l, i) => `<button class="syllabus-item ${l.id === meta.id ? 'selected' : ''}" data-action="open-lesson" data-id="${l.id}"><span>${progress(l.id).completed ? icon('check') : String(i + 1).padStart(2, '0')}</span><strong>${escape(l.title)}</strong></button>`).join('')}<div class="syllabus-bottom">${icon('leaf')} 慢慢来，也是在前进。</div></aside>${quickAskButton(!!lesson)}
   <section class="lesson-content"><div class="eyebrow">LESSON ${String(p.lessons.indexOf(meta) + 1).padStart(2, '0')}</div><h1>${escape(meta.title)}</h1><p class="lesson-objective">${escape(meta.objective)}</p><div class="metadata">${icon('clock')}${meta.minutes} 分钟 <span>·</span>${escape(meta.tags.join(' / '))}</div>
   <div class="tabs" role="tablist" aria-label="课程内容">${[['read', 'book', '学习内容'], ['quiz', 'bolt', `随堂练习${record.completed ? ' ✓' : ''}`], ['chat', 'spark', 'AI 答疑']].map(([tab, symbol, label]) => `<button role="tab" aria-selected="${lessonTab === tab}" class="${lessonTab === tab ? 'active' : ''}" data-action="lesson-tab" data-tab="${tab}">${icon(symbol)}${label}</button>`).join('')}</div>
-  ${!lesson ? `<div class="empty-state">${icon('spark')}<h3>为你展开这一课</h3><p>根据你的目标与基础，生成讲解、示例和随堂练习。</p>${button('生成课程内容', 'generate-lesson', 'primary', `data-id="${meta.id}"`, 'spark')}</div>` : lessonTab === 'read' ? `<div class="lesson-intro annotatable" data-annotation-source="intro">${escape(lesson.intro)}</div>${lesson.sections.map((s, index) => `<section class="reading-section"><h2>${escape(s.heading)}</h2><p class="annotatable" data-annotation-source="section:${index}">${escape(s.body)}</p></section>`).join('')}<div class="code-block"><div>具体示例 <span>阅读与推演</span></div><pre><code class="annotatable" data-annotation-source="example">${escape(lesson.example)}</code></pre></div><div class="challenge"><h3>${icon('bolt')}动手试一试</h3><p class="annotatable" data-annotation-source="challenge">${escape(lesson.challenge)}</p><small>请在你自己的工具或编程环境中完成。这里不执行代码。</small></div><div class="lesson-actions"><span>理解之后，用练习检验一下。</span>${button('开始随堂练习', 'quiz', 'primary')}</div>` : lessonTab === 'quiz' ? quiz(meta, lesson) : studyChat(meta)}</section></div>`;
+  ${!lesson ? outlineGenerationPanel(meta) : lessonTab === 'read' ? `<div class="lesson-intro annotatable" data-annotation-source="intro">${escape(lesson.intro)}</div>${lesson.sections.map((s, index) => `<section class="reading-section"><h2>${escape(s.heading)}</h2><p class="annotatable" data-annotation-source="section:${index}">${escape(s.body)}</p></section>`).join('')}<div class="code-block"><div>具体示例 <span>阅读与推演</span></div><pre><code class="annotatable" data-annotation-source="example">${escape(lesson.example)}</code></pre></div><div class="challenge"><h3>${icon('bolt')}动手试一试</h3><p class="annotatable" data-annotation-source="challenge">${escape(lesson.challenge)}</p><small>请在你自己的工具或编程环境中完成。这里不执行代码。</small></div><div class="lesson-actions"><span>理解之后，用练习检验一下。</span>${button('开始随堂练习', 'quiz', 'primary')}</div>` : lessonTab === 'quiz' ? quiz(meta, lesson) : studyChat(meta)}</section></div>`;
+}
+function outlineGenerationPanel(meta) {
+  const draft = outlineDrafts.get(meta.id);
+  const text = draft?.busy ? (draft.draft ? '正在补充配套案例…' : '正在生成课程大纲…')
+    : draft?.error || '根据你的目标与基础，生成讲解、示例和随堂练习。';
+  return `<div class="empty-state">${icon('spark')}<h3>${draft?.draft ? '课程大纲已保留' : '为你展开这一课'}</h3><p role="status" aria-live="polite" class="${draft?.error ? 'error-text' : ''}">${escape(text)}</p>
+    ${draft?.draft ? `<p>已保留 ${draft.draft.blocks.length} 个模块。临时大纲保留在当前窗口中；关闭或刷新窗口会丢失。</p><details><summary>查看临时大纲</summary><ol>${draft.draft.blocks.map(b => `<li>${escape(b.title)}</li>`).join('')}</ol></details>` : ''}
+    ${button(draft?.busy ? '请稍候…' : draft?.outline ? '重新保存' : draft?.draft ? '重新补充' : '生成课程内容', 'generate-lesson', 'primary', `data-id="${escape(meta.id)}" ${draft?.busy ? 'disabled' : ''}`, 'spark')}
+    <p class="field-hint">若大纲缺少配套案例，将自动补充一次，可能增加模型调用费用。补充失败后仅由你手动重试。</p></div>`;
+}
+async function generateLessonOutline(id) {
+  if (outlineDrafts.get(id)?.busy || state.blockCourses?.[id]) return;
+  const meta = lessonById(id), p = state.plans.find(plan => plan.lessons.some(l => l.id === id));
+  if (!meta || !p) throw new Error('课程不存在。');
+  let pending = outlineDrafts.get(id);
+  if (!pending?.draft && !pending?.outline) {
+    pending = { request: { goal: p.goal, level: p.level, ...(p.learningBrief ? { learningBrief: p.learningBrief } : {}), title: meta.title, objective: meta.objective, minutes: meta.minutes, route: p.lessons.map(({ title, objective }) => ({ title, objective })), lessonPosition: p.lessons.findIndex(lesson => lesson.id === id) + 1 } };
+    outlineDrafts.set(id, pending);
+  }
+  pending.busy = true; pending.error = '';
+  const refresh = () => { if (page === 'study' && activeLesson === id) render(); };
+  refresh();
+  try {
+    let outline = pending.outline;
+    if (!outline && !pending.draft) {
+      const response = await api('lesson-outline', pending.request);
+      if (response?.status === 'needs_examples') {
+        if (!validOutline(response.draft)) throw new Error('模型返回的临时大纲格式不正确，请重试。');
+        pending.draft = response.draft;
+        refresh();
+      } else outline = response;
+    }
+    // At most one repair per click. Manual retries reuse the same original draft.
+    if (!outline && pending.draft) outline = await api('lesson-outline', { ...pending.request, repairDraft: pending.draft });
+    if (!validOutline(outline)) throw new Error('模型返回的大纲格式不正确，请重试。');
+    pending.outline = outline;
+    if (!state.plans.includes(p) || !lessonById(id)) throw new Error('课程已移除，未保存生成结果。');
+    const course = desktop ? await desktop.saveOutline(id, outline) : { intro: outline.intro, blocks: outline.blocks.map(block => ({ id: crypto.randomUUID(), ...block, content: null })) };
+    state.blockCourses ||= {}; state.blockCourses[id] = course; if (!desktop) save();
+    outlineDrafts.delete(id);
+  } catch (error) {
+    pending.error = `${pending.outline ? '大纲保存失败' : pending.draft ? '配套案例补充失败，原大纲已保留' : '大纲生成失败'}：${error.message}`;
+    throw error;
+  } finally { pending.busy = false; refresh(); }
 }
 function blockPart(block, index, lessonId, teaching = false) {
   const labels = { reading: '知识讲解', example: '配套案例', practice: '动手实践', quiz: '随堂练习', summary: '知识总结' };
@@ -1518,11 +1564,7 @@ async function action(name, element) {
   if (name === 'lesson-tab') return switchLessonTab(element.dataset.tab);
   if (name === 'quiz' || name === 'read-tab') return switchLessonTab(name === 'quiz' ? 'quiz' : 'read');
   if (name === 'generate-lesson') {
-    const meta = lessonById(id), p = state.plans.find(p => p.lessons.some(l => l.id === id));
-    const outline = await api('lesson-outline', { goal: p.goal, level: p.level, ...(p.learningBrief ? { learningBrief: p.learningBrief } : {}), title: meta.title, objective: meta.objective, minutes: meta.minutes, route: p.lessons.map(({ title, objective }) => ({ title, objective })), lessonPosition: p.lessons.findIndex(lesson => lesson.id === id) + 1 });
-    if (!validOutline(outline)) throw new Error('模型返回的大纲格式不正确，请重试。');
-    const course = desktop ? await desktop.saveOutline(id, outline) : { intro: outline.intro, blocks: outline.blocks.map(block => ({ id: crypto.randomUUID(), ...block, content: null })) };
-    state.blockCourses ||= {}; state.blockCourses[id] = course; if (!desktop) save(); render(); return;
+    await generateLessonOutline(id); return;
   }
   if (name === 'generate-block') {
     const block = state.blockCourses?.[id]?.blocks.find(item => item.id === element.dataset.block);

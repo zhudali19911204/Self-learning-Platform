@@ -1,5 +1,5 @@
 // Versioned generation prompts. Old course/import contracts remain in public/blocks.js.
-import { validOutline, validBlockContent } from './public/blocks.js';
+import { validOutline, validBlockContent, blockTypes } from './public/blocks.js';
 export const coursePromptVersion = 'course-generation-v2';
 export const blockCommonGuidance = `你是一位中文自学教师，只生成当前 block 指定的内容，不重写整节课。
 目标与难度：本课 objective 决定整体方向，block.objective 决定当前块需要实现的成果。只展开支撑当前成果的必要知识、理由和步骤。根据 level 与用户确认的 learningBrief 调整解释起点。必要的新术语首次出现时，用易懂的话定义并说明用途；不能用一串未解释的新术语定义另一个术语。优先讲清关键概念为什么成立、方法什么时候适用、结果如何判断。避免只有结论没有理由、只有步骤没有关键条件。
@@ -34,6 +34,70 @@ export function validGeneratedOutline(v) {
   if(!validOutline(v))return false;
   if(new Set(v.blocks.map(b=>b.title.trim().toLowerCase())).size!==v.blocks.length || new Set(v.blocks.map(b=>b.objective.trim())).size!==v.blocks.length)return false;
   return v.blocks.every((b,i)=> b.type==='reading' ? v.blocks[i+1]?.type==='example' : b.type==='quiz' ? v.blocks.slice(0,i).some(b=>b.type==='reading') : true);
+}
+// Only normalize presentation, never infer missing teaching content.
+export function normalizeOutline(v) {
+  const trim = value => typeof value === 'string' ? value.trim() : value;
+  return { intro: trim(v?.intro), blocks: Array.isArray(v?.blocks) ? v.blocks.map(b => ({
+    type: typeof b?.type === 'string' ? b.type.trim().toLowerCase() : b?.type,
+    title: trim(b?.title), objective: trim(b?.objective)
+  })) : v?.blocks };
+}
+export function inspectOutline(v) {
+  const issues = [], missingExamples = [];
+  const text = (value, max) => typeof value === 'string' && value.trim().length > 0 && value.length <= max;
+  if (!text(v?.intro, 20000)) issues.push('导语 intro 缺失、为空或超过 20000 字符');
+  if (!Array.isArray(v?.blocks) || v.blocks.length < 2 || v.blocks.length > 20) {
+    issues.push('模块 blocks 必须为 2–20 项的数组');
+    return { issues, missingExamples };
+  }
+  const titles = new Set(), objectives = new Set();
+  v.blocks.forEach((b, i) => {
+    const label = `第 ${i + 1} 个模块`;
+    if (!blockTypes.includes(b?.type)) issues.push(`${label}的 type 无效`);
+    if (!text(b?.title, 160)) issues.push(`${label}的 title 缺失、为空或超过 160 字符`);
+    else {
+      const key = b.title.trim().toLowerCase();
+      if (titles.has(key)) issues.push(`${label}的标题重复：${b.title}`);
+      titles.add(key);
+    }
+    if (!text(b?.objective, 1000)) issues.push(`${label}的 objective 缺失、为空或超过 1000 字符`);
+    else {
+      const key = b.objective.trim();
+      if (objectives.has(key)) issues.push(`${label}的学习目标重复`);
+      objectives.add(key);
+    }
+    if (b?.type === 'reading' && v.blocks[i + 1]?.type !== 'example') missingExamples.push({ afterPosition: i + 1, title: b.title });
+    if (b?.type === 'quiz' && !v.blocks.slice(0, i).some(item => item?.type === 'reading')) issues.push(`${label}的测验必须安排在知识讲解之后`);
+  });
+  if (!v.blocks.some(b => b?.type === 'reading')) issues.push('缺少知识讲解 reading 模块');
+  if (!v.blocks.some(b => b?.type === 'quiz')) issues.push('缺少随堂练习 quiz 模块');
+  if (v.blocks.length + missingExamples.length > 20) issues.push('补齐配套案例后将超过 20 个模块，请精简大纲后重新生成');
+  return { issues, missingExamples };
+}
+export const outlineRepairGuidance = `你是课程设计师，只补充 draft 中缺失的配套案例大纲，不生成正文，不重写现有模块。
+missingExamples 的 afterPosition 是原始 draft.blocks 中从 1 开始的位置，必须为每个指定位置恰好返回一个 example，禁止多加、遗漏或改成 practice。
+案例必须直接服务该位置 reading 的 objective，与课程目标、基础及路线范围一致。minutes 是整课总学习时间预算，不是新增案例的时长；用简短、聚焦的案例配合已有讲解，不扩展新知识范围。
+标题与学习目标不得与已有模块或其他新增案例重复。type 固定为 example，title 非空最多 160 字符，objective 非空最多 1000 字符。
+只输出 JSON：{"additions":[{"afterPosition":1,"block":{"type":"example","title":"配套案例标题","objective":"可观察的案例学习目标"}}]}。不要返回 intro 或完整 blocks。`;
+export function mergeOutlineExamples(draft, response) {
+  const check = inspectOutline(draft);
+  const fail = message => { const error = new Error(message); error.status = 502; throw error; };
+  if (check.issues.length || !check.missingExamples.length) fail('待补充大纲无效。');
+  const additions = response?.additions;
+  if (!Array.isArray(additions) || additions.length !== check.missingExamples.length) fail(`案例补充数量不正确：需要 ${check.missingExamples.length} 个配套案例。`);
+  const expected = new Set(check.missingExamples.map(item => item.afterPosition)), added = new Map();
+  for (const item of additions) {
+    if (!Number.isInteger(item?.afterPosition) || !expected.has(item.afterPosition) || added.has(item.afterPosition)) fail('案例补充位置重复或与缺失讲解不对应。');
+    const block = normalizeOutline({ blocks: [item.block] }).blocks[0];
+    if (block.type !== 'example') fail(`第 ${item.afterPosition} 个讲解需要配套案例 example，不能用其他类型替代。`);
+    added.set(item.afterPosition, block);
+  }
+  const merged = { intro: draft.intro, blocks: draft.blocks.flatMap((block, i) => added.has(i + 1) ? [block, added.get(i + 1)] : [block]) };
+  const verified = inspectOutline(merged);
+  if (verified.issues.length) fail(`案例补充未通过校验：${verified.issues.join('；')}。`);
+  if (!validGeneratedOutline(merged)) fail('案例补充后仍不符合课程大纲要求。');
+  return merged;
 }
 export function validGeneratedBlock(type,v) {
   if(!validBlockContent(type,type==='quiz'?v:{text:v?.text}))return false;
