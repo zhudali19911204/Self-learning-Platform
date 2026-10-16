@@ -1016,6 +1016,40 @@ test('in-flight clarification prevents duplicate requests and closing; model que
   assert.doesNotMatch(app.node('#planner').innerHTML,/<button data-action="delete-plan">/);
   assert.match(app.node('#planner').innerHTML,/&lt;button/);
 });
+test('desktop course sharing offers export/import without replacing cached learning data and cancellation is inert', async t => {
+  let exportCalls = 0, importCalls = 0;
+  const app = realSettingsHarness({ load: async () => ({ status: { mode: 'demo' } }),
+    exportCourse: async id => { assert.equal(id, demoPlan.id); exportCalls++; return exportCalls > 1; },
+    importCourse: async () => {
+      importCalls++;
+      if (importCalls === 1) return null;
+      if (importCalls === 2) throw new Error('课程包损坏');
+      const plan = { ...structuredClone(demoPlan), id: 'shared-import', title: '收到的课程', source: 'ai', lessons: demoPlan.lessons.map((l, i) => ({ ...l, id: `import-${i}` })) };
+      return { planId: plan.id, state: { plans: [demoPlan, plan] } };
+    }
+  });
+  t.after(() => app.close()); await app.ready();
+  app.run("state.reflections.p1='保留心得'; state.chats.p1=[{role:'user',content:'保留问题'}]; navigate('routes')");
+  assert.ok(app.document.querySelector('[data-action="export-course"]'));
+  assert.ok(app.document.querySelector('[data-action="import-course"]'));
+  const before = app.run('JSON.stringify(state)');
+  await app.fire('click', app.document.querySelector('[data-action="export-course"]'));
+  assert.equal(app.run('JSON.stringify(state)'), before);
+  await app.fire('click', app.document.querySelector('[data-action="export-course"]'));
+  assert.match(app.document.querySelector('#toast').textContent, /课程包已导出/);
+  await app.fire('click', app.document.querySelector('[data-action="import-course"]'));
+  assert.equal(app.run('JSON.stringify(state)'), before);
+  await app.fire('click', app.document.querySelector('[data-action="import-course"]'));
+  assert.match(app.document.querySelector('#toast').textContent, /课程包损坏/);
+  assert.equal(app.run('JSON.stringify(state)'), before);
+  await app.fire('click', app.document.querySelector('[data-action="import-course"]'));
+  assert.equal(app.run('state.plans.length'), 2);
+  assert.equal(app.run('state.active'), 'shared-import');
+  assert.equal(app.run('state.reflections.p1'), '保留心得');
+  assert.equal(app.run('state.chats.p1[0].content'), '保留问题');
+  assert.match(app.document.querySelector('#app').textContent, /收到的课程/);
+});
+
 test('AI course expands from outline to independently generated blocks', async () => {
   const outline = { intro: '循序学习', blocks: [{ type: 'reading', title: '概念', objective: '理解' }, { type: 'quiz', title: '练习', objective: '检验' }] };
   const calls = [], payloads = [];

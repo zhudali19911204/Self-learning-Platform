@@ -63,6 +63,8 @@ contextBridge.exposeInMainWorld('learnflowDesktop', Object.freeze({
   request: (endpoint, data) => invoke('learnflow:request', endpoint, data),
   exportFile: (name, content) => invoke('learnflow:export', name, content),
   exportBackup: () => invoke('learnflow:export-backup'),
+  exportCourse: id => invoke('learnflow:export-course', id),
+  importCourse: () => invoke('learnflow:import-course'),
   openDataFolder: () => invoke('learnflow:open-data'),
   importBackup: () => invoke('learnflow:import')
 }));

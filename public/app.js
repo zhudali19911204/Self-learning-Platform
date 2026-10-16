@@ -570,9 +570,9 @@ function routes() {
   const p = plan();
   const grouped = new Map();
   for (const route of state.plans) { const category = categoryFor(route); if (!grouped.has(category)) grouped.set(category, []); grouped.get(category).push(route); }
-  return `<section class="page-intro"><div><div class="eyebrow">YOUR LEARNING JOURNEY</div><h1>每个目标，都有一条路。</h1><p>把远处的目标，拆解为今天可以迈出的一步。</p></div><div class="route-page-actions">${recentDeleteBackup() ? button('恢复最近删除', 'restore-deleted-plan', 'secondary', '', 'back') : ''}${button('新建学习路线', 'planner', 'primary', '', 'plus')}</div></section>
+  return `<section class="page-intro"><div><div class="eyebrow">YOUR LEARNING JOURNEY</div><h1>每个目标，都有一条路。</h1><p>把远处的目标，拆解为今天可以迈出的一步。</p></div><div class="route-page-actions">${desktop ? button('导入课程包', 'import-course', 'secondary', '', 'plus') : ''}${recentDeleteBackup() ? button('恢复最近删除', 'restore-deleted-plan', 'secondary', '', 'back') : ''}${button('新建学习路线', 'planner', 'primary', '', 'plus')}</div></section>
   <div class="route-library"><div class="route-library-heading"><h2>我的课程分类</h2><span>根据标题、目标和课程标签自动整理</span></div>${[...grouped].map(([category, routes]) => `<section class="route-group"><h3>${escape(category)} <span>${routes.length}</span></h3><div class="route-group-items">${routes.map(route => `<button class="route-chip ${route.id === state.active ? 'selected' : ''}" data-action="switch-plan" data-id="${route.id}" aria-pressed="${route.id === state.active}">${icon('route')}<span>${escape(route.title)}</span></button>`).join('')}</div></section>`).join('')}</div>
-  <section class="route-overview"><div>${pill(p.source === 'demo' ? '精选示例 · 非 AI 生成' : 'AI 定制路线', 'purple')}<h2>${escape(p.title)}</h2><p>${escape(p.goal)}</p><div class="metadata">${icon('clock')}每天 ${p.daily} 分钟 <span>·</span>计划 ${p.days} 天 <span>·</span>${escape(p.level)}</div><div class="route-overview-actions">${pill(categoryFor(p))}${button('删除这条路线', 'delete-plan', 'danger', `data-id="${p.id}" ${state.plans.length <= 1 ? 'disabled title="至少保留一条路线"' : ''}`, 'close')}</div></div><div class="progress-ring" style="--progress:${percent()}%"><div><strong>${percent()}<small>%</small></strong><span>已完成</span></div></div></section>
+  <section class="route-overview"><div>${pill(p.source === 'demo' ? '精选示例 · 非 AI 生成' : 'AI 定制路线', 'purple')}<h2>${escape(p.title)}</h2><p>${escape(p.goal)}</p><div class="metadata">${icon('clock')}每天 ${p.daily} 分钟 <span>·</span>计划 ${p.days} 天 <span>·</span>${escape(p.level)}</div><div class="route-overview-actions">${pill(categoryFor(p))}${desktop ? button('导出课程包', 'export-course', 'secondary', `data-id="${p.id}"`, 'export') : ''}${button('删除这条路线', 'delete-plan', 'danger', `data-id="${p.id}" ${state.plans.length <= 1 ? 'disabled title="至少保留一条路线"' : ''}`, 'close')}</div></div><div class="progress-ring" style="--progress:${percent()}%"><div><strong>${percent()}<small>%</small></strong><span>已完成</span></div></div></section>
   ${p.source === 'ai' ? `<section class="route-design"><h3>学习成果与规划说明</h3><p>${escape(p.description)}</p>${p.learningBrief ? `<details><summary>查看定制需求与回答</summary>${briefHTML(p.learningBrief)}${p.learningBrief.notes ? `<h4>最后补充</h4><p>${escape(p.learningBrief.notes)}</p>` : ''}</details>` : ''}</section>` : ''}
   <div class="route-layout"><section class="timeline">${p.lessons.map((l, i) => `${i === 0 || l.phase !== p.lessons[i - 1].phase ? `<h3 class="phase">${escape(l.phase)}</h3>` : ''}<article class="lesson-row ${progress(l.id).completed ? 'complete' : ''}"><div class="step-number">${progress(l.id).completed ? icon('check') : String(i + 1).padStart(2, '0')}</div><div class="lesson-row-main"><div class="lesson-title"><h3>${escape(l.title)}</h3>${progress(l.id).completed ? pill('已掌握', 'success') : l.id === nextLesson().id ? pill('推荐下一步', 'purple') : ''}</div><p>${escape(l.objective)}</p><div class="lesson-meta">${icon('clock')}${l.minutes} 分钟<span>·</span>${escape(l.tags.join(' / '))}</div></div>${button(progress(l.id).completed ? '复习' : '进入课程', 'open-lesson', 'secondary', `data-id="${l.id}"`)}</article>`).join('')}</section><aside class="tip-card"><span class="float-icon lavender">${icon('target')}</span><h3>按自己的节奏前进</h3><p>路线是一张地图。你可以先预览任意课程，再根据自己的基础选择起点。</p><hr><strong>掌握比完成更重要</strong><p>每节课通过全部测验后会记录为已掌握。答错时，读一读解析，再试一次。</p>${button('去练习与巩固', 'practice', 'secondary full', '', 'bolt')}</aside></div>`;
 }
@@ -1481,6 +1481,20 @@ async function action(name, element) {
     return;
   }
   if (name === 'open-data' && desktop) return desktop.openDataFolder();
+  if (name === 'export-course' && desktop) {
+    await pendingSave;
+    if (await desktop.exportCourse(id)) toast('课程包已导出，可以发送给其他 Learnflow 用户。');
+    return;
+  }
+  if (name === 'import-course' && desktop) {
+    await pendingSave;
+    const result = await desktop.importCourse();
+    if (result) {
+      state.plans = result.state.plans; state.active = result.planId;
+      activeLesson = null; navigate('routes'); toast('课程已新增，原有课程与学习记录保持不变。');
+    }
+    return;
+  }
   if (name === 'import-data' && desktop) {
     await pendingSave;
     const imported = await desktop.importBackup();
@@ -1809,7 +1823,7 @@ document.addEventListener('click', async event => {
   const element = event.target.closest('[data-page], [data-action]'); if (!element || element.disabled) return;
   event.preventDefault();
   if (element.dataset.page) { activeNote = null; return element.dataset.page === 'study' ? openLesson(activeLesson || nextLesson().id, lessonTab) : navigate(element.dataset.page); }
-  const loading = ['generate-lesson', 'generate-block', 'restore-block', 'create-note', 'test-connection', 'check-image-connection', 'delete-note'].includes(element.dataset.action);
+  const loading = ['export-course', 'import-course', 'generate-lesson', 'generate-block', 'restore-block', 'create-note', 'test-connection', 'check-image-connection', 'delete-note'].includes(element.dataset.action);
   const html = element.innerHTML;
   try { if (loading) { element.disabled = true; element.innerHTML = '<span class="spinner"></span>正在整理，请稍候…'; } await action(element.dataset.action, element); }
   catch (e) { toast(e.message); }

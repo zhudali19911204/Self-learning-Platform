@@ -80,8 +80,11 @@
 .teaching-part .block-title { margin: 0 0 10px; font-size: 21px; font-weight: 700; color: #242a3d; line-height: 1.5; }
 .block-title-row { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
 .block-title-row .block-title { flex: 1; min-width: 0; }
-.block-collapse-toggle { flex: none; border: 1px solid #e4ddef; border-radius: 20px; background: #fff; color: #695787; padding: 6px 12px; font-size: 11px; line-height: 1.5; }
-.block-collapse-toggle::before { content: '▾'; margin-right: 6px; }
+.block-collapse-toggle { flex: none; display: inline-flex; align-items: center; justify-content: center; gap: 5px; min-width: 64px; min-height: 30px; border: 1px solid var(--purple); border-radius: 16px; background: var(--purple); color: #fff; padding: 5px 10px; font-size: 11px; font-weight: 600; line-height: 1.5; white-space: nowrap; box-shadow: none; }
+.block-collapse-toggle:hover:not(:disabled) { background: var(--purple-dark); border-color: var(--purple-dark); }
+.block-collapse-toggle:focus-visible { outline: 3px solid #ab97ef; outline-offset: 3px; }
+.block-collapse-toggle:active:not(:disabled) { box-shadow: none; }
+.block-collapse-toggle::before { content: '▾'; font-size: 12px; line-height: 1; }
 .block-collapse-toggle[aria-expanded="false"]::before { content: '▸'; }
 .block-collapsible-body[hidden] { display: none; }
 .markdown-content, .teaching-part .markdown-content { white-space: normal; font-size: 14px; line-height: 1.9; color: #42495e; overflow-wrap: anywhere; }
@@ -287,15 +290,15 @@
 
 @keyframes hero-float-top {
   0%, 100% { transform: translate3d(0, 0, 0) rotate(-5deg); }
-  50% { transform: translate3d(3px, -8px, 0) rotate(-3deg); }
+  50% { transform: translate3d(5px, -12px, 0) rotate(-3deg); }
 }
 @keyframes hero-float-left {
   0%, 100% { transform: translate3d(0, 0, 0) rotate(4deg); }
-  50% { transform: translate3d(-3px, -7px, 0) rotate(2deg); }
+  50% { transform: translate3d(-5px, -11px, 0) rotate(2deg); }
 }
 @keyframes hero-float-bottom {
   0%, 100% { transform: translate3d(0, 0, 0) rotate(-3deg); }
-  50% { transform: translate3d(4px, -9px, 0) rotate(-1deg); }
+  50% { transform: translate3d(6px, -14px, 0) rotate(-1deg); }
 }
 @keyframes hero-orb-breathe {
   0%, 100% { transform: translate(-50%, -50%) rotate(-9deg) scale(1); }

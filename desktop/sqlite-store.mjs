@@ -6,6 +6,7 @@ import path from 'node:path';
 import { demoPlan, demoLessons } from '../public/demo.js';
 import { validLesson } from '../server.mjs';
 import { validState } from './local-store.mjs';
+import { instantiateCoursePackage } from './course-sharing.mjs';
 import { validOutline, validBlockSpec, validBlockContent, revisedContent, restoredContent, assistedBlockTypes } from '../public/blocks.js';
 import { referencedImages } from '../public/illustrations.js';
 import { removePlanFromBackups } from './course-backups.mjs';
@@ -369,6 +370,26 @@ export async function createSqliteStore(directory) {
         for (const [position, lesson] of plan.lessons.entries()) statement.run(lesson.id, plan.id, position, lesson.title, lesson.objective, lesson.phase, lesson.minutes, JSON.stringify(lesson.tags));
         db.prepare("UPDATE meta SET value = ? WHERE key = 'active_plan'").run(plan.id);
       });
+    },
+    importCoursePackage(value) {
+      const imported = instantiateCoursePackage(value), plan = imported.plans[0];
+      if (db.prepare('SELECT COUNT(*) AS count FROM plans').get().count >= 1000) throw new Error('课程数量已达上限。');
+      // Append in one transaction; never replace existing lessons, notes or progress.
+      transaction(db, () => {
+        db.prepare('INSERT INTO plans VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)').run(plan.id, db.prepare('SELECT COUNT(*) AS count FROM plans').get().count, plan.title, plan.description, plan.goal, plan.level, plan.daily, plan.days, plan.source);
+        const lessonStatement = db.prepare('INSERT INTO lessons VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)');
+        const blockStatement = db.prepare('INSERT INTO lesson_blocks VALUES (?, ?, ?, ?, ?, ?, ?)');
+        for (const [position, lesson] of plan.lessons.entries()) {
+          lessonStatement.run(lesson.id, plan.id, position, lesson.title, lesson.objective, lesson.phase, lesson.minutes, JSON.stringify(lesson.tags), imported.lessons[lesson.id] ? JSON.stringify(imported.lessons[lesson.id]) : null);
+          const course = imported.blockCourses[lesson.id];
+          if (course) {
+            db.prepare('INSERT INTO lesson_outlines VALUES (?, ?)').run(lesson.id, course.intro);
+            for (const [index, block] of course.blocks.entries()) blockStatement.run(block.id, lesson.id, index, block.type, block.title, block.objective, block.content ? JSON.stringify(block.content) : null);
+          }
+        }
+        db.prepare("UPDATE meta SET value = ? WHERE key = 'active_plan'").run(plan.id);
+      });
+      return { planId: plan.id, state: overview() };
     },
     setActivePlan(planId) {
       if (!id(planId) || !db.prepare('SELECT 1 FROM plans WHERE id = ?').get(planId)) throw new Error('学习路线不存在。');

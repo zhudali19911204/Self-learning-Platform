@@ -36,6 +36,7 @@ async function start() {
   const { createLocalStore, validState } = await import(pathToFileURL(path.join(__dirname, 'local-store.mjs')));
   const { createSettingsLayoutStore } = await import(pathToFileURL(path.join(__dirname, 'settings-layout.mjs')));
   const { createSqliteStore } = await import(pathToFileURL(path.join(__dirname, 'sqlite-store.mjs')));
+  const { createCoursePackage, readCoursePackage, coursePackageSummary, COURSE_PACKAGE_MAX_BYTES } = await import(pathToFileURL(path.join(__dirname, 'course-sharing.mjs')));
   const { createImageStore } = await import(pathToFileURL(path.join(__dirname, 'image-store.mjs')));
   const { createImageModel } = await import(pathToFileURL(path.join(__dirname, '..', 'image-model.mjs')));
   const { createCommonsImages } = await import(pathToFileURL(path.join(__dirname, '..', 'commons-images.mjs')));
@@ -48,7 +49,7 @@ async function start() {
   const { createSpeechModel } = await import(pathToFileURL(path.join(__dirname, '..', 'speech-model.mjs')));
   const { assistedBlockTypes } = await import(pathToFileURL(path.join(__dirname, '..', 'public', 'blocks.js')));
   const { validImageSuggestion, validImageProposal } = await import(pathToFileURL(path.join(__dirname, '..', 'public', 'illustrations.js')));
-  const dataDirectory = liveRevision ? path.resolve('.desktop-test','revision-live','data') : path.join(app.getPath('userData'), 'data');
+  const dataDirectory = smoke && process.argv.includes('--sharing-only') ? path.join(app.getPath('userData'), 'sharing-tests', randomBytes(8).toString('hex')) : liveRevision ? path.resolve('.desktop-test','revision-live','data') : path.join(app.getPath('userData'), 'data');
   await mkdir(dataDirectory, { recursive: true });
   settingsLayoutStore = createSettingsLayoutStore(dataDirectory);
   await settingsLayoutStore.initialize();
@@ -383,6 +384,42 @@ async function start() {
     await writeFile(selected.filePath, content, 'utf8'); return true;
   });
   handle('learnflow:open-data', async () => { const error = await shell.openPath(dataDirectory); if (error) throw new Error('无法打开数据目录。'); });
+  let courseSharingBusy = false;
+  const shareCourse = async work => {
+    if (courseSharingBusy) throw new Error('课程包操作进行中，请稍候。');
+    courseSharingBusy = true;
+    try { return await work(); } finally { courseSharingBusy = false; }
+  };
+  handle('learnflow:export-course', planId => shareCourse(async () => {
+    const plan = learning.overview().plans.find(p => p.id === planId);
+    const course = createCoursePackage(plan, id => learning.getLesson(id));
+    const confirm = await dialog.showMessageBox(window, { type: 'question', buttons: ['取消', '选择保存位置'], defaultId: 0, cancelId: 0,
+      message: `导出课程：${course.plan.title}`, detail: `${coursePackageSummary(course)}\n\n包含目录、已生成正文、练习答案、当前配图和参考文档；不包含笔记、成绩、聊天、定制问答、历史版本或模型配置。不会自动生成缺失内容，也不调用付费模型。\n\n请检查正文与标题中是否含个人信息，并确认有权分享配图和资料。` });
+    if (confirm.response !== 1) return false;
+    const filename = course.plan.title.replace(/[<>:"/\\|?*\x00-\x1f]/g, '-').slice(0, 80) + '.learnflow-course.json';
+    const selected = await dialog.showSaveDialog(window, { title: '导出课程包', defaultPath: filename, filters: [{ name: 'Learnflow 课程包', extensions: ['json'] }] });
+    if (selected.canceled) return false;
+    const packed = await imageStore.withAssets(course), json = JSON.stringify(packed);
+    if (Buffer.byteLength(json) > COURSE_PACKAGE_MAX_BYTES) throw new Error('课程包超过 250 MB，请减少课程配图后重试。');
+    await writeFile(selected.filePath, json, 'utf8'); return true;
+  }));
+  handle('learnflow:import-course', () => shareCourse(async () => {
+    const selected = await dialog.showOpenDialog(window, { title: '导入课程包（新增，不覆盖）', properties: ['openFile'], filters: [{ name: 'Learnflow 课程包', extensions: ['json'] }] });
+    if (selected.canceled) return null;
+    const filename = selected.filePaths[0];
+    if ((await stat(filename)).size > COURSE_PACKAGE_MAX_BYTES) throw new Error('课程包超过 250 MB。');
+    const bytes = await readFile(filename);
+    if (bytes.length > COURSE_PACKAGE_MAX_BYTES) throw new Error('课程包超过 250 MB。');
+    let value;
+    try { value = JSON.parse(bytes.toString('utf8').replace(/^\uFEFF/, '')); } catch { throw new Error('课程包不是有效的 JSON 文件。'); }
+    const course = readCoursePackage(value);
+    const stageImages = await imageStore.prepareImport(course);
+    const confirm = await dialog.showMessageBox(window, { type: 'question', buttons: ['取消', '新增课程'], defaultId: 0, cancelId: 0,
+      message: `导入课程：${course.plan.title}`, detail: `${coursePackageSummary(course)}\n\n将新增一份独立课程，学习进度从零开始，不覆盖原有课程。同名课程也会新增副本。\n仅从可信的人接收课程包。导入不代表知识已核验；不会执行课程代码、访问参考网址或调用模型。` });
+    if (confirm.response !== 1) return null;
+    await stageImages();
+    return learning.importCoursePackage(course);
+  }));
   handle('learnflow:export-backup', async () => {
     const selected = await dialog.showSaveDialog(window, { title: '导出完整学习备份', defaultPath: 'learnflow-backup.json', filters: [{ name: 'Learnflow JSON 备份', extensions: ['json'] }] });
     if (selected.canceled) return false;
@@ -433,7 +470,8 @@ async function start() {
   if (!smoke) window.focus();
   if (development) { window.setTitle('知行 Learnflow · 开发测试版'); console.log('DESKTOP_DEV_READY'); }
   if (smoke) {
-    if (process.argv.includes('--settings-only')) await require('./settings-smoke.cjs').run(window,dataDirectory);
+    if (process.argv.includes('--sharing-only')) await require('./sharing-smoke.cjs').run(window,dataDirectory);
+    else if (process.argv.includes('--settings-only')) await require('./settings-smoke.cjs').run(window,dataDirectory);
     else if (process.argv.includes('--sources-only')) await require('./sources-smoke.cjs').run(window,dataDirectory,sourceFixture);
     else if (process.argv.includes('--generation-only')) await require('./generation-smoke.cjs').run(window,dataDirectory);
     else if (process.argv.includes('--revision-only')) await require('./revision-smoke.cjs').run(window,dataDirectory);
