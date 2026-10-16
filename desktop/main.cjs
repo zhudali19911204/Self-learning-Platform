@@ -113,7 +113,11 @@ async function start() {
   }
   const courseSources = sourceFixture?.courseSources || createCourseSources({ getConfig: () => store.getModelConfig(), fetchImpl: modelFetch });
   const courseRequests = new Set();
-  server = createApp({ getLLM: () => llm, courseSources, getCourseSourceSearch: id => learning.getLesson(id).sourceSearch, apiToken: token, getImageSettings: () => imageStore.getSettings(), getImageAsset: async id => {
+  const progressRequests = new Set();
+  const onGenerationProgress = (requestId, stage) => {
+    if (progressRequests.has(requestId) && window && !window.isDestroyed()) window.webContents.send('learnflow:generation-progress', { requestId, stage });
+  };
+  server = createApp({ getLLM: () => llm, courseSources, onGenerationProgress, getCourseSourceSearch: id => learning.getLesson(id).sourceSearch, apiToken: token, getImageSettings: () => imageStore.getSettings(), getImageAsset: async id => {
     try { return await imageStore.readAsset(id); } catch { return null; }
   }, getAudioAsset: async id => { try { return await speechStore.readAsset(id); } catch { return null; } } });
   await new Promise((resolve, reject) => { server.once('error', reject); server.listen(0, '127.0.0.1', resolve); });
@@ -359,22 +363,24 @@ async function start() {
       throw error;
     }
   }));
-  handle('learnflow:request', async (endpoint, data) => {
+  handle('learnflow:request', async (endpoint, data, progressId) => {
     if (!['status', 'plan-clarify', 'plan', 'lesson', 'lesson-outline', 'lesson-block', 'lesson-ask', 'wiki', 'wiki-draft', 'knowledge-organize', 'ask', 'test-connection'].includes(endpoint)) throw new Error('接口不存在。');
     const courseId = endpoint === 'lesson-block' ? data?.lessonId : null;
     if (courseId && courseRequests.has(courseId)) throw new Error('本课正在生成，请稍候。');
     if (courseId) { learning.getLesson(courseId); courseRequests.add(courseId); }
+    const requestId = typeof progressId === 'string' && /^generation-[a-z0-9-]{1,80}$/.test(progressId) ? progressId : '';
+    if (requestId) { progressRequests.add(requestId); onGenerationProgress(requestId, 'preparing'); }
     try {
     const response = await fetch(`${base}/api/${endpoint}`, {
       method: endpoint === 'status' ? 'GET' : 'POST',
-      headers: { 'Content-Type': 'application/json', 'X-Learnflow-Token': token },
+      headers: { 'Content-Type': 'application/json', 'X-Learnflow-Token': token, ...(requestId ? { 'X-Learnflow-Progress': requestId } : {}) },
       ...(endpoint === 'status' ? {} : { body: JSON.stringify(data) }),
       signal: AbortSignal.timeout((llm.status().timeoutMs || 120000) * (endpoint === 'lesson-block' ? 2 : 1) + (endpoint === 'lesson-block' ? 120000 : 10000))
     });
     const value = await response.json();
     if (!response.ok) throw new Error(value.error || '请求失败。');
     return value;
-    } finally { if (courseId) courseRequests.delete(courseId); }
+    } finally { if (courseId) courseRequests.delete(courseId); if (requestId) progressRequests.delete(requestId); }
   });
   handle('learnflow:export', async (name, content) => {
     if (typeof name !== 'string' || !/\.(json|md)$/.test(name) || typeof content !== 'string' || Buffer.byteLength(content) > 30 * 1024 * 1024) throw new Error('导出内容无效。');

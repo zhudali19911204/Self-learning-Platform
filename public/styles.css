@@ -509,6 +509,32 @@ main:has(.knowledge-conversation) .wiki-toolbar{display:none}
 .course-search-switch[aria-checked=true] .switch-track::after { transform:translateX(14px); }
 .course-search-status { flex-basis:100%; margin:0; font-size:12px; overflow-wrap:anywhere; }
 .course-search-status:empty { display:none; }
+.generation-progress { position:fixed; inset:auto 24px 24px auto; width:340px; max-width:calc(100vw - 32px); max-height:calc(100vh - 48px); margin:0; padding:0; overflow:auto; border:1px solid #dfd6f3; border-radius:14px; background:#fff; color:var(--ink); box-shadow:0 10px 38px #39286324; z-index:1001; font-size:12px; }
+.generation-progress[hidden] { display:none; }
+.generation-progress-heading { display:flex; align-items:center; gap:9px; padding:14px 16px; background:#f8f5ff; border-bottom:1px solid #eee8f8; }
+.generation-progress-heading > strong { flex:1; font-size:13px; }
+.generation-progress-symbol { color:var(--purple); font-size:19px; }
+.generation-progress button { border:0; background:transparent; color:var(--purple-dark); font-size:11px; padding:4px 6px; border-radius:5px; }
+.generation-progress button:hover { background:#ece5fb; }
+#generation-progress-list { max-height:min(420px, calc(100vh - 120px)); overflow:auto; }
+.generation-progress-task { padding:14px 16px; border-bottom:1px solid #f0edf5; }
+.generation-progress-task-title { display:flex; align-items:flex-start; justify-content:space-between; gap:12px; }
+.generation-progress-task-title > strong { font-size:12px; }
+.generation-progress-task-title > span { flex:none; color:var(--purple-dark); font-size:11px; }
+.generation-progress .generation-progress-detail { margin:5px 0 9px; color:#736b82; font-size:11px; line-height:1.6; overflow-wrap:anywhere; }
+.generation-progress-track { height:6px; overflow:hidden; border-radius:6px; background:#eee9f8; margin:10px 0 7px; }
+.generation-progress-track > span { display:block; height:100%; border-radius:inherit; background:var(--purple); }
+.is-running .generation-progress-track > span { width:38%; animation:generation-working 1.8s ease-in-out infinite; }
+.is-done .generation-progress-track > span { background:#6d9b77; }
+.is-failed .generation-progress-track > span { width:100%; background:#c47a78; }
+.is-failed .generation-progress-task-title > span { color:#a54250; }
+.generation-progress-task-foot { display:flex; justify-content:space-between; align-items:center; min-height:24px; color:#82788f; font-size:11px; }
+.generation-progress .generation-progress-message { margin:4px 0 0; font-size:11px; line-height:1.6; color:#776c87; overflow-wrap:anywhere; }
+.generation-progress .is-failed .generation-progress-message { color:#a54250; }
+.generation-progress .generation-progress-hint { margin:0; padding:10px 16px; font-size:10px; color:#8b819a; background:#fcfaff; line-height:1.7; }
+@keyframes generation-working { from { transform:translateX(-110%); } to { transform:translateX(275%); } }
+@media(max-width:560px) { .generation-progress { right:16px; bottom:16px; width:300px; } }
+@media(prefers-reduced-motion:reduce) { .is-running .generation-progress-track > span { width:100%; animation:none; background:repeating-linear-gradient(135deg, #a794df 0 7px, #e6def7 7px 14px); } }
 .course-search-status.error-text { color:#a3354c; }
 .course-references { margin:24px 0; padding:24px; border:1px solid #e5ddf3; border-radius:14px; background:#faf8fd; }
 .course-references h2 { margin:0; font-size:20px; }

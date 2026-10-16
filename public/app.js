@@ -15,6 +15,7 @@ import { qualityRubric, qualityLabels, qualityModelId } from './course-quality.j
 import { teachingContextNotice } from './teaching-context.js';
 import { officialSource, validSourceSearch, courseReferences } from './course-sources.js';
 import { revisionTypes, revisionStatuses, revisionCheckLabels, revisionContent, revisionText, revisionDiff } from './course-revision.js';
+import { createGenerationProgress } from './generation-progress.js';
 
 const renderMarkdown = createMarkdownRenderer(Marked, DOMPurify);
 
@@ -43,6 +44,11 @@ const icons = {
 };
 const icon = (name, cls = '') => `<svg class="icon ${cls}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${icons[name] || icons.spark}</svg>`;
 const desktop = window.learnflowDesktop;
+const generationProgress = createGenerationProgress({ document, setTimer: setTimeout, clearTimer: clearTimeout });
+desktop?.onGenerationProgress?.(({ requestId, stage }) => {
+  const messages = { preparing: '正在准备请求…', searching: '正在搜索并读取参考资料…', generating: '模型正在生成内容…', validating: '正在检查生成内容与格式…' };
+  if (messages[stage]) generationProgress.update(requestId, messages[stage]);
+});
 let desktopSettings = null, dataDirectory = '', pendingSave = Promise.resolve();
 const key = 'learnflow.v1';
 const fresh = () => ({ version: 1, plans: [structuredClone(demoPlan)], active: demoPlan.id, lessons: {}, blockCourses: {}, progress: {}, notes: [], reflections: {}, annotations: {}, chats: {} });
@@ -357,10 +363,19 @@ function persist(method, ...args) {
 let toastTimer;
 function toast(message) { $('#toast').textContent = message; $('#toast').classList.add('visible'); clearTimeout(toastTimer); toastTimer = setTimeout(() => $('#toast').classList.remove('visible'), 4500); }
 async function api(path, body) {
-  if (desktop) return desktop.request(path, body);
+  const names = { 'plan-clarify': '分析学习需求', plan: '规划学习路线', lesson: '生成课程内容', 'lesson-outline': body?.repairDraft ? '补充配套案例大纲' : '生成课程大纲', 'lesson-block': body?.revisionRequest ? '调整课程内容' : '生成课程内容', 'lesson-ask': 'AI 答疑', wiki: '生成知识卡片', 'wiki-draft': '生成知识卡片', 'knowledge-organize': '整理知识目录', ask: '知识问答' };
+  if (names[path]) return generationProgress.run({ title: names[path], detail: body?.block?.title || body?.title || body?.courseTitle || '', message: body?.sourceSearch?.enabled ? '正在联网检索并生成内容…' : '正在等待模型返回…' }, task => apiRequest(path, body, task.id));
+  return apiRequest(path, body);
+}
+async function apiRequest(path, body, progressId) {
+  if (desktop) return desktop.request(path, body, progressId);
   const timeout = Number.isInteger(status.timeoutMs) && status.timeoutMs >= 1000 && status.timeoutMs <= 600000 ? status.timeoutMs : 120000;
   const r = await fetch(`/api/${path}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body), signal: AbortSignal.timeout(path === 'lesson-block' ? timeout * 2 + 120000 : timeout + 10000) });
   const value = await r.json(); if (!r.ok) throw new Error(value.error || '请求失败，请重试。'); return value;
+}
+function desktopGeneration(method, ...args) {
+  const titles = { evaluateQuality: '评价课程质量', generateRevision: '生成课程修订稿', reviewRevision: '复核课程修订稿', suggestIllustration: '生成配图建议', autoSearchCommonsImages: 'AI 搜索课程配图', autoSearchWebImages: 'AI 搜索课程配图', generateIllustration: '生成课程配图', retryIllustrationDownload: '下载课程配图', generateSpeech: '生成 AI 朗读' };
+  return generationProgress.run({ title: titles[method], message: method === 'generateSpeech' ? '正在合成并下载朗读音频…' : method === 'retryIllustrationDownload' ? '正在下载已生成的配图…' : '正在等待模型返回…' }, () => desktop[method](...args));
 }
 const pill = (text, cls = '') => `<span class="pill ${cls}">${escape(text)}</span>`;
 const button = (text, action, cls = 'primary', attrs = '', symbol = 'arrow') => `<button class="btn ${cls}" data-action="${action}" ${attrs}>${escape(text)}${symbol ? icon(symbol) : ''}</button>`;
@@ -975,7 +990,7 @@ async function evaluateQuality() {
   const target = qualityView;
   qualityBusy = true; target.error = ''; renderQualityDialog();
   try {
-    const result = await desktop.evaluateQuality(target.scope, target.targetId, target.fingerprint);
+    const result = await desktopGeneration('evaluateQuality', target.scope, target.targetId, target.fingerprint);
     state.qualityReports = [...(state.qualityReports || []).filter(r => r.scope !== target.scope || r.targetId !== target.targetId), ...result.reports];
     if (qualityView === target) qualityView = { ...result, selectedReportId: result.reports[0]?.id || '', error: '' };
     toast('课程评价报告已保存。');
@@ -1055,8 +1070,8 @@ async function runQualityRevision(operation) {
     renderQualityRevision();
     const j = qualityRevisionView.job;
     let result = qualityRevisionView;
-    if (operation === 'generate') result = await desktop.generateRevision(id,j.rev);
-    if (operation === 'review') result = await desktop.reviewRevision(id,j.rev);
+    if (operation === 'generate') result = await desktopGeneration('generateRevision', id,j.rev);
+    if (operation === 'review') result = await desktopGeneration('reviewRevision', id,j.rev);
     if (operation === 'apply') result = await desktop.applyRevision(id,j.rev,confirmed,risks);
     if (operation === 'restore') result = await desktop.restoreRevision(id,j.rev);
     if (operation === 'discard') result = await desktop.discardRevision(id,j.rev);
@@ -1381,6 +1396,8 @@ async function download(name, content, type) {
 }
 function markdown(n) { return `# ${n.title}\n\n${n.summary.split('\n').map(line => '> ' + line).join('\n')}\n\n标签：${n.tags.join('、')}\n\n来源课程：${n.courseTitle}\n\n${n.content}\n`; }
 async function action(name, element) {
+  if (name === 'toggle-generation-progress') { generationProgress.toggle(); return; }
+  if (name === 'dismiss-generation-task') { generationProgress.dismiss(element.dataset.id); return; }
   if (name === 'toggle-settings-panel') {
     const id = element.dataset.panel, panel = $('#settings-' + id);
     if (panel && Object.hasOwn(settingsPanels, id)) { panel.open = !panel.open; rememberSettingsPanel(id, panel.open); }
@@ -1626,7 +1643,7 @@ async function action(name, element) {
     if (!desktop || !illustrationDraft || illustrationBusy) return;
     illustrationBusy = true; illustrationDraft.error = ''; illustrationDraft.warning = ''; renderIllustrationDialog();
     try {
-      const result = illustrationDraft.searchProvider === 'commons' ? await desktop.autoSearchCommonsImages(illustrationDraft.lessonId, illustrationDraft.blockId) : await desktop.autoSearchWebImages(illustrationDraft.lessonId, illustrationDraft.blockId);
+      const result = illustrationDraft.searchProvider === 'commons' ? await desktopGeneration('autoSearchCommonsImages', illustrationDraft.lessonId, illustrationDraft.blockId) : await desktopGeneration('autoSearchWebImages', illustrationDraft.lessonId, illustrationDraft.blockId);
       illustrationDraft.query = result.query; illustrationDraft.results = result.results; illustrationDraft.searched = true; illustrationDraft.selectedPageId = null;
       illustrationDraft.recommendation = result.recommendation || '';
       illustrationDraft.warning = result.warning || '';
@@ -1664,7 +1681,7 @@ async function action(name, element) {
       return;
     }
     try {
-      const suggestion = await desktop.suggestIllustration(id, block.id);
+      const suggestion = await desktopGeneration('suggestIllustration', id, block.id);
       illustrationDraft.reason = suggestion.reason + (suggestion.needed ? '' : ' 如仍想配图，可以填写自己的提示词。');
       if (suggestion.needed && validImageProposal(suggestion)) { illustrationDraft.prompt = suggestion.prompt; illustrationDraft.caption = suggestion.caption; }
     } catch (error) { illustrationDraft.reason = 'AI 配图分析失败：' + error.message + ' 你仍可自己填写提示词。'; }
@@ -2027,7 +2044,7 @@ document.addEventListener('submit', async event => {
     } else if (form.id === 'speech-generate-form' && desktop) {
       if (!speechDraft?.plan || ($('#speech-material').value ?? speechDraft.text) !== speechDraft.text) throw new Error('材料已修改，请重新预览后再确认生成。');
       speechBusy = true; $('#speech-preview-fields').disabled = true; $('#speech-error').textContent = ''; submit.innerHTML = '正在合成 / 下载，请勿重复提交…';
-      const result = await desktop.generateSpeech({ lessonId: speechDraft.lessonId, text: speechDraft.text, assignments: speechDraft.assignments, confirmed: true, mode: speechDraft.plan.pendingCount ? 'download-only' : 'generate' });
+      const result = await desktopGeneration('generateSpeech', { lessonId: speechDraft.lessonId, text: speechDraft.text, assignments: speechDraft.assignments, confirmed: true, mode: speechDraft.plan.pendingCount ? 'download-only' : 'generate' });
       speechDraft.plan = result; speechDraft.error = result.error || ''; speechBusy = false; renderSpeechDialog();
     } else if (form.id === 'image-settings-form' && desktop) {
       $('#image-settings-error').textContent = '';
@@ -2047,7 +2064,7 @@ document.addEventListener('submit', async event => {
       illustrationBusy = true; submit.innerHTML = illustrationDraft.pendingDownload ? '<span class="spinner"></span>仅下载已有图片…' : '<span class="spinner"></span>正在生成并保存图片…';
       const fields = form.querySelector('fieldset'); if (fields) fields.disabled = true;
       const draft = { ...illustrationDraft }, scrollTop = window.scrollY;
-      const content = draft.pendingDownload ? await desktop.retryIllustrationDownload({ lessonId: draft.lessonId, blockId: draft.blockId, pendingId: draft.pendingDownload.id }) : await desktop.generateIllustration(draft);
+      const content = draft.pendingDownload ? await desktopGeneration('retryIllustrationDownload', { lessonId: draft.lessonId, blockId: draft.blockId, pendingId: draft.pendingDownload.id }) : await desktopGeneration('generateIllustration', draft);
       if (content?.pendingDownload) {
         Object.assign(illustrationDraft, { pendingDownload: content.pendingDownload, prompt: content.prompt, caption: content.caption, error: content.error });
         illustrationBusy = false; renderIllustrationDialog(); return;

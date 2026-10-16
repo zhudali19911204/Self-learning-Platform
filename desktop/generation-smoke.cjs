@@ -5,6 +5,7 @@ const { randomUUID } = require('node:crypto');
 const path = require('node:path');
 const { writeFile } = require('node:fs/promises');
 exports.run=async(window,directory)=>{
+  window.webContents.setBackgroundThrottling(false);
   const {demoPlan}=await import('../public/demo.js');
   const evaluate=code=>window.webContents.executeJavaScript(code).catch(error=>{console.error('GENERATION_SMOKE_STEP',code.slice(0,200));throw error;});
   const wait=expression=>evaluate(`new Promise((resolve,reject)=>{let n=0;const timer=setInterval(()=>{if(${expression}){clearInterval(timer);resolve(true);}else if(++n>150){clearInterval(timer);reject(new Error('Generation smoke timed out: '+document.querySelector('#toast')?.textContent));}},100);})`);
@@ -30,6 +31,7 @@ exports.run=async(window,directory)=>{
         output={questions:[{prompt:'提交身份配置是否等同远程登录？',options:['不等同','完全相同','提交邮箱就是密码','只取决于用户名'],answer:0,explanation:'提交记录的身份不是远程认证。'},{prompt:'哪个命令核对用户名？',options:['git config --get user.name','git init','git status','git log'],answer:0,explanation:'config --get 读取相应配置。'}]};
       }else if(input.block.type==='practice')output={text:'## 任务\n\n核对本机 Git 用户名和邮箱，不改动已有配置。\n\n## 完成标准\n\n写出当前配置，说明它是否等同远程登录。'};
       else{assert.equal(input.teachingContext.coverage.completeBefore,true);assert.deepEqual(input.teachingContext.sources.map(s=>s.type),['reading','example','practice']);output={text:'## 核心判断\n\n- 提交身份不是远程登录。\n- 配置后用读取命令核对。\n- 当前范围覆盖已经生成的讲解、案例与实践。'};}
+      if(input.block?.type==='reading') await new Promise(resolve=>setTimeout(resolve,1200));
       res.writeHead(200,{'Content-Type':'application/json'});res.end(JSON.stringify({choices:[{message:{content:JSON.stringify(output)},finish_reason:'stop'}]}));
     }catch{res.writeHead(500);res.end('Mock validation failed');}
   });
@@ -48,6 +50,14 @@ exports.run=async(window,directory)=>{
     await evaluate(`window.learnflowDesktop.saveAnnotations(${JSON.stringify(lessonId)},[{id:'private-note',source:'intro',offset:0,quote:'',text:'private-note-test',created:Date.now()}])`);
     for(const index of [0,1,3,2,4]){
       await evaluate(`document.querySelector('[data-action=generate-block][data-block="${blocks[index].id}"]').click()`);
+      if(index===0){
+        await wait("document.querySelector('#generation-progress .is-running .generation-progress-message')?.textContent.includes('模型正在生成内容')");
+        assert.equal(await evaluate("document.querySelector('#generation-progress [role=progressbar]').hasAttribute('aria-valuenow')"),false);
+        assert.equal(await evaluate("document.querySelector('#generation-progress').matches(':popover-open')"),true);
+        await evaluate('new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))');
+        assert.equal(await evaluate("Math.round(document.querySelector('#generation-progress').getBoundingClientRect().width)"),340);
+        await writeFile(path.join(directory,'..','generation-progress-smoke.png'),(await window.webContents.capturePage()).toPNG());
+      }
       await wait(`!document.querySelector('[data-action=generate-block][data-block="${blocks[index].id}"]')`);
     }
     assert.equal(requests.length,6);

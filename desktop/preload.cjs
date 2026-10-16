@@ -60,7 +60,15 @@ contextBridge.exposeInMainWorld('learnflowDesktop', Object.freeze({
   getPendingIllustration: (id, blockId) => invoke('learnflow:get-pending-illustration', id, blockId),
   retryIllustrationDownload: value => invoke('learnflow:retry-illustration-download', value),
   discardIllustrationDownload: (id, blockId, pendingId) => invoke('learnflow:discard-illustration-download', id, blockId, pendingId),
-  request: (endpoint, data) => invoke('learnflow:request', endpoint, data),
+  request: (endpoint, data, progressId) => invoke('learnflow:request', endpoint, data, progressId),
+  onGenerationProgress: listener => {
+    if (typeof listener !== 'function') return () => {};
+    const receive = (_event, value) => {
+      if (typeof value?.requestId === 'string' && ['preparing', 'searching', 'generating', 'validating'].includes(value.stage)) listener({ requestId: value.requestId, stage: value.stage });
+    };
+    ipcRenderer.on('learnflow:generation-progress', receive);
+    return () => ipcRenderer.removeListener('learnflow:generation-progress', receive);
+  },
   exportFile: (name, content) => invoke('learnflow:export', name, content),
   exportBackup: () => invoke('learnflow:export-backup'),
   exportCourse: id => invoke('learnflow:export-course', id),

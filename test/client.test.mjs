@@ -1,4 +1,5 @@
 import test from 'node:test';
+import { createGenerationProgress } from '../public/generation-progress.js';
 import assert from 'node:assert/strict';
 import vm from 'node:vm';
 import { readFile } from 'node:fs/promises';
@@ -675,7 +676,7 @@ test('course search has one independent persistent switch; generation locks it a
 
 // Keyless-form regressions need real elements.namedItem() and actual FormData.
 function realSettingsHarness(bridge) {
-  const dom = new JSDOM('<div id="app"></div><div id="toast"></div><button id="annotation-quick-add" data-action="add-annotation" hidden></button><dialog id="annotation-dialog"></dialog><dialog id="knowledge-draft-dialog"></dialog><dialog id="knowledge-organize-dialog"></dialog><dialog id="quality-dialog"></dialog>', { url: 'http://localhost' });
+  const dom = new JSDOM('<div id="app"></div><div id="toast"></div><aside id="generation-progress" popover="manual" hidden></aside><button id="annotation-quick-add" data-action="add-annotation" hidden></button><dialog id="annotation-dialog"></dialog><dialog id="knowledge-draft-dialog"></dialog><dialog id="knowledge-organize-dialog"></dialog><dialog id="quality-dialog"></dialog>', { url: 'http://localhost' });
   const document = dom.window.document, listeners = new Map();
   document.querySelector('#knowledge-organize-dialog').showModal = function () { this.open = true; };
   document.querySelector('#knowledge-organize-dialog').close = function () { this.open = false; };
@@ -686,7 +687,7 @@ function realSettingsHarness(bridge) {
   }
   document.addEventListener = (name, listener) => { const group = listeners.get(name) || []; group.push(listener); listeners.set(name, group); };
   dom.window.learnflowDesktop = bridge; dom.window.scrollTo = () => {};
-  const context = vm.createContext({ officialSource, validSourceSearch, courseReferences, teachingContextNotice, qualityRubric, qualityLabels, qualityModelId, revisionTypes, revisionStatuses, revisionCheckLabels, revisionContent, revisionText, revisionDiff,
+  const context = vm.createContext({ createGenerationProgress, officialSource, validSourceSearch, courseReferences, teachingContextNotice, qualityRubric, qualityLabels, qualityModelId, revisionTypes, revisionStatuses, revisionCheckLabels, revisionContent, revisionText, revisionDiff,
     demoPlan, demoLessons, lessonFromBlocks, validOutline, validBlockContent, validBlockSpec, blockGenerationContext, revisedContent, restoredContent, assistedBlockTypes, Marked, DOMPurify, createMarkdownRenderer, validQuestionnaire, validClarification, learningBriefFrom, validIllustration, validImageProposal, speechDefaults, speechVoices, listeningText, speechTurns, speechRequest, validAudioId, validKnowledgeSource, validKnowledgeDraft, localKnowledgeDraft, knowledgeTags, knowledgeConditions, validAnnotations, personalNotesForSource, personalNotesMarkdown, knowledgeCatalog, knowledgeDomain, knowledgeDomainColors, knowledgeTopic, retrieveKnowledge, validKnowledgeOrganization, courseKnowledgeTree, knowledgeTree, knowledgeGraph, filterKnowledgeGraph, createGraphMotion, stepGraphMotion, structuredClone, crypto: webcrypto, AbortSignal,
     document, window: dom.window, FormData: dom.window.FormData, setTimeout: () => 1, clearTimeout() {}
   });
@@ -703,7 +704,7 @@ function harness(saved, fetchImpl, desktopBridge) {
     if (!nodes.has(selector)) nodes.set(selector, { innerHTML: '', textContent: '', open: false, attributes: {}, setAttribute(name, value) { this.attributes[name] = value; }, classList: { add() {}, remove() {} }, scrollIntoView() {}, focus() {}, showModal() { this.open = true; }, close() { this.open = false; } });
     return nodes.get(selector);
   };
-  const context = vm.createContext({ officialSource, validSourceSearch, courseReferences, teachingContextNotice, qualityRubric, qualityLabels, qualityModelId, revisionTypes, revisionStatuses, revisionCheckLabels, revisionContent, revisionText, revisionDiff,
+  const context = vm.createContext({ createGenerationProgress, officialSource, validSourceSearch, courseReferences, teachingContextNotice, qualityRubric, qualityLabels, qualityModelId, revisionTypes, revisionStatuses, revisionCheckLabels, revisionContent, revisionText, revisionDiff,
     demoPlan, demoLessons, lessonFromBlocks, validOutline, validBlockContent, validBlockSpec, blockGenerationContext, revisedContent, restoredContent, assistedBlockTypes, Marked, DOMPurify, createMarkdownRenderer, validQuestionnaire, validClarification, learningBriefFrom, validIllustration, validImageProposal, speechDefaults, speechVoices, listeningText, speechTurns, speechRequest, validAudioId, validKnowledgeSource, validKnowledgeDraft, localKnowledgeDraft, knowledgeTags, knowledgeConditions, validAnnotations, personalNotesForSource, personalNotesMarkdown, knowledgeCatalog, knowledgeDomain, knowledgeDomainColors, knowledgeTopic, retrieveKnowledge, validKnowledgeOrganization, courseKnowledgeTree, knowledgeTree, knowledgeGraph, filterKnowledgeGraph, createGraphMotion, stepGraphMotion, structuredClone, crypto: webcrypto, AbortSignal,
     document: { querySelector: node, addEventListener(name, listener) { const group = listeners.get(name) || []; group.push(listener); listeners.set(name, group); } },
     localStorage: { get length() { return storage.size; }, key: index => [...storage.keys()][index] ?? null, getItem: key => storage.get(key) ?? null, setItem: (key, value) => storage.set(key, value), removeItem: key => storage.delete(key) },
@@ -1048,6 +1049,31 @@ test('in-flight clarification prevents duplicate requests and closing; model que
   assert.doesNotMatch(app.node('#planner').innerHTML,/<button data-action="delete-plan">/);
   assert.match(app.node('#planner').innerHTML,/&lt;button/);
 });
+test('generation panel spans pages, receives actual desktop stages and finishes only after the request returns', async t => {
+  let listener, resolveRequest, requestId;
+  const outline = { intro: '课程目标', blocks: [{ type: 'reading', title: '讲解', objective: '理解' }, { type: 'example', title: '案例', objective: '应用' }, { type: 'quiz', title: '检验', objective: '判断' }] };
+  const app = realSettingsHarness({ load: async () => ({ status: { mode: 'ai' } }),
+    onGenerationProgress: receive => { listener = receive; },
+    request: async (path, data, id) => {
+      assert.equal(path, 'lesson-outline'); assert.equal(data.title, demoPlan.lessons[0].title);
+      requestId = id; return new Promise(resolve => { resolveRequest = resolve; });
+    }, saveOutline: async (_id, value) => ({ ...value, blocks: value.blocks.map((b, i) => ({ ...b, id: `b-${i}`, content: null })) })
+  });
+  t.after(() => app.close()); await app.ready();
+  app.run("state.plans[0].source='ai'; state.plans[0].lessons[0].id='custom-1'; state.lessons={}; activeLesson='custom-1'; page='study'; render()");
+  const pending = app.fire('click', app.document.querySelector('[data-action="generate-lesson"]'));
+  for (let i = 0; i < 10 && !resolveRequest; i++) await Promise.resolve();
+  const panel = app.document.querySelector('#generation-progress');
+  assert.equal(panel.hidden, false); assert.match(requestId, /^generation-[a-z0-9-]+$/);
+  listener({ requestId, stage: 'generating' }); assert.match(panel.textContent, /模型正在生成内容/);
+  listener({ requestId: 'old-request', stage: 'validating' }); assert.ok(!panel.textContent.includes('正在检查'));
+  app.run("navigate('wiki')"); assert.equal(panel.hidden, false); assert.equal(panel.querySelectorAll('.is-running').length, 1);
+  listener({ requestId, stage: 'validating' }); assert.match(panel.textContent, /正在检查生成内容与格式/);
+  resolveRequest(outline); await pending;
+  assert.equal(panel.querySelectorAll('.is-running').length, 0); assert.match(panel.textContent, /已收到生成结果/);
+  await app.fire('click', panel.querySelector('[data-action="dismiss-generation-task"]')); assert.equal(panel.hidden, true);
+});
+
 test('desktop course sharing offers export/import without replacing cached learning data and cancellation is inert', async t => {
   let exportCalls = 0, importCalls = 0;
   const app = realSettingsHarness({ load: async () => ({ status: { mode: 'demo' } }),

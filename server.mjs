@@ -3,7 +3,7 @@ import { readFile } from 'node:fs/promises';
 import { pathToFileURL } from 'node:url';
 import { randomUUID } from 'node:crypto';
 import { createLLM, resolveConfig } from './llm.mjs';
-import { createCourseSources } from './course-sources.mjs';
+import { createCourseSources, CourseSourceError } from './course-sources.mjs';
 import { createCourseClaimMatcher } from './course-claim-matching.mjs';
 import { withInlineCourseCitations } from './course-inline-citations.mjs';
 import { sourceGenerationGuidance, sourceCitationIssue, groundedContent, validSourceSearch } from './public/course-sources.js';
@@ -29,6 +29,7 @@ assets['/teaching-context.js'] = ['teaching-context.js', 'text/javascript'];
 assets['/course-sources.js'] = ['course-sources.js', 'text/javascript'];
 assets['/knowledge-views.js'] = ['knowledge-views.js', 'text/javascript'];
 assets['/graph-motion.js'] = ['graph-motion.js', 'text/javascript'];
+assets['/generation-progress.js'] = ['generation-progress.js', 'text/javascript'];
 const strings = (v, max = 20) => Array.isArray(v) && v.length > 0 && v.length <= max && v.every(x => str(x, 5000));
 const validPlanningInput = data => str(data.goal, 1000) && ['零基础', '有一点基础', '希望进阶'].includes(data.level) && Number.isInteger(data.daily) && data.daily >= 10 && data.daily <= 120 && Number.isInteger(data.days) && data.days >= 7 && data.days <= 90;
 function clarificationAssessmentIssue(value) {
@@ -98,7 +99,15 @@ export function createApp(config = {}) {
       const path = new URL(req.url, `http://${host}`).pathname;
       if (path.startsWith('/api/') && config.apiToken && req.headers['x-learnflow-token'] !== config.apiToken) return send(403, { error: '桌面接口仅供应用内部调用。' });
       const llm = config.getLLM ? config.getLLM() : defaultLLM;
-      const generate = (instruction, input, validate) => llm.generate(input?.learningBrief && path !== '/api/plan' ? `${learnerGuidance} ${instruction}` : instruction, input, validate);
+      const notify = stage => {
+        const requestId = req.headers['x-learnflow-progress'];
+        if (typeof requestId !== 'string' || !/^generation-[a-z0-9-]{1,80}$/.test(requestId)) return;
+        try { config.onGenerationProgress?.(requestId, stage); } catch { /* Notifications must not affect paid requests. */ }
+      };
+      const generate = (instruction, input, validate) => {
+        notify('generating');
+        return llm.generate(input?.learningBrief && path !== '/api/plan' ? `${learnerGuidance} ${instruction}` : instruction, input, value => { notify('validating'); return validate(value); });
+      };
       if (path === '/api/status' && req.method === 'GET') return send(200, llm.status());
       if (path.startsWith('/api/') && req.method === 'POST') {
         const data = await body(req);
@@ -206,6 +215,7 @@ export function createApp(config = {}) {
           if (sourceOperations.has(operation)) fail('本课正在生成，请等待当前请求结束。');
           sourceOperations.add(operation);
           try {
+            if (search.enabled) notify('searching');
             const documents = search.enabled ? await courseSources.prepare(`${data.title}\n${data.objective}\n${data.block.title}\n${data.block.objective}`.slice(0, 2000)) : null;
             checkSearch();
             if (documents) requested.officialDocuments = documents;
@@ -273,7 +283,7 @@ export function createApp(config = {}) {
       const content = await readFile(new URL(asset[0], publicDir));
       res.writeHead(200, { 'Content-Type': `${asset[1]}; charset=utf-8`, 'Cache-Control': 'no-cache' });
       res.end(req.method === 'HEAD' ? undefined : content);
-    } catch (e) { send(e.status || 500, { error: e.status ? e.message : '服务发生错误，请稍后重试。' }); }
+    } catch (e) { send(e.status || 500, { error: e.status ? e.message : '服务发生错误，请稍后重试。', ...(e instanceof CourseSourceError ? { code: e.code, stage: e.stage } : {}) }); }
   });
 }
 
