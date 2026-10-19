@@ -65,7 +65,7 @@ export function cleanTeachingContext(v) {
 export function teachingContextNotice(course,targetId) {
   const index=course.blocks.findIndex(b=>b.id===targetId);if(index<0)return '';
   const target=course.blocks[index],prior=course.blocks.slice(0,index).filter(b=>teachingTypes.includes(b.type)),ready=prior.filter(b=>b.content?.text);
-  if(['quiz','summary'].includes(target.type))return !ready.some(b=>['reading','example'].includes(b.type)) ? '请先生成前序讲解或案例，再生成测验或总结，不会自动生成其他模块。' : ready.length<prior.length ? `当前仅 ${ready.length}/${prior.length} 个前序教学模块已生成，本次只覆盖已提供内容；生成更多讲解后可补充测验或总结。` : '本次以已生成的前序正文为依据；材料过长时按目标选取片段，不宣称全面覆盖。';
+  if(['quiz','summary'].includes(target.type))return (!ready.some(b=>['reading','example'].includes(b.type)) ? '请先生成前序讲解或案例，再生成测验或总结，不会自动生成其他模块。' : ready.length<prior.length ? `当前仅 ${ready.length}/${prior.length} 个前序教学模块已生成，本次只覆盖已提供内容；生成更多讲解后可补充测验或总结。` : '本次以已生成的前序正文为依据；材料过长时按目标选取片段，不宣称全面覆盖。') + (target.type==='quiz' ? ' 随堂练习复用本课已有参考资料，不重新联网搜索；没有资料时仅依据已讲正文出题。' : '');
   if(target.type==='example'){let i=index-1;while(i>=0&&course.blocks[i].type==='example')i--;if(course.blocks[i]?.type==='reading'&&!course.blocks[i].content)return '配套讲解尚未生成；建议先生成讲解。现在生成案例将说明必要前提，不假定已有讲解。';}
   return '';
 }

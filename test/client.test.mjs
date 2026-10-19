@@ -686,6 +686,24 @@ test('course search has one independent persistent switch; generation locks it a
   assert.equal(doc.querySelector('[role=switch]').getAttribute('aria-checked'), 'false'); assert.ok(doc.querySelector('.course-references')); assert.equal(requests, 1);
 });
 
+test('quiz progress describes prior teaching reuse instead of a new search even with the search switch on', async t => {
+  let finish;
+  const app = realSettingsHarness({ load: async () => ({ status: { mode: 'ai' } }),
+    generateCourseBlock: async (value, id) => { assert.equal(value.request.block.type, 'quiz'); assert.equal(value.request.sourceSearch.enabled, true); assert.match(id, /^generation-/); return new Promise(resolve => { finish = resolve; }); } });
+  t.after(() => app.close()); await app.ready();
+  app.run("state.plans[0].source='ai'; state.lessons={}; state.blockCourses={p1:{intro:'导语',blocks:[{id:'r1',type:'reading',title:'讲解',objective:'理解',content:{text:'已讲定义和条件。'}},{id:'q1',type:'quiz',title:'条件练习',objective:'应用',content:null}]}}; state.sourceSearch={p1:{enabled:true,revision:1}}; activeLesson='p1'; page='study'; render()");
+  assert.match(app.document.querySelector('[data-block-id=q1]').textContent, /不重新联网搜索/);
+  const pending = app.run("action('generate-block',{dataset:{id:'p1',block:'q1'}})");
+  assert.match(app.document.querySelector('.course-source-controls').textContent, /依据已讲内容生成练习/);
+  assert.doesNotMatch(app.document.querySelector('.course-source-controls').textContent, /正在查找网页/);
+  assert.match(app.document.querySelector('#generation-progress').textContent, /生成随堂练习/);
+  const content = { questions: ['定义是什么？', '条件变化时如何判断？'].map(prompt => ({ prompt, options: ['甲','乙','丙','丁'], answer: 0, explanation: '按已讲条件判断。' })) };
+  finish({ content, factChecks: [] }); await pending;
+  assert.match(app.document.querySelector('.course-source-controls').textContent, /未添加外部引用/);
+  assert.match(app.document.querySelector('.course-source-controls').textContent, /未重新联网搜索/);
+  assert.equal(app.run('state.blockCourses.p1.blocks[1].content.questions.length'), 2);
+});
+
 // Keyless-form regressions need real elements.namedItem() and actual FormData.
 function realSettingsHarness(bridge) {
   const dom = new JSDOM('<div id="app"></div><div id="toast"></div><aside id="generation-progress" popover="manual" hidden></aside><button id="annotation-quick-add" data-action="add-annotation" hidden></button><dialog id="annotation-dialog"></dialog><dialog id="knowledge-draft-dialog"></dialog><dialog id="knowledge-organize-dialog"></dialog><dialog id="quality-dialog"></dialog>', { url: 'http://localhost' });
@@ -925,6 +943,59 @@ test('block lessons omit the duplicate top tools and keep example revision visib
   assert.equal(exampleTools.open, true);
   await app.fire('keydown', doc.body, { key: 'Escape' });
   assert.equal(exampleTools.open, false, 'Escape closes the dropdown');
+});
+
+test('practice and summary use independent reading-style collapse controls without changing course content', async t => {
+  const app = realSettingsHarness({ load: async () => ({ status: { mode: 'demo' } }) });
+  t.after(() => app.close()); await app.ready();
+  app.run("state.blockCourses.p1 = {intro:'课程导语',blocks:[{id:'practice-1',type:'practice',title:'实践任务',objective:'独立完成任务',content:{text:'## 操作步骤\\n\\n完成任务并核对结果。'}},{id:'summary-1',type:'summary',title:'本课总结',objective:'回顾核心方法',content:{text:'- 理解方法\\n- 核对结果'}},{id:'practice-pending',type:'practice',title:'待生成实践',objective:'扩展应用',content:null},{id:'summary-pending',type:'summary',title:'待生成总结',objective:'归纳方法',content:null},{id:'quiz-1',type:'quiz',title:'随堂练习',objective:'检验理解',content:{questions:[{prompt:'应先做什么？',options:['理解方法','跳过步骤','忽略结果','直接结束'],answer:0,explanation:'先理解方法。'}]}}]}; state.lessons={}; activeLesson='p1'; page='study'; lessonTab='read'; render()");
+  const doc = app.document;
+  const original = app.run('JSON.stringify(state.blockCourses.p1)');
+  const section = id => doc.querySelector(`[data-block-id="${id}"]`);
+  const toggle = id => section(id).querySelector('[data-action="toggle-block-collapse"]');
+  const body = id => doc.getElementById(toggle(id).getAttribute('aria-controls'));
+  const practiceToggle = toggle('practice-1'), summaryToggle = toggle('summary-1');
+  assert.equal(doc.querySelectorAll('[data-action="toggle-block-collapse"]').length, 2);
+  for (const control of [practiceToggle, summaryToggle]) {
+    assert.equal(control.type, 'button');
+    assert.equal(control.className, 'block-collapse-toggle');
+    assert.equal(control.textContent, '收起');
+    assert.equal(control.getAttribute('aria-expanded'), 'true');
+  }
+  assert.equal(body('practice-1').hidden, false);
+  assert.equal(body('summary-1').hidden, false);
+  await app.fire('click', practiceToggle);
+  assert.equal(body('practice-1').hidden, true);
+  assert.equal(body('summary-1').hidden, false, 'practice folds independently of summary');
+  assert.equal(practiceToggle.textContent, '展开');
+  assert.equal(practiceToggle.getAttribute('aria-expanded'), 'false');
+  await app.fire('click', summaryToggle);
+  assert.equal(body('summary-1').hidden, true);
+  for (const [id, title, objective] of [['practice-1', '实践任务', '独立完成任务'], ['summary-1', '本课总结', '回顾核心方法']]) {
+    assert.equal(section(id).querySelector('.block-title').textContent, title);
+    assert.equal(section(id).querySelector('.block-objective').textContent, objective);
+    assert.ok(section(id).querySelector('.more-learning-tools'));
+    assert.equal(section(id).querySelector('.block-title').closest('[hidden]'), null);
+    assert.equal(section(id).querySelector('.block-objective').closest('[hidden]'), null);
+  }
+  app.run('render()');
+  for (const id of ['practice-1', 'summary-1']) {
+    assert.equal(body(id).hidden, true, 'fold state survives rerender');
+    assert.equal(toggle(id).getAttribute('aria-expanded'), 'false');
+    await app.fire('click', toggle(id));
+    assert.equal(body(id).hidden, false);
+    assert.equal(toggle(id).textContent, '收起');
+    assert.equal(toggle(id).getAttribute('aria-expanded'), 'true');
+  }
+  assert.match(body('practice-1').textContent, /完成任务并核对结果/);
+  assert.match(body('summary-1').textContent, /理解方法/);
+  for (const id of ['practice-pending', 'summary-pending']) {
+    assert.equal(toggle(id), null, 'pending modules keep the generation action instead of a fold control');
+    assert.ok(section(id).querySelector('[data-action="generate-block"]'));
+  }
+  assert.equal(toggle('quiz-1'), null);
+  assert.ok(section('quiz-1').querySelector('[data-action="quiz"]'));
+  assert.equal(app.run('JSON.stringify(state.blockCourses.p1)'), original, 'folding only changes view state');
 });
 
 test('block knowledge source uses the selected generated block and rejects pending blocks', () => {

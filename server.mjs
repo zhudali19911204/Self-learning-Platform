@@ -6,6 +6,7 @@ import { createLLM, resolveConfig } from './llm.mjs';
 import { createCourseSources, CourseSourceError } from './course-sources.mjs';
 import { createCourseClaimMatcher } from './course-claim-matching.mjs';
 import { withInlineCourseCitations } from './course-inline-citations.mjs';
+import { quizMaterials, quizSourceGuidance } from './course-quiz-sources.mjs';
 import { sourceGenerationGuidance, sourceCitationIssue, groundedContent, validSourceSearch } from './public/course-sources.js';
 import { blockCommonGuidance, blockTypeGuidance, blockOutputGuidance, blockRevisionGuidance, outlineGuidance, planGuidance, validGeneratedBlock, normalizeOutline, inspectOutline, outlineRepairGuidance, mergeOutlineExamples } from './course-generation.mjs';
 import { validTeachingContext, cleanTeachingContext } from './public/teaching-context.js';
@@ -216,15 +217,20 @@ export function createApp(config = {}) {
           if (sourceOperations.has(operation)) fail('本课正在生成，请等待当前请求结束。');
           sourceOperations.add(operation);
           try {
-            if (search.enabled) notify('searching');
-            const documents = search.enabled ? await courseSources.prepare(`${data.title}\n${data.objective}\n${data.block.title}\n${data.block.objective}`.slice(0, 2000)) : null;
+            const quiz = data.block.type === 'quiz';
+            const savedCourse = quiz && config.getCourseBlockCourse && data.lessonId ? config.getCourseBlockCourse(data.lessonId) : null;
+            const materials = quiz ? quizMaterials(requested, savedCourse) : null;
+            if (materials) Object.assign(requested, materials.context);
+            if (search.enabled && !quiz) notify('searching');
+            const documents = quiz ? materials.documents : search.enabled ? await courseSources.prepare(`${data.title}\n${data.objective}\n${data.block.title}\n${data.block.objective}`.slice(0, 2000)) : null;
             checkSearch();
             if (documents) requested.officialDocuments = documents;
             const matchClaim = createCourseClaimMatcher();
-            result = await generate(instructions + practiceRevision + (documents ? sourceGenerationGuidance : '') + (suggestImage ? `${illustrationGuidance}在返回 text 的同时，若有必要，可额外返回 imageProposal:{"prompt":"图片生成提示词","caption":"解释配图的中文图注"}；无需配图则省略该字段。不得返回图片地址。` : ''), requested, value => {
+            result = await generate(instructions + practiceRevision + (documents ? sourceGenerationGuidance : '') + (quiz ? quizSourceGuidance : '') + (suggestImage ? `${illustrationGuidance}在返回 text 的同时，若有必要，可额外返回 imageProposal:{"prompt":"图片生成提示词","caption":"解释配图的中文图注"}；无需配图则省略该字段。不得返回图片地址。` : ''), requested, value => {
               if (documents) value = withInlineCourseCitations(data.block.type, value);
               if (documents && value?.sourceInsufficient === true) fail(sourceCitationIssue(data.block.type, value, documents), 422);
               if (!validGeneratedBlock(data.block.type, value)) return false;
+              if (quiz && !documents && withInlineCourseCitations('quiz', value).citations?.length) fail('本次练习依据已讲正文出题，未提供外部资料；模型不能添加未经提供的引用。题目未保存，请重新生成。', 422);
               if (documents) { const issue = sourceCitationIssue(data.block.type, value, documents, matchClaim); if (issue) fail(issue, 422); }
               return true;
             });

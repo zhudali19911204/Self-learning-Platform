@@ -130,7 +130,8 @@ test('claim matching tolerates presentation markup and prose whitespace but pres
   assert.equal(grounding.citations[0].quote, sourceText);
   assert.ok(validGrounding(grounding));
   const quiz = { questions: [{ explanation: '**提交身份**与远程认证不同。' }, { explanation: '另一个结论。' }], citations: generated().citations };
-  assert.match(sourceCitationIssue('quiz', quiz, documents, match), /部分测验/);
+  assert.equal(sourceCitationIssue('quiz', quiz, documents, match), null);
+  assert.match(sourceCitationIssue('quiz', { ...quiz, citations: [{ excerptId: 'S1E1', claim: '正文中不存在' }] }, documents, match), /不对应/);
 });
 
 const blockRequest = { goal: '学习Git', level: '零基础', title: 'Git 身份', objective: '区分身份与认证', intro: '导语', block: { type: 'reading', title: '身份字段', objective: '配置用户名与邮箱' } };

@@ -365,8 +365,9 @@ function persist(method, ...args) {
 let toastTimer;
 function toast(message) { $('#toast').textContent = message; $('#toast').classList.add('visible'); clearTimeout(toastTimer); toastTimer = setTimeout(() => $('#toast').classList.remove('visible'), 4500); }
 async function api(path, body) {
-  const names = { 'plan-clarify': '分析学习需求', plan: '规划学习路线', lesson: '生成课程内容', 'lesson-outline': body?.repairDraft ? '补充配套案例大纲' : '生成课程大纲', 'lesson-block': body?.revisionRequest ? '调整课程内容' : '生成课程内容', 'lesson-ask': 'AI 答疑', wiki: '生成知识卡片', 'wiki-draft': '生成知识卡片', 'knowledge-organize': '整理知识目录', ask: '知识问答' };
-  if (names[path]) return generationProgress.run({ title: names[path], detail: body?.block?.title || body?.title || body?.courseTitle || '', message: body?.sourceSearch?.enabled ? '正在联网检索并生成内容…' : '正在等待模型返回…' }, task => apiRequest(path, body, task.id));
+  const quiz = path === 'lesson-block' && body?.block?.type === 'quiz';
+  const names = { 'plan-clarify': '分析学习需求', plan: '规划学习路线', lesson: '生成课程内容', 'lesson-outline': body?.repairDraft ? '补充配套案例大纲' : '生成课程大纲', 'lesson-block': body?.revisionRequest ? '调整课程内容' : quiz ? '生成随堂练习' : '生成课程内容', 'lesson-ask': 'AI 答疑', wiki: '生成知识卡片', 'wiki-draft': '生成知识卡片', 'knowledge-organize': '整理知识目录', ask: '知识问答' };
+  if (names[path]) return generationProgress.run({ title: names[path], detail: body?.block?.title || body?.title || body?.courseTitle || '', message: quiz ? '正在依据已讲内容生成练习，不重新联网搜索…' : body?.sourceSearch?.enabled ? '正在联网检索并生成内容…' : '正在等待模型返回…' }, task => apiRequest(path, body, task.id));
   return apiRequest(path, body);
 }
 async function apiRequest(path, body, progressId) {
@@ -562,20 +563,21 @@ function decorateCourseSearch() {
 async function courseBlockRequest(id, request) {
   if (courseGenerationBusy.has(id)) throw new Error('本课正在生成，请等待当前请求结束。');
   const sourceSearch = { ...courseSearchPreference(id) };
+  const quiz = request.block?.type === 'quiz';
   courseGenerationBusy.add(id);
-  courseSearchMessages.set(id, { text: sourceSearch.enabled ? '正在查找网页资料并生成正文，请稍候…' : '正在生成正文…' }); decorateCourseSearch();
+  courseSearchMessages.set(id, { text: quiz ? '正在依据已讲内容生成练习，复用已有资料，不重新联网搜索…' : sourceSearch.enabled ? '正在查找网页资料并生成正文，请稍候…' : '正在生成正文…' }); decorateCourseSearch();
   try {
     let content;
     if (desktop?.generateCourseBlock) {
       const block = state.blockCourses?.[id]?.blocks.find(b => b.id === request.teachingContext?.targetId);
       if (!block) throw new Error('待生成模块不存在。');
-      const result = await generationProgress.run({ title: request.revisionRequest ? '调整课程内容' : '生成课程内容', detail: block.title }, task => desktop.generateCourseBlock({ lessonId: id, blockId: block.id, request: { ...request, sourceSearch }, ...(request.revisionRequest ? { expectedText: block.content?.text } : {}) }, task.id));
+      const result = await generationProgress.run({ title: request.revisionRequest ? '调整课程内容' : quiz ? '生成随堂练习' : '生成课程内容', detail: block.title, ...(quiz ? { message: '依据已讲内容出题，复用已有资料，不重新搜索…' } : {}) }, task => desktop.generateCourseBlock({ lessonId: id, blockId: block.id, request: { ...request, sourceSearch }, ...(request.revisionRequest ? { expectedText: block.content?.text } : {}) }, task.id));
       (state.factChecks ||= {})[id] = result.factChecks || [];
       if (result.quizRecord) (state.quizRecords ||= {})[id] = result.quizRecord;
       content = result.content;
     } else content = await api('lesson-block', { ...request, lessonId: id, sourceSearch });
     if (courseSearchPreference(id).revision !== sourceSearch.revision) throw new Error('联网搜索设置已变化，请重新生成。');
-    courseSearchMessages.set(id, { text: sourceSearch.enabled ? '已基于网页资料生成，参考文档见课程末尾。' : '' });
+    courseSearchMessages.set(id, { text: quiz ? content.grounding ? '已依据已讲内容生成练习，复用了本课参考资料，未重新联网搜索。' : '已依据已讲内容生成练习，未添加外部引用，也未重新联网搜索。' : sourceSearch.enabled ? '已基于网页资料生成，参考文档见课程末尾。' : '' });
     return content;
   } catch (error) { courseSearchMessages.set(id, { text: error.message, error: true }); throw error; }
   finally { courseGenerationBusy.delete(id); decorateCourseSearch(); }
@@ -682,7 +684,7 @@ function blockPart(block, index, lessonId, teaching = false) {
   const tools = button('生成知识卡片', 'create-note', 'secondary', attrs, 'brain') + imageAction + otherRevision + (editable && block.content.revisions?.length ? button('恢复上一版', 'restore-block', 'secondary', attrs, 'back') : '');
   const actions = block.content && block.type !== 'quiz' ? `<div class="revision-actions">${primaryRevision}${moreLearningTools(tools)}</div>` : '';
   const figure = desktop && validIllustration(block.content?.illustration) ? `<figure class="course-illustration"><img src="/course-images/${block.content.illustration.id}" alt="${escape(block.content.illustration.caption)}" loading="lazy"><figcaption>${escape(block.content.illustration.caption)}<small>${['commons', 'web'].includes(block.content.illustration.source) ? `网络资料 · ${block.content.illustration.source === 'commons' ? 'Wikimedia Commons' : '百炼网页搜图'} · ${escape(block.content.illustration.author)} · ${escape(block.content.illustration.license)} <button type="button" class="text-button" data-action="${block.content.illustration.source === 'commons' ? 'open-commons-source' : 'open-image-source'}" data-url="${escape(block.content.illustration.sourceUrl)}">查看来源与许可</button>` : 'AI 生成教学示意 · 请结合正文核验，勿用于精确测量或数据判断'}</small></figcaption></figure>` : '';
-  const canCollapse = Boolean(block.content) && ['reading', 'example'].includes(block.type);
+  const canCollapse = Boolean(block.content) && ['reading', 'example', 'practice', 'summary'].includes(block.type);
   const collapseKey = `${lessonId}:${block.id}`;
   const collapsed = canCollapse && collapsedBlocks.has(collapseKey);
   const bodyId = `block-body-${lessonId}-${block.id}`;

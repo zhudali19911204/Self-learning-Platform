@@ -59,7 +59,8 @@ export function withInlineCourseCitations(type, value) {
   if (!Array.isArray(bodies) || bodies.some(body => typeof body !== 'string')) return value;
   const byBody = bodies.map(inlineCitations);
   if (!byBody.some(citations => citations.length)) return value; // Compatible with older claim-based responses.
-  if (type === 'quiz' && byBody.some(citations => !citations.length)) reject('部分测验解析缺少资料引用标记，题目未保存。');
+  // A teaching-only explanation does not inherit another question's sources.
+  // Collect real references where present; never fabricate one to fill a quota.
   const citations = byBody.flat().filter((citation, index, all) => all.findIndex(item => item.excerptId === citation.excerptId && item.claim === citation.claim) === index);
   if (citations.length > MAX_COURSE_CITATIONS) reject('模型返回的引用数量异常过多，正文未保存。');
   // Inline locations are authoritative; ignore separately paraphrased claims.

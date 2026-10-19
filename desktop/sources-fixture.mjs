@@ -9,6 +9,14 @@ export function sourcesFixture() {
   });
   const llm = { status: () => ({ mode: 'ai', model: 'source-smoke-model', providerLabel: '隔离测试', timeoutMs: 1000 }), generate: async (_instruction, input, validate) => {
     counts.generations++;
+    if (input.block.type === 'quiz') {
+      if (!_instruction.includes('不重新联网搜索')) throw new Error('Quiz scope instruction missing');
+      const id = input.officialDocuments?.[0]?.excerpts[0].id;
+      const result = { questions: ['提交身份是否就是远程登录？', '应如何核对提交身份？'].map((prompt, index) => ({ prompt,
+        options: ['身份与认证应区分', '只看密码', '删除配置即可', '无需核对'], answer: 0,
+        explanation: '提交身份与远程认证不同。' + (id && index === 0 ? `[${id}]` : '') })) };
+      if (!validate(result)) throw new Error('Smoke quiz output rejected'); return result;
+    }
     const text = input.officialDocuments ? '## 提交身份\n\n提交身份与远程认证不同。\n\n配置 user.name 和 user.email，用于记录提交的作者与提交者。它们不代替远程仓库的认证。' : '## 教学示例\n\n关闭联网搜索后使用模型生成，此模块没有官方资料引用。';
     const result = { text: input.officialDocuments ? text.replace('提交身份与远程认证不同。', `提交身份与远程认证不同。[${input.officialDocuments[0].excerpts[0].id}]`) : text };
     if (!validate(result)) throw new Error('Smoke output rejected'); return result;

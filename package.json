@@ -1,6 +1,6 @@
 {
   "name": "learnflow",
-  "version": "1.2.7",
+  "version": "1.2.8",
   "main": "desktop/main.cjs",
   "private": true,
   "type": "module",
@@ -45,6 +45,7 @@
       "course-sources.mjs",
       "course-claim-matching.mjs",
       "course-inline-citations.mjs",
+      "course-quiz-sources.mjs",
       "test-support/audio.mjs",
       "package.json"
     ],

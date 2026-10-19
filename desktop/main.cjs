@@ -49,7 +49,7 @@ async function start() {
   const { createSpeechModel } = await import(pathToFileURL(path.join(__dirname, '..', 'speech-model.mjs')));
   const { assistedBlockTypes } = await import(pathToFileURL(path.join(__dirname, '..', 'public', 'blocks.js')));
   const { validImageSuggestion, validImageProposal } = await import(pathToFileURL(path.join(__dirname, '..', 'public', 'illustrations.js')));
-  const isolatedTest = smoke && (process.argv.includes('--facts-only') ? 'fact-tests' : process.argv.includes('--quality-only') || process.argv.includes('--revision-only') ? 'score-tests' : process.argv.includes('--sharing-only') ? 'sharing-tests' : '');
+  const isolatedTest = smoke && (process.argv.includes('--facts-only') ? 'fact-tests' : process.argv.includes('--sources-only') ? 'source-tests' : process.argv.includes('--quality-only') || process.argv.includes('--revision-only') ? 'score-tests' : process.argv.includes('--sharing-only') ? 'sharing-tests' : '');
   const dataDirectory = isolatedTest ? path.join(app.getPath('userData'), isolatedTest, randomBytes(8).toString('hex')) : path.join(app.getPath('userData'), 'data');
   await mkdir(dataDirectory, { recursive: true });
   settingsLayoutStore = createSettingsLayoutStore(dataDirectory);
@@ -115,7 +115,7 @@ async function start() {
   const onGenerationProgress = (requestId, stage) => {
     if (progressRequests.has(requestId) && window && !window.isDestroyed()) window.webContents.send('learnflow:generation-progress', { requestId, stage });
   };
-  server = createApp({ getLLM: () => llm, courseSources, onGenerationProgress, getCourseSourceSearch: id => learning.getLesson(id).sourceSearch, apiToken: token, getImageSettings: () => imageStore.getSettings(), getImageAsset: async id => {
+  server = createApp({ getLLM: () => llm, courseSources, onGenerationProgress, getCourseSourceSearch: id => learning.getLesson(id).sourceSearch, getCourseBlockCourse: id => learning.getLesson(id).blockCourse, apiToken: token, getImageSettings: () => imageStore.getSettings(), getImageAsset: async id => {
     try { return await imageStore.readAsset(id); } catch { return null; }
   }, getAudioAsset: async id => { try { return await speechStore.readAsset(id); } catch { return null; } } });
   await new Promise((resolve, reject) => { server.once('error', reject); server.listen(0, '127.0.0.1', resolve); });

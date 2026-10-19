@@ -34,10 +34,21 @@ test('code, HTML, destinations and escaped markers cannot supply prose evidence;
   assert.equal(withInlineCourseCitations('reading', legacy), legacy);
 });
 
-test('every quiz explanation needs its own inline evidence, even when explanations repeat', () => {
-  assert.throws(() => withInlineCourseCitations('quiz', { questions: [{ explanation: '结论。[S1E1]' }, { explanation: '结论。' }] }), /部分测验/);
+test('quiz explanations cite external passages only where used, without inventing evidence for teaching-only answers', () => {
+  const mixed = withInlineCourseCitations('quiz', { questions: [{ explanation: '结论。[S1E1]' }, { explanation: '结论。' }] });
+  assert.equal(mixed.citations.length, 1);
+  assert.equal(sourceCitationIssue('quiz', mixed, documents), null);
+  assert.equal(groundedContent('quiz', mixed, documents).citations.length, 1);
   const value = withInlineCourseCitations('quiz', { questions: [{ explanation: '结论。[S1E1]' }, { explanation: '另一个结论。[S1E2]' }] });
   assert.equal(sourceCitationIssue('quiz', value, documents), null);
+  for (const citations of [undefined, []]) {
+    const plain = withInlineCourseCitations('quiz', { questions: [{ explanation: '根据本课方法，先核对任务条件。' }], ...(citations ? { citations } : {}) });
+    assert.equal(sourceCitationIssue('quiz', plain, documents), null);
+    assert.equal(groundedContent('quiz', plain, documents), undefined, 'unused documents are not reported as quiz references');
+  }
+  assert.match(sourceCitationIssue('quiz', { questions: [], citations: 'invalid' }, documents), /引用/);
+  assert.match(sourceCitationIssue('quiz', { questions: [], sourceInsufficient: true }, documents), /不足/);
+  assert.match(sourceCitationIssue('reading', { text: '无引用结论。' }, documents), /缺少/);
 });
 
 test('many passages can cite the same source without losing evidence or bypassing validation', () => {
