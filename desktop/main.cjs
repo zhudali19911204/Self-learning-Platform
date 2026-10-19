@@ -7,14 +7,12 @@ const { readFile, writeFile, mkdir, stat } = require('node:fs/promises');
 app.setName('Learnflow');
 const smoke = process.argv.includes('--smoke-test');
 const development = process.argv.includes('--dev-profile');
-const liveRevision = process.argv.includes('--verify-revision');
-// safeStorage decrypts under the original profile; learning test data stays isolated.
-if (liveRevision) app.setPath('userData', path.resolve('.desktop-dev'));
-else if (smoke) app.setPath('userData', path.resolve('.desktop-test'));
+if (process.argv.includes('--verify-revision')) { console.error('旧修订工作台已取消，不再运行付费修订联调；未发起模型调用。'); app.exit(1); }
+if (smoke) app.setPath('userData', path.resolve('.desktop-test'));
 else if (development) app.setPath('userData', path.resolve('.desktop-dev'));
 let window, server, store, imageStore, speechStore, webSearchStore, qualityStore, settingsLayoutStore, learning, base, shuttingDown = false;
 const token = randomBytes(32).toString('hex');
-if (!app.requestSingleInstanceLock()) { if (liveRevision) console.log('REVISION_LIVE_BUSY','测试版仍在运行，请先保存未提交输入并关闭窗口；未发起真实调用。'); app.quit(); }
+if (!app.requestSingleInstanceLock()) app.quit();
 else {
   app.on('second-instance', () => { if (window) { if (window.isMinimized()) window.restore(); window.show(); window.focus(); } });
   app.whenReady().then(start).catch(error => { console.error('Desktop startup failed:', error.message); if (!smoke) dialog.showErrorBox('知行启动失败', error.message); app.exit(1); });
@@ -32,7 +30,9 @@ async function start() {
   const { createLLM } = await import(pathToFileURL(path.join(__dirname, '..', 'llm.mjs')));
   const { assertDistinctQualityModels } = await import(pathToFileURL(path.join(__dirname, '..', 'public', 'course-quality.js')));
   const { createQualityService } = await import(pathToFileURL(path.join(__dirname, '..', 'course-quality.mjs')));
-  const { createRevisionService } = await import(pathToFileURL(path.join(__dirname, '..', 'course-revision.mjs')));
+  const { createFactCheckService } = await import(pathToFileURL(path.join(__dirname, '..', 'course-fact-check.mjs')));
+  const { createFactCorrectionService } = await import(pathToFileURL(path.join(__dirname, '..', 'course-fact-correction.mjs')));
+  const { createFactCheckSettings } = await import(pathToFileURL(path.join(__dirname, 'fact-check-settings.mjs')));
   const { createLocalStore, validState } = await import(pathToFileURL(path.join(__dirname, 'local-store.mjs')));
   const { createSettingsLayoutStore } = await import(pathToFileURL(path.join(__dirname, 'settings-layout.mjs')));
   const { createSqliteStore } = await import(pathToFileURL(path.join(__dirname, 'sqlite-store.mjs')));
@@ -49,7 +49,8 @@ async function start() {
   const { createSpeechModel } = await import(pathToFileURL(path.join(__dirname, '..', 'speech-model.mjs')));
   const { assistedBlockTypes } = await import(pathToFileURL(path.join(__dirname, '..', 'public', 'blocks.js')));
   const { validImageSuggestion, validImageProposal } = await import(pathToFileURL(path.join(__dirname, '..', 'public', 'illustrations.js')));
-  const dataDirectory = smoke && process.argv.includes('--sharing-only') ? path.join(app.getPath('userData'), 'sharing-tests', randomBytes(8).toString('hex')) : liveRevision ? path.resolve('.desktop-test','revision-live','data') : path.join(app.getPath('userData'), 'data');
+  const isolatedTest = smoke && (process.argv.includes('--facts-only') ? 'fact-tests' : process.argv.includes('--quality-only') || process.argv.includes('--revision-only') ? 'score-tests' : process.argv.includes('--sharing-only') ? 'sharing-tests' : '');
+  const dataDirectory = isolatedTest ? path.join(app.getPath('userData'), isolatedTest, randomBytes(8).toString('hex')) : path.join(app.getPath('userData'), 'data');
   await mkdir(dataDirectory, { recursive: true });
   settingsLayoutStore = createSettingsLayoutStore(dataDirectory);
   await settingsLayoutStore.initialize();
@@ -58,11 +59,13 @@ async function start() {
     encrypt: async value => { if (!available()) throw new Error('系统安全存储不可用，无法保存密钥。可使用不需要密钥的本地模型。'); return safeStorage.encryptString(value).toString('base64'); },
     decrypt: async value => { if (!available()) throw new Error('系统安全存储不可用。'); return safeStorage.decryptString(Buffer.from(value, 'base64')); }
   };
-  const modelDirectory = liveRevision ? path.resolve('.desktop-dev','data') : dataDirectory;
+  const modelDirectory = dataDirectory;
   store = createLocalStore(modelDirectory, secrets, { validateChange: next => assertDistinctQualityModels(next, qualityStore?.getModelConfig()) });
   await store.initialize();
   qualityStore = createLocalStore(modelDirectory, secrets, { filename: 'quality-settings.json', validateChange: next => assertDistinctQualityModels(store.getModelConfig(), next) });
   await qualityStore.initialize();
+  const factCheckSettings = createFactCheckSettings(dataDirectory);
+  await factCheckSettings.initialize();
   imageStore = createImageStore(dataDirectory, secrets, bytes => {
     const decoded = nativeImage.createFromBuffer(bytes), { width, height } = decoded.getSize();
     if (decoded.isEmpty() || width < 1 || height < 1 || width > 4096 || height > 4096) throw new Error('图片无法解码或尺寸超过 4096，请调整图片模型尺寸。');
@@ -91,14 +94,8 @@ async function start() {
     return result;
   };
   const qualityService = createQualityService({ learning, getReviewer: getQualityLLM, getGenerator: () => llm.status() });
-  const revisionService = createRevisionService({ learning, getReviewer: getQualityLLM, getGenerator: () => llm });
-  if (liveRevision) {
-    console.log('REVISION_LIVE_CONFIG',JSON.stringify({generation:{mode:llm.status().mode,model:llm.status().model,error:store.getSettings().error||llm.status().configurationError},review:{mode:qualityStatus().mode,model:qualityStatus().model,error:qualityStore.getSettings().error||qualityStatus().configurationError}}));
-    let failed=false;
-    try { await require('./revision-live.cjs').run({learning,getGenerator:()=>llm,getReviewer:getQualityLLM}); }
-    catch (error) { console.log('REVISION_LIVE_RESULT',JSON.stringify({passed:false,message:error.message,automaticRetry:false})); failed=true; }
-    await store.flush(); await qualityStore.flush(); learning.close(); speechStore.close(); app.exit(failed?1:0); return;
-  }
+  const factChecker = createFactCheckService({ learning, getReviewer: getQualityLLM, getGenerator: () => llm, getReviewerConfig: () => qualityStore.getModelConfig(), getGeneratorConfig: () => store.getModelConfig() });
+  const factCorrection = createFactCorrectionService({ learning, getGenerator: () => llm });
   let roleSaveQueue = Promise.resolve();
   const saveModelRole = task => { const operation = roleSaveQueue.then(task); roleSaveQueue = operation.catch(() => {}); return operation; };
   if (process.argv.includes('--verify-model')) {
@@ -113,6 +110,7 @@ async function start() {
   }
   const courseSources = sourceFixture?.courseSources || createCourseSources({ getConfig: () => store.getModelConfig(), fetchImpl: modelFetch });
   const courseRequests = new Set();
+  const fullGenerationRequests = new Set();
   const progressRequests = new Set();
   const onGenerationProgress = (requestId, stage) => {
     if (progressRequests.has(requestId) && window && !window.isDestroyed()) window.webContents.send('learnflow:generation-progress', { requestId, stage });
@@ -126,11 +124,11 @@ async function start() {
     await settingsLayoutStore.flush();
     let state = null, stateError = '';
     try { state = learning.overview(); } catch (error) { stateError = error.message; }
-    return { settings: store.getSettings(), settingsLayout: settingsLayoutStore.get(), qualitySettings: qualityStore.getSettings(), qualityStatus: qualityStatus(), imageSettings: imageStore.getSettings(), speechSettings: speechStore.getSettings(), webSearchSettings: webSearchStore.getSettings(), state, stateError, status: llm.status(), dataDirectory, startPage: process.argv.includes('--settings') ? 'settings' : 'home' };
+    return { settings: store.getSettings(), settingsLayout: settingsLayoutStore.get(), qualitySettings: qualityStore.getSettings(), factCheck: factCheckSettings.get(), qualityStatus: qualityStatus(), imageSettings: imageStore.getSettings(), speechSettings: speechStore.getSettings(), webSearchSettings: webSearchStore.getSettings(), state, stateError, status: llm.status(), dataDirectory, startPage: process.argv.includes('--settings') ? 'settings' : 'home' };
   });
   handle('learnflow:save-settings-layout', value => settingsLayoutStore.save(value));
   handle('learnflow:set-course-source-search', (id, enabled) => {
-    if (courseRequests.has(id)) throw new Error('本课正在生成，请完成后再切换联网搜索。');
+    if (courseRequests.has(id) || fullGenerationRequests.has(id)) throw new Error('本课正在生成或核查，请完成后再切换联网搜索。');
     return learning.setSourceSearch(id, enabled);
   });
   handle('learnflow:open-course-source', async value => {
@@ -139,22 +137,27 @@ async function start() {
   });
   handle('learnflow:inspect-quality', (scope, id) => qualityService.inspect(scope, id));
   handle('learnflow:evaluate-quality', (scope, id, fingerprint) => qualityService.evaluate(scope, id, fingerprint));
-  handle('learnflow:create-revision', (reportId, issues, fingerprint) => revisionService.create(reportId, issues, fingerprint));
-  handle('learnflow:inspect-revision', id => revisionService.inspect(id));
-  handle('learnflow:generate-revision', (id, rev) => revisionService.generate(id, rev));
-  handle('learnflow:edit-revision', (id, rev, changes) => revisionService.edit(id, rev, changes));
-  handle('learnflow:review-revision', (id, rev) => revisionService.review(id, rev));
-  handle('learnflow:apply-revision', (id, rev, confirmed, risks) => revisionService.apply(id, rev, confirmed, risks));
-  handle('learnflow:restore-revision', (id, rev) => revisionService.restore(id, rev));
-  handle('learnflow:discard-revision', (id, rev) => revisionService.discard(id, rev));
-  handle('learnflow:quality-disposition', (reportId, index, status, note) => revisionService.disposition(reportId, index, status, note));
   handle('learnflow:test-quality-connection', () => {
     assertDistinctQualityModels(llm.status(), getQualityLLM().status());
     return getQualityLLM().testConnection();
   });
   handle('learnflow:save-quality-settings', value => saveModelRole(async () => {
+    const enabled = value.autoFactCheck ?? factCheckSettings.get().enabled;
+    if (typeof enabled !== 'boolean') throw new Error('自动事实核查开关无效。');
+    if (factCheckSettings.get().error) throw new Error(factCheckSettings.get().error);
+    if (enabled && !value.model?.trim()) throw new Error('请先填写独立的事实核查模型，再开启自动核查。');
     const settings = await qualityStore.saveSettings(value);
-    return { settings, status: qualityStatus() };
+    const factCheck = await factCheckSettings.save(enabled);
+    return { settings, status: qualityStatus(), factCheck };
+  }));
+  handle('learnflow:set-fact-check-enabled', enabled => saveModelRole(async () => {
+    if (typeof enabled !== 'boolean') throw new Error('自动事实核查开关无效。');
+    if (courseRequests.size || fullGenerationRequests.size) throw new Error('课程正在生成或核查，请完成后再切换质量审查。');
+    if (enabled) {
+      assertDistinctQualityModels(llm.status(), getQualityLLM().status());
+      if (getQualityLLM().status().mode !== 'ai') throw new Error('请先在设置中配置独立的事实核查模型，再开启质量审查。');
+    }
+    return factCheckSettings.save(enabled);
   }));
   handle('learnflow:save-speech-settings', value => speechStore.saveSettings(value));
   handle('learnflow:check-speech-connection', () => createSpeechModel(speechStore.getConfig(), modelFetch).check());
@@ -173,7 +176,7 @@ async function start() {
     });
     if (choice.response !== 1) return null;
     const lessonIds = new Set(learning.overview().plans.find(plan => plan.id === id).lessons.map(lesson => lesson.id));
-    if (speechService.isBusy() || [...imageRequests].some(key => lessonIds.has(key.split('/')[0]))) throw new Error('课程素材正在生成，请完成后再删除。');
+    if (speechService.isBusy() || [...imageRequests].some(key => lessonIds.has(key.split('/')[0])) || [...lessonIds].some(id => fullGenerationRequests.has(id) || factChecker.isBusy(id))) throw new Error('课程内容正在生成或核查，请完成后再删除。');
     const result = await learning.deletePlan(id);
     pendingImages.dropLessons(result.lessonIds);
     const warnings = [...result.backups.failures];
@@ -363,7 +366,7 @@ async function start() {
       throw error;
     }
   }));
-  handle('learnflow:request', async (endpoint, data, progressId) => {
+  const modelRequest = async (endpoint, data, progressId) => {
     if (!['status', 'plan-clarify', 'plan', 'lesson', 'lesson-outline', 'lesson-block', 'lesson-ask', 'wiki', 'wiki-draft', 'knowledge-organize', 'ask', 'test-connection'].includes(endpoint)) throw new Error('接口不存在。');
     const courseId = endpoint === 'lesson-block' ? data?.lessonId : null;
     if (courseId && courseRequests.has(courseId)) throw new Error('本课正在生成，请稍候。');
@@ -381,7 +384,39 @@ async function start() {
     if (!response.ok) throw new Error(value.error || '请求失败。');
     return value;
     } finally { if (courseId) courseRequests.delete(courseId); if (requestId) progressRequests.delete(requestId); }
+  };
+  handle('learnflow:request', modelRequest);
+  const checkedOperation = async (lessonId, progressId, operation) => {
+    if (fullGenerationRequests.has(lessonId) || courseRequests.has(lessonId)) throw new Error('本课正在生成或核查，请稍候。');
+    const requestId = typeof progressId === 'string' && /^generation-[a-z0-9-]{1,80}$/.test(progressId) ? progressId : '';
+    fullGenerationRequests.add(lessonId);
+    const notify = stage => { if (requestId) { progressRequests.add(requestId); onGenerationProgress(requestId, stage); } };
+    try { return await operation(notify); }
+    finally { fullGenerationRequests.delete(lessonId); if (requestId) progressRequests.delete(requestId); }
+  };
+  handle('learnflow:generate-course-block', (value, progressId) => checkedOperation(value?.lessonId, progressId, async notify => {
+    const detail = learning.getLesson(value.lessonId), block = detail.blockCourse?.blocks.find(b => b.id === value.blockId);
+    if (!block) throw new Error('内容块不存在。');
+    const revising = typeof value.request?.revisionRequest === 'string';
+    if (revising ? !block.content || block.content.text !== value.expectedText : !!block.content) throw new Error('模块内容已变化，请重新打开后生成。');
+    const original = block.content, generator = llm;
+    const generated = await modelRequest('lesson-block', { ...value.request, lessonId: value.lessonId, block: { type: block.type, title: block.title, objective: block.objective } }, progressId);
+    let checked = { content: generated, record: null };
+    if (factCheckSettings.get().enabled) checked = await factChecker.process(value.lessonId, value.blockId, generated, { notify, generator });
+    const saved = learning.saveFactCheckedBlock(value.lessonId, value.blockId, { ...generated, ...checked.content }, checked.record, original);
+    return { ...saved, factCheck: checked.record, ...(checked.record?.status === 'failed' ? { error: `正文已生成，事实核查未完成：${checked.record.error}` } : {}) };
+  }));
+  handle('learnflow:check-block-facts', (lessonId, blockId, progressId) => checkedOperation(lessonId, progressId, async notify => {
+    const block = learning.getLesson(lessonId).blockCourse?.blocks.find(b => b.id === blockId);
+    if (!block?.content) throw new Error('请先生成模块内容。');
+    const checked = await factChecker.process(lessonId, blockId, block.content, { notify });
+    return { ...learning.saveFactCheckedBlock(lessonId, blockId, checked.content, checked.record, block.content), cached: checked.cached, ...(checked.record.status === 'failed' ? { error: checked.record.error } : {}) };
+  }));
+  handle('learnflow:restore-fact-check', (lessonId, blockId, recordId) => {
+    if (fullGenerationRequests.has(lessonId)) throw new Error('本课正在生成或核查，请稍候。');
+    return learning.restoreFactCheck(lessonId, blockId, recordId);
   });
+  handle('learnflow:correct-fact-issues', (value, progressId) => checkedOperation(value?.lessonId, progressId, notify => factCorrection.correct(value.lessonId, value.blockId, value.recordId, value.issueIndexes, { confirmed: value.confirmed, notify })));
   handle('learnflow:export', async (name, content) => {
     if (typeof name !== 'string' || !/\.(json|md)$/.test(name) || typeof content !== 'string' || Buffer.byteLength(content) > 30 * 1024 * 1024) throw new Error('导出内容无效。');
     const filename = path.basename(name).replace(/[<>:"/\\|?*\x00-\x1f]/g, '-');
@@ -476,11 +511,12 @@ async function start() {
   if (!smoke) window.focus();
   if (development) { window.setTitle('知行 Learnflow · 开发测试版'); console.log('DESKTOP_DEV_READY'); }
   if (smoke) {
-    if (process.argv.includes('--sharing-only')) await require('./sharing-smoke.cjs').run(window,dataDirectory);
+    if (process.argv.includes('--facts-only')) await require('./fact-check-smoke.cjs').run(window,dataDirectory);
+    else if (process.argv.includes('--quality-only') || process.argv.includes('--revision-only')) await require('./quality-smoke.cjs').run(window,dataDirectory);
+    else if (process.argv.includes('--sharing-only')) await require('./sharing-smoke.cjs').run(window,dataDirectory);
     else if (process.argv.includes('--settings-only')) await require('./settings-smoke.cjs').run(window,dataDirectory);
     else if (process.argv.includes('--sources-only')) await require('./sources-smoke.cjs').run(window,dataDirectory,sourceFixture);
     else if (process.argv.includes('--generation-only')) await require('./generation-smoke.cjs').run(window,dataDirectory);
-    else if (process.argv.includes('--revision-only')) await require('./revision-smoke.cjs').run(window,dataDirectory);
     else await require('./smoke.cjs').run(window, { ...store, loadState: async () => learning.exportState() }, dataDirectory);
     await store.flush(); await qualityStore.flush(); await imageStore.flush(); await speechStore.flush(); await webSearchStore.flush(); app.quit();
   }

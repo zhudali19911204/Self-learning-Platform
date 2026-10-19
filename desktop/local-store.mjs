@@ -11,6 +11,7 @@ import { validAnnotations } from '../public/annotations.js';
 import { validSourceSearch, validLegacySourceBundle } from '../public/course-sources.js';
 import { validQualityReport } from '../public/course-quality.js';
 import { validRevisionJob, validQualityDisposition, validQuizRecord } from '../public/course-revision.js';
+import { validFactCheck } from '../public/fact-check.js';
 
 export const defaults = { provider: 'ollama', model: '', baseUrl: '', jsonMode: 'auto', thinkingMode: 'auto', timeoutMs: 120000, maxTokens: 8192, localOnly: true };
 const id = v => typeof v === 'string' && /^[a-zA-Z0-9_-]{1,160}$/.test(v) && !['__proto__', 'constructor', 'prototype'].includes(v);
@@ -35,6 +36,8 @@ export function validState(v) {
   if (!dict(v.lessons, validLesson) || !dict(v.reflections, s => string(s, 5000))) return false;
   if (v.annotations !== undefined && (!dict(v.annotations, validAnnotations) || Object.keys(v.annotations).some(key => !lessonIds.includes(key)))) return false;
   if (v.blockCourses !== undefined && (!dict(v.blockCourses, validBlockCourse) || Object.keys(v.blockCourses).some(key => !lessonIds.includes(key)))) return false;
+  if (v.factChecks !== undefined && !dict(v.factChecks, records => Array.isArray(records) && records.length <= 200 && new Set(records.map(r => r?.id)).size === records.length && records.every(validFactCheck))) return false;
+  if (v.factChecks && Object.entries(v.factChecks).some(([lessonId, records]) => !lessonIds.includes(lessonId) || records.some(r => r.lessonId !== lessonId || !v.blockCourses?.[lessonId]?.blocks.some(b => b.id === r.blockId && b.type === r.type)))) return false;
   if (v.chats !== undefined && !dict(v.chats, messages => Array.isArray(messages) && messages.length <= 20 && messages.every(message => object(message) && ['user', 'assistant'].includes(message.role) && string(message.content, message.role === 'user' ? 1000 : 12000)))) return false;
   if (!dict(v.progress, p => object(p) && typeof p.completed === 'boolean' && Number.isInteger(p.attempts) && p.attempts >= 0 && [p.lastScore, p.bestScore].every(n => Number.isInteger(n) && n >= 0 && n <= 100) && Array.isArray(p.lastAnswers) && p.lastAnswers.length <= 100 && p.lastAnswers.every(a => Number.isInteger(a) && a >= 0 && a < 4))) return false;
   if (!Array.isArray(v.notes) || !v.notes.every(n => validNote(n) && lessonIds.includes(n.lessonId))) return false;

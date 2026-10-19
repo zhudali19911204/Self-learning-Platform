@@ -6,6 +6,7 @@ import path from 'node:path';
 import { demoPlan, demoLessons } from '../public/demo.js';
 import { validLesson } from '../server.mjs';
 import { validState } from './local-store.mjs';
+import { validFactCheck, factContent, sameFactContent } from '../public/fact-check.js';
 import { instantiateCoursePackage } from './course-sharing.mjs';
 import { validOutline, validBlockSpec, validBlockContent, revisedContent, restoredContent, assistedBlockTypes } from '../public/blocks.js';
 import { referencedImages } from '../public/illustrations.js';
@@ -90,7 +91,7 @@ function replaceAll(db, state) {
     for (const report of state.qualityReports || []) db.prepare('INSERT INTO meta VALUES (?, ?)').run(`quality:${report.id}`, JSON.stringify(report));
     for (const job of state.qualityJobs || []) db.prepare('INSERT INTO meta VALUES (?, ?)').run(`revision:${job.id}`, JSON.stringify(job));
     for (const d of state.qualityDispositions || []) db.prepare('INSERT INTO meta VALUES (?, ?)').run(`quality_note:${d.reportId}:${d.issueIndex}`, JSON.stringify(d));
-    for (const field of ['quizRecords', 'revisionNotices', 'sourceSearch', 'sourceBundles']) for (const [lessonId, value] of Object.entries(state[field] || {})) db.prepare('INSERT INTO meta VALUES (?, ?)').run(`${field}:${lessonId}`, JSON.stringify(value));
+    for (const field of ['quizRecords', 'revisionNotices', 'sourceSearch', 'sourceBundles', 'factChecks']) for (const [lessonId, value] of Object.entries(state[field] || {})) db.prepare('INSERT INTO meta VALUES (?, ?)').run(`${field}:${lessonId}`, JSON.stringify(value));
   });
 }
 
@@ -127,6 +128,8 @@ function readExport(db) {
   }
   const sourceRows = db.prepare("SELECT key, value FROM meta WHERE key GLOB 'sourceBundles:*'").all();
   if (sourceRows.length) state.sourceBundles = Object.fromEntries(sourceRows.map(row => [row.key.slice('sourceBundles:'.length), fromJSON(row.value)]));
+  const factRows = db.prepare("SELECT key, value FROM meta WHERE key GLOB 'factChecks:*'").all();
+  if (factRows.length) state.factChecks = Object.fromEntries(factRows.map(row => [row.key.slice('factChecks:'.length), fromJSON(row.value)]));
   for (const row of db.prepare('SELECT id, content_json FROM lessons WHERE content_json IS NOT NULL').all()) state.lessons[row.id] = fromJSON(row.content_json);
   for (const row of db.prepare('SELECT lesson_id, content FROM reflections').all()) state.reflections[row.lesson_id] = row.content;
   for (const row of db.prepare("SELECT key, value FROM meta WHERE key GLOB 'annotations:*'").all()) (state.annotations ||= {})[row.key.slice('annotations:'.length)] = fromJSON(row.value);
@@ -247,7 +250,8 @@ export async function createSqliteStore(directory) {
     const blockCourse = outline ? { intro: outline.intro, blocks: db.prepare('SELECT id, type, title, objective, content_json FROM lesson_blocks WHERE lesson_id = ? ORDER BY position').all(lessonId).map(block => ({ id: block.id, type: block.type, title: block.title, objective: block.objective, content: block.content_json ? fromJSON(block.content_json) : null })) } : null;
     const quizRecord = db.prepare('SELECT value FROM meta WHERE key = ?').get(`quizRecords:${lessonId}`);
     const sourceSearch = fromJSON(db.prepare('SELECT value FROM meta WHERE key = ?').get(`sourceSearch:${lessonId}`)?.value || '{"enabled":false,"revision":0}');
-    return { lesson: row.content_json ? fromJSON(row.content_json) : null, blockCourse, reflection, annotations, chats, sourceSearch, ...(quizRecord ? { quizRecord: fromJSON(quizRecord.value) } : {}) };
+    const factChecks = fromJSON(db.prepare('SELECT value FROM meta WHERE key = ?').get(`factChecks:${lessonId}`)?.value || '[]');
+    return { lesson: row.content_json ? fromJSON(row.content_json) : null, blockCourse, reflection, annotations, chats, sourceSearch, factChecks, ...(quizRecord ? { quizRecord: fromJSON(quizRecord.value) } : {}) };
   }
   const metaSet = (key, value) => db.prepare('INSERT INTO meta VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value').run(key, JSON.stringify(value));
   const metaRows = prefix => db.prepare('SELECT value FROM meta WHERE key GLOB ?').all(`${prefix}:*`).map(r => fromJSON(r.value));
@@ -408,7 +412,7 @@ export async function createSqliteStore(directory) {
         db.prepare('DELETE FROM meta WHERE key = ?').run(`plan_brief:${planId}`);
         for (const row of db.prepare("SELECT key, value FROM meta WHERE key GLOB 'quality:*'").all()) if (fromJSON(row.value).planId === planId) db.prepare('DELETE FROM meta WHERE key = ?').run(row.key);
         for (const prefix of ['revision', 'quality_note']) for (const row of db.prepare('SELECT key, value FROM meta WHERE key GLOB ?').all(`${prefix}:*`)) if (fromJSON(row.value).planId === planId) db.prepare('DELETE FROM meta WHERE key = ?').run(row.key);
-        for (const lessonId of lessonIds) for (const field of ['quizRecords', 'revisionNotices', 'sourceSearch', 'sourceBundles']) db.prepare('DELETE FROM meta WHERE key = ?').run(`${field}:${lessonId}`);
+        for (const lessonId of lessonIds) for (const field of ['quizRecords', 'revisionNotices', 'sourceSearch', 'sourceBundles', 'factChecks']) db.prepare('DELETE FROM meta WHERE key = ?').run(`${field}:${lessonId}`);
         for (const lessonId of lessonIds) db.prepare('DELETE FROM meta WHERE key = ?').run(`annotations:${lessonId}`);
         db.prepare("UPDATE meta SET value = ? WHERE key = 'knowledge_generation'").run(randomUUID());
         db.prepare("UPDATE meta SET value = ? WHERE key = 'active_plan'").run(next);
@@ -467,6 +471,42 @@ export async function createSqliteStore(directory) {
           else db.prepare("UPDATE progress SET completed = 0, last_score = 0, last_answers_json = '[]' WHERE lesson_id = ?").run(lessonId);
         }
       });
+    },
+    saveFactCheckedBlock(lessonId, blockId, content, record, expectedContent) {
+      requireLesson(lessonId);
+      return transaction(db, () => {
+        const detail = getLesson(lessonId), block = detail.blockCourse?.blocks.find(b => b.id === blockId);
+        if (!block || !sameFactContent(block.content, expectedContent)) throw new Error('课程内容已变化，本次核查未覆盖新内容。');
+        if (!validBlockContent(block.type, content)) throw new Error('核查后的正文格式无效。');
+        if (record && (!validFactCheck(record) || record.lessonId !== lessonId || record.blockId !== blockId || record.type !== block.type || !sameFactContent(record.content, content))) throw new Error('核查记录与正文不对应。');
+        const beforeQuestions = quizQuestions(detail);
+        const unchanged = sameFactContent(block.content, content);
+        const nextImages = Object.fromEntries(['illustration', 'imageProposal'].filter(k => content[k] !== undefined || (unchanged && block.content?.[k] !== undefined)).map(k => [k, content[k] ?? block.content[k]]));
+        const previousImages = Object.fromEntries(['illustration', 'imageProposal'].filter(k => block.content?.[k] !== undefined).map(k => [k, block.content[k]]));
+        const payload = factContent(content);
+        let next = { ...payload, ...nextImages };
+        if (block.type !== 'quiz' && block.content) next.revisions = unchanged ? block.content.revisions || [] : [...(block.content.revisions || []), { ...factContent(block.content), ...previousImages, updated: Date.now() }].slice(-10);
+        if (!validBlockContent(block.type, next)) throw new Error('核查保存校验失败。');
+        db.prepare('UPDATE lesson_blocks SET content_json = ? WHERE lesson_id = ? AND id = ?').run(JSON.stringify(next), lessonId, blockId);
+        if (record) {
+          const history = [...detail.factChecks.filter(r => r.id !== record.id), record];
+          const counts = new Map();
+          const kept = history.reverse().filter(r => { const n = (counts.get(r.blockId) || 0) + 1; counts.set(r.blockId, n); return n <= 3; }).slice(0, 200).reverse();
+          metaSet(`factChecks:${lessonId}`, kept);
+        }
+        if (block.type === 'quiz') {
+          if (block.content || db.prepare('SELECT 1 FROM meta WHERE key = ?').get(`quizRecords:${lessonId}`)) trackQuizChange(lessonId, beforeQuestions, quizQuestions(getLesson(lessonId)));
+          else db.prepare("UPDATE progress SET completed = 0, last_score = 0, last_answers_json = '[]' WHERE lesson_id = ?").run(lessonId);
+        }
+        if (block.content && !sameFactContent(block.content, next)) metaSet(`revisionNotices:${lessonId}`, { updated: Date.now(), jobId: record?.id || 'fact-restore' });
+        return { content: next, factChecks: getLesson(lessonId).factChecks, quizRecord: getLesson(lessonId).quizRecord || null };
+      });
+    },
+    restoreFactCheck(lessonId, blockId, recordId) {
+      const detail = getLesson(lessonId), block = detail.blockCourse?.blocks.find(b => b.id === blockId);
+      const record = detail.factChecks.find(r => r.id === recordId && r.blockId === blockId);
+      if (!record?.beforeContent || !['corrected', 'edited'].includes(record.status) || !sameFactContent(block?.content, record.content)) throw new Error('内容已变化，不能恢复旧版本以覆盖新内容。');
+      return this.saveFactCheckedBlock(lessonId, blockId, record.beforeContent, null, block.content);
     },
     attachIllustration(lessonId, blockId, illustration, expectedContent) {
       requireLesson(lessonId);

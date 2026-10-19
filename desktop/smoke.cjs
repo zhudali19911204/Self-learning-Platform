@@ -660,6 +660,8 @@ exports.run = async (window, store, directory) => {
     await writeFile(path.join(directory,'..','practice-actions-smoke.png'),(await window.webContents.capturePage()).toPNG());
     window.webContents.reload();await new Promise(resolve=>window.webContents.once('did-finish-load',resolve));await wait("document.querySelector('main h1')");
     await evaluate(`document.querySelector('[data-page=routes]').click();document.querySelector('[data-action=open-lesson][data-id="${lessonId}"]').click()`);
+    await wait(`document.querySelector('[data-block-id="${practiceBlock.id}"]')`);
+    await evaluate(`document.querySelector('[data-block-id="${practiceBlock.id}"]').scrollIntoView({block:'start'})`);
     await wait(`document.querySelector('[data-block-id="${practiceBlock.id}"] .course-illustration img')?.complete`);
     assert.equal((await store.loadState()).blockCourses[lessonId].blocks.find(block=>block.id===practiceBlock.id).content.text,practiceText);
     console.log('PRACTICE_ACTIONS_SMOKE',JSON.stringify({passed:true,checks:['three-block-actions-and-floating-speech','practice-transcript-preview','image-confirmation-and-IPC-save','task-feedback-and-history','restore-task-and-image','quiz-progress-preserved','sqlite-reload']}));
@@ -687,7 +689,6 @@ exports.run = async (window, store, directory) => {
   await new Promise(resolve => window.webContents.once('did-finish-load', resolve));
   await wait("document.querySelector('main h1')");
   await require('./quality-smoke.cjs').run(window, directory);
-  await require('./revision-smoke.cjs').run(window, directory);
   await require('./generation-smoke.cjs').run(window, directory);
   await require('./speech-smoke.cjs').run(window, directory);
   await evaluate("document.querySelector('#speech-dialog').close()");

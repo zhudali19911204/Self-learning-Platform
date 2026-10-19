@@ -28,18 +28,14 @@ contextBridge.exposeInMainWorld('learnflowDesktop', Object.freeze({
   cardMarkdown: id => invoke('learnflow:card-markdown', id),
   saveSettings: value => invoke('learnflow:save-settings', value),
   saveQualitySettings: value => invoke('learnflow:save-quality-settings', value),
+  setFactCheckEnabled: enabled => invoke('learnflow:set-fact-check-enabled', enabled),
+  generateCourseBlock: (value, progressId) => invoke('learnflow:generate-course-block', value, progressId),
+  checkBlockFacts: (lessonId, blockId, progressId) => invoke('learnflow:check-block-facts', lessonId, blockId, progressId),
+  restoreFactCheck: (lessonId, blockId, recordId) => invoke('learnflow:restore-fact-check', lessonId, blockId, recordId),
+  correctFactIssues: (value, progressId) => invoke('learnflow:correct-fact-issues', value, progressId),
   testQualityConnection: () => invoke('learnflow:test-quality-connection'),
   inspectQuality: (scope, id) => invoke('learnflow:inspect-quality', scope, id),
   evaluateQuality: (scope, id, fingerprint) => invoke('learnflow:evaluate-quality', scope, id, fingerprint),
-  createRevision: (reportId, issues, fingerprint) => invoke('learnflow:create-revision', reportId, issues, fingerprint),
-  inspectRevision: id => invoke('learnflow:inspect-revision', id),
-  generateRevision: (id, rev) => invoke('learnflow:generate-revision', id, rev),
-  editRevision: (id, rev, changes) => invoke('learnflow:edit-revision', id, rev, changes),
-  reviewRevision: (id, rev) => invoke('learnflow:review-revision', id, rev),
-  applyRevision: (id, rev, confirmed, risks) => invoke('learnflow:apply-revision', id, rev, confirmed, risks),
-  restoreRevision: (id, rev) => invoke('learnflow:restore-revision', id, rev),
-  discardRevision: (id, rev) => invoke('learnflow:discard-revision', id, rev),
-  saveQualityDisposition: (reportId, index, status, note) => invoke('learnflow:quality-disposition', reportId, index, status, note),
   saveImageSettings: value => invoke('learnflow:save-image-settings', value),
   saveSpeechSettings: value => invoke('learnflow:save-speech-settings', value),
   checkSpeechConnection: () => invoke('learnflow:check-speech-connection'),
@@ -64,7 +60,7 @@ contextBridge.exposeInMainWorld('learnflowDesktop', Object.freeze({
   onGenerationProgress: listener => {
     if (typeof listener !== 'function') return () => {};
     const receive = (_event, value) => {
-      if (typeof value?.requestId === 'string' && ['preparing', 'searching', 'generating', 'validating'].includes(value.stage)) listener({ requestId: value.requestId, stage: value.stage });
+      if (typeof value?.requestId === 'string' && ['preparing', 'searching', 'generating', 'validating', 'fact_checking', 'fact_correcting', 'fact_rechecking'].includes(value.stage)) listener({ requestId: value.requestId, stage: value.stage });
     };
     ipcRenderer.on('learnflow:generation-progress', receive);
     return () => ipcRenderer.removeListener('learnflow:generation-progress', receive);

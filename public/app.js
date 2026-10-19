@@ -14,8 +14,8 @@ import { createGraphMotion, stepGraphMotion } from './graph-motion.js';
 import { qualityRubric, qualityLabels, qualityModelId } from './course-quality.js';
 import { teachingContextNotice } from './teaching-context.js';
 import { officialSource, validSourceSearch, courseReferences } from './course-sources.js';
-import { revisionTypes, revisionStatuses, revisionCheckLabels, revisionContent, revisionText, revisionDiff } from './course-revision.js';
 import { createGenerationProgress } from './generation-progress.js';
+import { factCheckLabels, sameFactContent } from './fact-check.js';
 
 const renderMarkdown = createMarkdownRenderer(Marked, DOMPurify);
 
@@ -46,7 +46,7 @@ const icon = (name, cls = '') => `<svg class="icon ${cls}" viewBox="0 0 24 24" f
 const desktop = window.learnflowDesktop;
 const generationProgress = createGenerationProgress({ document, setTimer: setTimeout, clearTimer: clearTimeout });
 desktop?.onGenerationProgress?.(({ requestId, stage }) => {
-  const messages = { preparing: '正在准备请求…', searching: '正在搜索并读取参考资料…', generating: '模型正在生成内容…', validating: '正在检查生成内容与格式…' };
+  const messages = { preparing: '正在准备请求…', searching: '正在搜索并读取参考资料…', generating: '模型正在生成内容…', validating: '正在检查生成内容与格式…', fact_checking: '独立模型正在核查事实与资料依据…', fact_correcting: '正在按资料修正明确错误（最多一轮）…', fact_rechecking: '独立模型正在复核修正结果…' };
   if (messages[stage]) generationProgress.update(requestId, messages[stage]);
 });
 let desktopSettings = null, dataDirectory = '', pendingSave = Promise.resolve();
@@ -76,11 +76,13 @@ const collapsedBlocks = new Set();
 const courseGenerationBusy = new Set(), courseSearchMessages = new Map();
 // Session-only drafts are deliberately separate from saved, validated courses.
 const outlineDrafts = new Map();
+let factCheckPreferences = { enabled: false, error: '' };
+let factCheckToggleBusy = false, factCheckToggleError = '';
+const factCheckBusy = new Set();
+const factCorrectionSelections = new Map(), factCorrectionErrors = new Map();
 let status = { mode: 'loading' };
 let connectionResult = '';
 let qualitySettings = null, qualityStatus = { mode: 'demo' }, qualityConnectionResult = '', qualityView = null, qualityBusy = false;
-let qualityRevisionView = null, qualityRevisionBusy = false, qualityRevisionError = '';
-const qualityRevisionEdits = new Map();
 let revisionBusy = false;
 let imageSettings = null, imageConnectionResult = '', illustrationBusy = false, illustrationDraft = null;
 let webSearchSettings = null, webSearchSaveResult = '';
@@ -374,7 +376,7 @@ async function apiRequest(path, body, progressId) {
   const value = await r.json(); if (!r.ok) throw new Error(value.error || '请求失败，请重试。'); return value;
 }
 function desktopGeneration(method, ...args) {
-  const titles = { evaluateQuality: '评价课程质量', generateRevision: '生成课程修订稿', reviewRevision: '复核课程修订稿', suggestIllustration: '生成配图建议', autoSearchCommonsImages: 'AI 搜索课程配图', autoSearchWebImages: 'AI 搜索课程配图', generateIllustration: '生成课程配图', retryIllustrationDownload: '下载课程配图', generateSpeech: '生成 AI 朗读' };
+  const titles = { evaluateQuality: '课程评分', suggestIllustration: '生成配图建议', autoSearchCommonsImages: 'AI 搜索课程配图', autoSearchWebImages: 'AI 搜索课程配图', generateIllustration: '生成课程配图', retryIllustrationDownload: '下载课程配图', generateSpeech: '生成 AI 朗读' };
   return generationProgress.run({ title: titles[method], message: method === 'generateSpeech' ? '正在合成并下载朗读音频…' : method === 'retryIllustrationDownload' ? '正在下载已生成的配图…' : '正在等待模型返回…' }, () => desktop[method](...args));
 }
 const pill = (text, cls = '') => `<span class="pill ${cls}">${escape(text)}</span>`;
@@ -539,7 +541,7 @@ function decorateQualityActions() {
   const entry = document.createElement('button');
   entry.type = 'button'; entry.className = 'btn secondary quality-entry';
   entry.dataset.action = 'open-quality'; entry.dataset.scope = scope; entry.dataset.id = targetId;
-  entry.textContent = (state.qualityReports || []).some(r => r.scope === scope && r.targetId === targetId) ? '质量审查 · 查看报告' : '质量审查';
+  entry.textContent = '课程评分';
   if (scope === 'route') host.append(entry); else host.after(entry);
 }
 function courseSearchPreference(id) {
@@ -552,9 +554,10 @@ function decorateCourseSearch() {
   document.querySelector('.course-source-controls')?.remove();
   const preference = courseSearchPreference(activeLesson), busy = courseGenerationBusy.has(activeLesson);
   const controls = document.createElement('div'); controls.className = 'course-source-controls';
-  controls.innerHTML = `<button type="button" class="course-search-switch" role="switch" aria-checked="${preference.enabled}" aria-describedby="course-search-help" data-action="toggle-course-search" data-id="${escape(activeLesson)}" ${busy ? 'disabled' : ''}><span class="switch-track" aria-hidden="true"></span>联网搜索</button><span id="course-search-help" class="field-hint">${preference.enabled ? '生成正文时搜索并读取网页资料 · 搜索可能计费' : '已关闭 · 使用模型本身生成正文'}</span><p class="course-search-status ${courseSearchMessages.get(activeLesson)?.error ? 'error-text' : ''}" role="status" aria-live="polite">${escape(courseSearchMessages.get(activeLesson)?.text || '')}</p>`;
+  const checkBusy = factCheckToggleBusy || courseGenerationBusy.size > 0 || factCheckBusy.size > 0 || modelSettingsSaving;
+  controls.innerHTML = `<div class="course-preference-row"><button type="button" class="course-search-switch" role="switch" aria-checked="${preference.enabled}" aria-describedby="course-search-help" data-action="toggle-course-search" data-id="${escape(activeLesson)}" ${busy ? 'disabled' : ''}><span class="switch-track" aria-hidden="true"></span>联网搜索</button><span id="course-search-help" class="field-hint">${preference.enabled ? '生成正文时搜索并读取网页资料 · 搜索可能计费' : '已关闭 · 使用模型本身生成正文'}</span><p class="course-search-status ${courseSearchMessages.get(activeLesson)?.error ? 'error-text' : ''}" role="status" aria-live="polite">${escape(courseSearchMessages.get(activeLesson)?.text || '')}</p></div>${desktop ? `<div class="course-preference-row"><button type="button" class="course-search-switch" role="switch" aria-checked="${factCheckPreferences.enabled}" aria-describedby="course-fact-check-help" data-action="toggle-course-fact-check" ${checkBusy || factCheckPreferences.error ? 'disabled' : ''}><span class="switch-track" aria-hidden="true"></span>质量审查</button><span id="course-fact-check-help" class="field-hint">${factCheckToggleBusy ? '正在保存…' : factCheckPreferences.enabled ? '已开启 · 生成后独立核查 · 全部课程生效，可能计费' : '已关闭 · 生成后不自动核查'}${qualityStatus.mode !== 'ai' ? ' · <button type="button" class="text-button" data-action="configure-fact-check">配置核查模型</button>' : ''}</span><p class="course-search-status error-text" role="status" aria-live="polite">${escape(factCheckToggleError || factCheckPreferences.error || '')}</p></div>` : ''}`;
   host.after(controls);
-  document.querySelectorAll('[data-action="generate-block"], [data-action="request-revision"]').forEach(button => { button.disabled = busy; });
+  document.querySelectorAll('[data-action="generate-block"], [data-action="request-revision"]').forEach(button => { button.disabled = busy || factCheckToggleBusy; });
 }
 async function courseBlockRequest(id, request) {
   if (courseGenerationBusy.has(id)) throw new Error('本课正在生成，请等待当前请求结束。');
@@ -562,7 +565,15 @@ async function courseBlockRequest(id, request) {
   courseGenerationBusy.add(id);
   courseSearchMessages.set(id, { text: sourceSearch.enabled ? '正在查找网页资料并生成正文，请稍候…' : '正在生成正文…' }); decorateCourseSearch();
   try {
-    const content = await api('lesson-block', { ...request, lessonId: id, sourceSearch });
+    let content;
+    if (desktop?.generateCourseBlock) {
+      const block = state.blockCourses?.[id]?.blocks.find(b => b.id === request.teachingContext?.targetId);
+      if (!block) throw new Error('待生成模块不存在。');
+      const result = await generationProgress.run({ title: request.revisionRequest ? '调整课程内容' : '生成课程内容', detail: block.title }, task => desktop.generateCourseBlock({ lessonId: id, blockId: block.id, request: { ...request, sourceSearch }, ...(request.revisionRequest ? { expectedText: block.content?.text } : {}) }, task.id));
+      (state.factChecks ||= {})[id] = result.factChecks || [];
+      if (result.quizRecord) (state.quizRecords ||= {})[id] = result.quizRecord;
+      content = result.content;
+    } else content = await api('lesson-block', { ...request, lessonId: id, sourceSearch });
     if (courseSearchPreference(id).revision !== sourceSearch.revision) throw new Error('联网搜索设置已变化，请重新生成。');
     courseSearchMessages.set(id, { text: sourceSearch.enabled ? '已基于网页资料生成，参考文档见课程末尾。' : '' });
     return content;
@@ -648,6 +659,19 @@ async function generateLessonOutline(id) {
     throw error;
   } finally { pending.busy = false; refresh(); }
 }
+function factCheckStrip(block, lessonId) {
+  if (!desktop?.checkBlockFacts || !block.content) return '';
+  const key = `${lessonId}:${block.id}`, busy = factCheckBusy.has(key) || courseGenerationBusy.has(lessonId);
+  const record = [...(state.factChecks?.[lessonId] || [])].reverse().find(r => r.blockId === block.id && sameFactContent(r.content, block.content));
+  const phase = busy ? 'checking' : record?.status || 'unchecked';
+  const label = busy ? '正在处理…' : record ? record.status === 'uncertain' ? `有 ${record.issues.length} 处待核实` : factCheckLabels[record.status] : '尚未核查';
+  const attrs = `data-id="${escape(lessonId)}" data-block="${escape(block.id)}"`;
+  const selectable = desktop.correctFactIssues && record?.issues.length && ['uncertain', 'edited'].includes(record.status);
+  const selection = factCorrectionSelections.get(record?.id) || new Set();
+  const issues = record?.issues.map((i, index) => `<article>${selectable ? `<label class="check-label fact-issue-selection"><input type="checkbox" data-fact-selection data-fact-record="${escape(record.id)}" data-issue="${index}" ${selection.has(index) ? 'checked' : ''} ${busy ? 'disabled' : ''}>修正此疑点</label>` : ''}<blockquote>${escape(i.quote)}</blockquote><p>${escape(i.reason)}</p><p>建议：${escape(i.suggestion)}</p>${i.evidence.map(e => { const source = record.sources.find(s => s.id === e.id); return `<details><summary>资料依据 · ${escape(source?.title)}</summary><blockquote>${escape(e.quote)}</blockquote><p>${escape(source?.url)}</p></details>`; }).join('')}</article>`).join('') || '';
+  const correction = selectable ? `<p class="field-hint">勾选后确认，即可直接更新对应文案。不要求提供参考资料；疑点可能误判，修正后仍需核对。每次确认最多调用一次生成模型，可能计费。</p>${button(`确认修正（${selection.size}）`, 'correct-fact-issues', 'primary', `${attrs} data-record="${escape(record.id)}" ${busy || !selection.size || status.mode !== 'ai' ? 'disabled' : ''}`, '')}` : '';
+  return `<details class="fact-check-strip is-${phase}"><summary><span class="fact-check-dot" aria-hidden="true"></span>${escape(label)}<span class="fact-check-view">查看</span></summary><div class="fact-check-details"><p>${escape(record?.summary || '使用另一个模型检查事实、适用条件、来源及答案。')}</p>${record?.error ? `<p class="inline-error">${escape(record.error)}</p>` : ''}${issues}${correction}<p class="inline-error" role="alert">${escape(factCorrectionErrors.get(key) || '')}</p><div class="fact-check-actions">${button(busy ? '处理中…' : record?.status === 'failed' ? '重试核查' : '核查当前版本', 'check-block-facts', 'secondary', `${attrs} ${busy || qualityStatus.mode !== 'ai' ? 'disabled' : ''}`, 'check')}${record?.beforeContent && ['corrected', 'edited'].includes(record.status) ? button('恢复修正前版本', 'restore-fact-check', 'secondary', `${attrs} data-record="${escape(record.id)}" ${busy ? 'disabled' : ''}`, 'back') : ''}</div><p class="field-hint">未发现问题不代表事实已证实。未变化的内容复用核查结果；新核查可能计费。</p></div></details>`;
+}
 function blockPart(block, index, lessonId, teaching = false) {
   const labels = { reading: '知识讲解', example: '配套案例', practice: '动手实践', quiz: '随堂练习', summary: '知识总结' };
   const attrs = `data-id="${escape(lessonId)}" data-block="${escape(block.id)}"`;
@@ -666,7 +690,7 @@ function blockPart(block, index, lessonId, teaching = false) {
   const body = block.content && block.type !== 'quiz' ? `<div class="block-text markdown-content annotatable" data-annotation-source="block:${escape(block.id)}">${renderMarkdown(block.content.text, { grounding: block.content.grounding, desktop: !!desktop })}</div>${figure}` : '';
   const bodyMarkup = canCollapse ? `<div id="${escape(bodyId)}" class="block-collapsible-body" ${collapsed ? 'hidden' : ''}>${body}</div>` : body;
   const contextNotice = !block.content ? teachingContextNotice(state.blockCourses?.[lessonId] || {blocks:[block]},block.id) : '';
-  return `<section class="${teaching ? `teaching-part teaching-${block.type}` : 'reading-section content-block'}" data-block-id="${escape(block.id)}"><div class="teaching-part-heading"><span class="pill purple">${String(index + 1).padStart(2, '0')} · ${labels[block.type]}</span>${actions}</div><div class="block-title-row"><h2 class="block-title">${escape(block.title)}</h2>${toggle}</div><p class="block-objective">${escape(block.objective)}</p>${block.content ? block.type === 'quiz' ? `<p>已生成 ${block.content.questions.length} 道练习题。${button('去练习', 'quiz', 'secondary')}</p>` : bodyMarkup : `<div class="block-pending"><span>此模块尚未生成，可以按需展开。</span>${contextNotice ? `<p class="field-hint generation-scope-notice">${escape(contextNotice)}</p>` : ''}${button('生成这一块', 'generate-block', 'secondary', attrs, 'spark')}</div>`}</section>`;
+  return `<section class="${teaching ? `teaching-part teaching-${block.type}` : 'reading-section content-block'}" data-block-id="${escape(block.id)}"><div class="teaching-part-heading"><span class="pill purple">${String(index + 1).padStart(2, '0')} · ${labels[block.type]}</span>${actions}</div><div class="block-title-row"><h2 class="block-title">${escape(block.title)}</h2>${toggle}</div><p class="block-objective">${escape(block.objective)}</p>${factCheckStrip(block, lessonId)}${block.content ? block.type === 'quiz' ? `<p>已生成 ${block.content.questions.length} 道练习题。${button('去练习', 'quiz', 'secondary')}</p>` : bodyMarkup : `<div class="block-pending"><span>此模块尚未生成，可以按需展开。</span>${contextNotice ? `<p class="field-hint generation-scope-notice">${escape(contextNotice)}</p>` : ''}${button('生成这一块', 'generate-block', 'secondary', attrs, 'spark')}</div>`}</section>`;
 }
 function teachingSequence(course, lessonId) {
   const units = [];
@@ -930,32 +954,16 @@ function qualitySettingsPanel() {
   <div class="settings-field-wide"><label for="quality-model-url">接口根地址 <small>留空使用服务预设</small></label><input id="quality-model-url" name="baseUrl" maxlength="2000" value="${escape(cfg.baseUrl)}" placeholder="例如 http://127.0.0.1:11434"></div><div class="model-key-field settings-field-wide">${modelKeyField('quality-model-key', 'quality-key-action', cfg)}</div></div>
   <label class="check-label"><input type="checkbox" name="localOnly" ${cfg.localOnly ? 'checked' : ''}>仅使用本机评审模型</label><p class="field-hint">云端或局域网模型请关闭此项；保存不会发起课程评价。</p>
   <details class="model-advanced"><summary>高级设置</summary><div class="model-advanced-content"><div class="form-row"><div><label for="quality-json-mode">JSON 模式</label><select id="quality-json-mode" name="jsonMode">${[['auto','自动'],['on','开启'],['off','仅提示词']].map(([id,label]) => `<option value="${id}" ${id === cfg.jsonMode ? 'selected' : ''}>${label}</option>`).join('')}</select></div><div><label for="quality-timeout">超时（秒）</label><input id="quality-timeout" name="timeout" type="number" min="1" max="600" required value="${cfg.timeoutMs / 1000}"></div><div><label for="quality-tokens">输出上限</label><input id="quality-tokens" name="maxTokens" type="number" min="128" max="32768" required value="${cfg.maxTokens}"></div></div>${modelThinkingField('quality-thinking', cfg)}</div></details>
-  <p id="quality-settings-error" class="inline-error" role="alert">${escape(cfg.error || qualityStatus.configurationError || '')}</p>${settingsFormActions('quality-settings-form', 'test-quality-connection', '检查连接', '保存配置')}</form>
-  <p id="quality-connection-result" class="settings-result" role="status">${escape(qualityConnectionResult || '尚未验证连接。主动开始评价时才发送课程需求与正文。')}</p><p class="field-hint">连接检查会发送固定短提示，云端可能计费。课程评价未经人工校准，也未外部核验事实。</p>`;
-  return settingsPanel('reviewer', 'quality-settings-form', '课程质量评审', '独立模型检查路线、讲解、案例和测验', cfg.model ? `评审配置：${cfg.provider} · ${cfg.model}` : '未配置 · 不影响正常学习', 'check', body);
+  <p class="field-hint">自动核查请在课程页“联网搜索”下方的“质量审查”开关控制，点击即保存，适用于全部课程。通常增加 1 次核查；有资料支持的明确错误最多自动修正、复核各 1 次。</p><p class="inline-error">${escape(factCheckPreferences.error)}</p><p id="quality-settings-error" class="inline-error" role="alert">${escape(cfg.error || qualityStatus.configurationError || '')}</p>${settingsFormActions('quality-settings-form', 'test-quality-connection', '检查连接', '保存配置')}</form>
+  <p id="quality-connection-result" class="settings-result" role="status">${escape(qualityConnectionResult || '保存后可检查连接；开启自动核查后，生成内容会交给独立模型检查。')}</p><p class="field-hint">连接检查会发送固定短提示，云端可能计费。资料不足时只标记待核实，独立模型核查不保证零错误。</p>`;
+  return settingsPanel('reviewer', 'quality-settings-form', '事实核查模型', '生成后自动检查事实、资料依据和测验答案', cfg.model ? `${factCheckPreferences.enabled ? '自动核查已开启' : '自动核查未开启'} · ${cfg.model}` : '未配置 · 选择与生成模型不同的模型', 'check', body);
 }
 async function openQuality(scope, id) {
-  if (!desktop?.inspectQuality) throw new Error('课程评价目前在桌面版提供。');
+  if (!desktop?.inspectQuality) throw new Error('课程评分目前在桌面版提供。');
   await pendingSave;
   const data = await desktop.inspectQuality(scope, id);
   qualityView = { ...data, selectedReportId: data.currentReportId || data.reports[0]?.id || '', error: '' };
   renderQualityDialog(); $('#quality-dialog').showModal();
-}
-function qualityIssueMarkup(item, index) {
-  const title = qualityView.units.find(u => u.id === item.unitId)?.title || '原版本模块';
-  return `<article class="quality-issue ${item.severity}"><div><strong>${escape({critical:'严重问题',major:'需重点核对',minor:'改进建议'}[item.severity])}</strong><span>${escape(title)} · ${item.origin === 'rule' ? '本地规则' : 'AI 审查'}</span></div>${item.quote ? `<blockquote>${escape(item.quote)}</blockquote>` : ''}<p>${escape(item.reason)}</p><p><strong>建议：</strong>${escape(item.suggestion)}</p><button type="button" class="text-button" data-action="quality-locate" data-issue="${index}">${icon('arrow')}查看对应内容</button>${qualityIssueControls(item,index)}</article>`;
-}
-function qualityIssueControls(item, index) {
-  const v = qualityView, report = v.reports.find(r => r.id === v.selectedReportId);
-  if (!desktop?.createRevision || v.scope !== 'lesson' || !report) return '';
-  const unit = v.units.find(u => u.id === item.unitId), fresh = report.fingerprint === v.fingerprint;
-  const note = (v.dispositions || []).find(d => d.reportId === report.id && d.issueIndex === index);
-  return `${fresh && unit && !unit.pending && revisionTypes.includes(unit.type) ? `<label class="check-label revision-select"><input type="checkbox" name="revision-issue" value="${index}" ${qualityBusy ? 'disabled' : ''}>加入本轮修订</label>` : '<p class="field-hint">历史报告或结构调整问题不能直接修订，请先评价当前内容或手动调整大纲。</p>'}<details class="quality-disposition"><summary>处理说明${note ? ' · ' + escape({pending:'待处理',deferred:'暂不处理',verify:'待核验'}[note.status]) : ''}</summary><textarea id="quality-disposition-${index}" maxlength="1000" placeholder="可选：记录暂缓原因或需要核验的内容">${escape(note?.note || '')}</textarea><div class="quality-review-actions">${[['deferred','暂不处理'],['verify','标记待核验'],['pending','恢复待处理']].map(([status,label]) => button(label,'quality-disposition','secondary',`data-issue="${index}" data-status="${status}"`,'')).join('')}</div></details>`;
-}
-function qualityRevisionControls(report) {
-  if (!desktop?.createRevision || qualityView.scope !== 'lesson') return '';
-  const fresh = report && report.fingerprint === qualityView.fingerprint;
-  return `<section class="quality-revision-entry"><h3>修订闭环</h3>${fresh ? button('修订选中问题（先建任务，不计费）','quality-create-revision','primary',qualityBusy ? 'disabled' : '','') : '<p class="field-hint">请先审查当前课程版本，再选择问题修订。</p>'}<p class="field-hint">同模块问题合并处理，每轮最多5个模块。生成草稿与复核分别由你发起，确认应用前不改变原课程。</p>${(qualityView.jobs || []).map(j => button(`${revisionStatuses[j.status]} · ${qualityDate(j.updated)}`,'quality-open-revision','secondary',`data-job="${j.id}"`,'')).join('')}</section>`;
 }
 function decorateRevisionNotices() {
   if (!document.createElement) return;
@@ -978,12 +986,10 @@ const qualityDate = timestamp => new Date(timestamp).toLocaleString('zh-CN', { y
 function renderQualityDialog() {
   if (!qualityView) return;
   const v = qualityView, report = v.reports.find(r => r.id === v.selectedReportId), stale = report && report.fingerprint !== v.fingerprint;
-  const issues = report ? report.issues : v.rules.issues;
-  const reportMarkup = report ? `<section class="quality-report"><div class="quality-score"><strong>${report.score}<small>/100</small></strong><div>${pill(qualityLabels[report.status], report.status === 'reviewed' ? 'success' : 'purple')}<p>${report.partial ? '部分内容审查' : report.scope === 'route' ? '路线规划审查' : '本课内容审查'} · 参考分，不代表事实正确率</p></div></div>${stale ? '<p class="notice">这是旧内容版本的报告。课程已变化，请重新评价当前版本。</p>' : ''}<p>${escape(report.summary)}</p><p class="field-hint">评审模型：${escape(report.reviewer.model)} · ${qualityDate(report.created)} · ${escape(report.rubricVersion)}<br>生成配置（审查时）：${escape(report.generator.model || '未配置')}。历史课程的原始生成模型尚未追溯。<br>未经人工校准；事实未外部核验。</p><div class="quality-dimensions">${report.dimensions.map(d => `<details><summary>${escape(qualityRubric.find(r => r.id === d.id)?.label || d.id)}<strong>${d.rating}/4</strong></summary><p>${escape(d.reason)}</p></details>`).join('')}</div></section>` : '<p class="notice">尚无 AI 评价报告。下方本地检查无需联网，不能判断事实是否正确。</p>';
-  $('#quality-dialog').innerHTML = `<div class="dialog-heading"><div><div class="eyebrow">COURSE QUALITY REVIEW</div><h2 id="quality-title">课程质量报告</h2></div><button type="button" class="icon-button" data-action="close-quality" aria-label="关闭质量报告">${icon('close')}</button></div><h3>${escape(v.title)}</h3><p>${escape(v.objective)}</p><p class="field-hint">${v.scope === 'route' ? `路线共 ${v.rules.total} 节课，仅审查规划。` : `已生成 ${v.rules.ready}/${v.rules.total} 个模块。${v.rules.partial ? '仅评价已生成内容。' : ''}`}</p>
-  <div class="quality-review-actions">${button(qualityBusy ? '正在评价…' : '开始 AI 评价（可能计费）', 'evaluate-quality', 'primary', qualityBusy || qualityStatus.mode !== 'ai' || !v.rules.ready ? 'disabled' : '', 'check')}${button('评审模型设置', 'quality-settings', 'secondary', qualityBusy ? 'disabled' : '', 'settings')}</div><p class="field-hint">发送学习需求、大纲及已生成正文给独立评审模型；不发送笔记、答疑或成绩。每次点击评价一次，失败不自动重试，课程原文保持保存。</p><p id="quality-error" class="inline-error" role="alert">${escape(v.error)}</p>
-  ${v.reports.length ? `<label for="quality-report-select">评价历史（保留最近 10 份）</label><select id="quality-report-select">${v.reports.map(r => `<option value="${r.id}" ${r.id === v.selectedReportId ? 'selected' : ''}>${qualityDate(r.created)} · ${r.score} 分 · ${r.fingerprint === v.fingerprint ? '当前内容' : '历史版本'}${r.partial ? ' · 部分审查' : ''}</option>`).join('')}</select>` : ''}${reportMarkup}<h3>${report ? '审查发现' : '本地检查'}</h3>${issues.length ? issues.map(qualityIssueMarkup).join('') : '<p>当前未报告问题；仍需核对关键事实。</p>'}<details class="quality-objectives"><summary>查看课程验收目标</summary>${v.units.map(u => `<p><strong>${escape(u.title)}${u.pending ? ' · 尚未生成' : ''}</strong><br>${escape(u.objective)}</p>`).join('')}</details>`;
-  $('#quality-dialog').innerHTML += qualityRevisionControls(report);
+  const reportMarkup = report ? `<section class="quality-report"><div class="quality-score"><strong>${report.score}<small>/100</small></strong><div>${pill(qualityLabels[report.status], report.status === 'reviewed' ? 'success' : 'purple')}<p>${report.partial ? '部分内容评分' : report.scope === 'route' ? '路线规划评分' : '本课内容评分'} · 参考分，不代表事实正确率</p></div></div>${stale ? '<p class="notice">这是旧内容版本的评分。课程已变化，请重新评分当前版本。</p>' : ''}<h3>评分说明</h3><p>${escape(report.summary)}</p><p class="field-hint">评分模型：${escape(report.reviewer.model)} · ${qualityDate(report.created)}<br>未经人工校准；评分不代表事实已核实。</p><div class="quality-dimensions">${report.dimensions.map(d => `<details><summary>${escape(qualityRubric.find(r => r.id === d.id)?.label || d.id)}<strong>${d.rating}/4</strong></summary><p>${escape(d.reason)}</p></details>`).join('')}</div></section>` : '<p class="notice">尚无课程评分。点击“开始评分”获取总分、各维度得分与评分说明；不会修改课程。</p>';
+  $('#quality-dialog').innerHTML = `<div class="dialog-heading"><div><div class="eyebrow">COURSE SCORE</div><h2 id="quality-title">课程评分</h2></div><button type="button" class="icon-button" data-action="close-quality" aria-label="关闭课程评分">${icon('close')}</button></div><h3>${escape(v.title)}</h3><p>${escape(v.objective)}</p><p class="field-hint">${v.scope === 'route' ? `路线共 ${v.rules.total} 节课，仅评价规划。` : `已生成 ${v.rules.ready}/${v.rules.total} 个模块。${v.rules.partial ? '仅对已生成内容评分。' : ''}`}</p>
+  <div class="quality-review-actions">${button(qualityBusy ? '正在评分…' : report ? '重新评分（可能计费）' : '开始评分（可能计费）', 'evaluate-quality', 'primary', qualityBusy || qualityStatus.mode !== 'ai' || !v.rules.ready ? 'disabled' : '', 'check')}${qualityStatus.mode !== 'ai' ? button('配置评分模型', 'quality-settings', 'secondary', qualityBusy ? 'disabled' : '', 'settings') : ''}</div><p class="field-hint">使用已配置的独立核查模型评分，可能计费。仅发送学习需求、大纲和已生成正文，不发送笔记、答疑或成绩；失败不自动重试，课程原文不变。</p><p id="quality-error" class="inline-error" role="alert">${escape(v.error)}</p>
+  ${v.reports.length ? `<label for="quality-report-select">评分历史（保留最近 10 份）</label><select id="quality-report-select">${v.reports.map(r => `<option value="${r.id}" ${r.id === v.selectedReportId ? 'selected' : ''}>${qualityDate(r.created)} · ${r.score} 分 · ${r.fingerprint === v.fingerprint ? '当前内容' : '历史版本'}${r.partial ? ' · 部分评分' : ''}</option>`).join('')}</select>` : ''}${reportMarkup}`;
 }
 async function evaluateQuality() {
   if (qualityBusy || !qualityView) return;
@@ -993,104 +999,9 @@ async function evaluateQuality() {
     const result = await desktopGeneration('evaluateQuality', target.scope, target.targetId, target.fingerprint);
     state.qualityReports = [...(state.qualityReports || []).filter(r => r.scope !== target.scope || r.targetId !== target.targetId), ...result.reports];
     if (qualityView === target) qualityView = { ...result, selectedReportId: result.reports[0]?.id || '', error: '' };
-    toast('课程评价报告已保存。');
+    toast('课程评分已保存。');
   } catch (error) { if (qualityView === target) target.error = error.message; else toast(error.message); }
   finally { qualityBusy = false; if (qualityView) renderQualityDialog(); }
-}
-async function locateQualityIssue(index) {
-  const view = qualityView, report = view.reports.find(r => r.id === view.selectedReportId);
-  const issue = (report?.issues || view.rules.issues)[index];
-  if (!issue) return;
-  if (report && report.fingerprint !== view.fingerprint) throw new Error('此问题来自历史版本，请先评价当前内容再定位。');
-  $('#quality-dialog').close();
-  const lessonId = view.scope === 'route' ? issue.unitId : view.targetId;
-  const owner = state.plans.find(p => p.lessons.some(l => l.id === lessonId));
-  if (!owner) throw new Error('对应课程不存在。');
-  state.active = owner.id;
-  const quizTarget = issue.unitId === 'legacy-quiz' || state.blockCourses?.[lessonId]?.blocks.some(b => b.id === issue.unitId && b.type === 'quiz');
-  await openLesson(lessonId, quizTarget ? 'quiz' : 'read');
-  let node = document.querySelector(`[data-block-id="${issue.unitId}"]`);
-  if (!node && issue.unitId.startsWith('section-')) node = document.querySelectorAll('.reading-section')[Number(issue.unitId.slice(8))];
-  if (!node && issue.unitId === 'legacy-example') node = $('.code-block');
-  if (!node && issue.unitId === 'legacy-practice') node = $('.challenge');
-  if (!node && issue.unitId === 'legacy-quiz') node = $('.quiz-intro');
-  if (!node) node = $('.lesson-content');
-  const body = node?.querySelector('.block-collapsible-body');
-  if (body?.hidden) { collapsedBlocks.delete(`${lessonId}:${issue.unitId}`); body.hidden = false; const toggle = node.querySelector('.block-collapse-toggle'); if (toggle) { toggle.textContent = '收起'; toggle.setAttribute('aria-expanded', 'true'); } }
-  if (quizTarget) node = $('.question') || node;
-  node?.scrollIntoView({ behavior: 'smooth', block: 'center' });
-  node?.classList.add('quality-target');
-  setTimeout(() => node?.classList.remove('quality-target'), 2600);
-}
-async function openQualityRevision(id, supplied) {
-  const result = supplied || await desktop.inspectRevision(id);
-  qualityRevisionView = result; qualityRevisionError = ''; qualityRevisionEdits.clear();
-  $('#quality-dialog').close(); qualityView = null;
-  renderQualityRevision(); $('#quality-revision-dialog').showModal();
-}
-function qualityRevisionChangeMarkup(change) {
-  const u = qualityRevisionView.job.baseSnapshot.units.find(u => u.id === change.unitId);
-  const before = revisionText(u.type, revisionContent(u)), after = revisionText(u.type, change.content), diff = revisionDiff(before, after);
-  const lines = (items, tag) => items.map(l => l.changed ? `<${tag}>${escape(l.text) || ' '}</${tag}>` : `<span>${escape(l.text) || ' '}</span>`).join('');
-  return `<section class="revision-change"><h3>${escape(u.title)}${u.type === 'quiz' ? ' · 测验（答案从0开始）' : ''}</h3><p>${escape(change.note)}</p><div class="revision-diff"><div><strong>原文</strong><pre>${lines(diff.before,'del')}</pre></div><div><strong>修订稿</strong><pre>${lines(diff.after,'ins')}</pre></div></div>${u.type !== 'quiz' ? `<details><summary>阅读修订稿</summary><div class="markdown-content">${renderMarkdown(change.content.text)}</div></details>` : ''}<details class="revision-editor"><summary>编辑草稿${u.type === 'quiz' ? '（题目 JSON）' : '（Markdown）'}</summary><label class="sr-only" for="revision-edit-${change.unitId}">编辑 ${escape(u.title)}</label><textarea id="revision-edit-${change.unitId}" data-revision-unit="${change.unitId}" maxlength="100000" ${qualityRevisionBusy || qualityRevisionView.job.status !== 'draft' ? 'disabled' : ''}>${escape(qualityRevisionEdits.get(change.unitId) ?? after)}</textarea></details></section>`;
-}
-function renderQualityRevision() {
-  if (!qualityRevisionView) return;
-  const v = qualityRevisionView, j = v.job, editable = ['draft','generating','reviewing'].includes(j.status), review = j.review;
-  const risky = review && (review.report.status === 'needs_revision' || review.checks.some(c => c.status !== 'not_found'));
-  const locked = qualityRevisionBusy || v.running || v.stale;
-  const comparable = review && review.report.reviewer.model === j.sourceReport.reviewer.model && review.report.reviewer.provider === j.sourceReport.reviewer.provider && review.report.rubricVersion === j.sourceReport.rubricVersion;
-  $('#quality-revision-dialog').innerHTML = `<div class="dialog-heading"><div><div class="eyebrow">REVIEW → REVISE → VERIFY</div><h2 id="quality-revision-title">课程修订工作台</h2></div><button type="button" class="icon-button" data-action="quality-close-revision" aria-label="关闭修订工作台">${icon('close')}</button></div><h3>${escape(j.title)}</h3>${pill(revisionStatuses[j.status],'purple')}<p class="field-hint">原文不会提前覆盖。生成和复核各发起一次模型调用；失败不自动重试。保存、预览、应用和恢复不调用模型。</p>${v.stale ? '<p class="notice error">课程版本已变化，此任务不能覆盖新内容。请重新评价并创建修订。</p>' : ''}${['generating','reviewing'].includes(j.status) && !v.running ? '<p class="notice">上次调用可能中断，结果未知。不会自动重试；再次调用可能再次计费。</p>' : ''}<p class="inline-error" role="alert">${escape(qualityRevisionError || j.error)}</p><details class="revision-source-issues"><summary>本轮选定 ${j.issueIndexes.length} 个问题</summary>${j.issueIndexes.map(i => `<p><strong>${escape(j.sourceReport.issues[i].reason)}</strong><br>${escape(j.sourceReport.issues[i].suggestion)}</p>`).join('')}</details>
-  ${editable ? `<div class="quality-review-actions">${button(j.review ? '根据复核继续修订（可能计费）' : j.changes.length ? '重新生成草稿（可能计费）' : '生成修订草稿（可能计费）','quality-generate-revision','primary',locked || status.mode !== 'ai' ? 'disabled' : '','')}${button('放弃任务','quality-discard-revision','secondary',qualityRevisionBusy || v.running ? 'disabled' : '','')}</div>` : ''}${j.changes.map(qualityRevisionChangeMarkup).join('')}
-  ${editable && j.changes.length ? `<div class="quality-review-actions">${button('保存草稿（不调用模型）','quality-save-revision','secondary',locked ? 'disabled' : '','')}${button('保存并独立复核（可能计费）','quality-review-revision','primary',locked || qualityStatus.mode !== 'ai' ? 'disabled' : '','')}</div>` : ''}
-  ${review ? `<section class="revision-review"><h3>独立复核结果</h3><p>${comparable ? `参考分：${j.sourceReport.score} → ${review.report.score}` : `当前参考分：${review.report.score}；评审模型或标准不同，不直接比较。`} · ${escape(qualityLabels[review.report.status])}</p><p>${escape(review.report.summary)}</p><p class="field-hint">${escape(review.report.reviewer.model)} · ${qualityDate(review.report.created)}。未经人工校准，事实未外部核验。</p>${review.checks.map(c => `<article class="quality-issue"><strong>${escape(revisionCheckLabels[c.status])}</strong><p>${escape(j.sourceReport.issues[c.issueIndex].reason)}</p><p>${escape(c.reason)}</p></article>`).join('')}<details><summary>当前稿全部审查发现（含残留问题） · ${review.report.issues.length} 项</summary>${review.report.issues.map(i => `<article class="quality-issue"><strong>${escape(i.reason)}</strong><blockquote>${escape(i.quote)}</blockquote><p>${escape(i.suggestion)}</p></article>`).join('') || '<p>未报告问题，仍需核对关键事实。</p>'}</details></section>` : j.changes.length ? '<p class="notice">当前草稿尚未独立复核，不能应用。编辑草稿后旧复核会失效。</p>' : '<p class="notice">先生成草稿，再查看差异和编辑。创建任务、关闭和重新打开都不会调用模型。</p>'}
-  ${editable && review ? `<section class="revision-apply"><label class="check-label"><input type="checkbox" id="revision-confirmed">我已查看差异与复核结果，确认应用这份草稿</label>${risky ? '<label class="check-label"><input type="checkbox" id="revision-allow-risks">仍有问题或待核验项，我理解风险并选择应用</label>' : ''}${button('确认应用（不调用模型）','quality-apply-revision','primary',locked || qualityRevisionEdits.size ? 'disabled' : '','')}<p class="field-hint">保留原版本，课程与报告一起保存。${v.linkedCards} 张关联卡片不会改写；批注与配图保留，需核对是否仍适用。</p></section>` : ''}${j.status === 'applied' ? button('恢复本轮修订前的内容','quality-restore-revision','secondary',locked ? 'disabled' : '','') : ''}`;
-}
-async function saveQualityRevisionDraft() {
-  const j = qualityRevisionView.job;
-  const changes = j.changes.map(c => {
-    const u = j.baseSnapshot.units.find(u => u.id === c.unitId), value = $(`[data-revision-unit="${c.unitId}"]`)?.value ?? revisionText(u.type,c.content);
-    let content;
-    if (u.type === 'quiz') { try { content = { questions: JSON.parse(value) }; } catch { throw new Error('测验草稿不是有效的题目 JSON，输入已保留。'); } }
-    else content = { text: value };
-    return { ...c, content };
-  });
-  qualityRevisionView = await desktop.editRevision(j.id,j.rev,changes); qualityRevisionEdits.clear();
-}
-async function runQualityRevision(operation) {
-  if (qualityRevisionBusy || !qualityRevisionView) return;
-  const id = qualityRevisionView.job.id;
-  const confirmed = $('#revision-confirmed')?.checked === true, risks = $('#revision-allow-risks')?.checked === true;
-  if (['discard','restore'].includes(operation) && !window.confirm(operation === 'restore' ? '恢复本轮修订前的课程内容？新题成绩按版本保留，知识卡片和笔记不会删除。' : '放弃这个修订任务？原课程保持不变。')) return;
-  if (operation === 'generate' && qualityRevisionView.job.changes.length && !window.confirm('重新生成会替换当前草稿并使复核失效，可能再次计费。继续吗？')) return;
-  qualityRevisionBusy = true; qualityRevisionError = '';
-  try {
-    // Save user edits before a paid review; editing errors cannot trigger a model call.
-    if (['save','review'].includes(operation)) await saveQualityRevisionDraft();
-    renderQualityRevision();
-    const j = qualityRevisionView.job;
-    let result = qualityRevisionView;
-    if (operation === 'generate') result = await desktopGeneration('generateRevision', id,j.rev);
-    if (operation === 'review') result = await desktopGeneration('reviewRevision', id,j.rev);
-    if (operation === 'apply') result = await desktop.applyRevision(id,j.rev,confirmed,risks);
-    if (operation === 'restore') result = await desktop.restoreRevision(id,j.rev);
-    if (operation === 'discard') result = await desktop.discardRevision(id,j.rev);
-    if (qualityRevisionView?.job.id === id) { qualityRevisionView = result; if (operation === 'generate') qualityRevisionEdits.clear(); }
-    if (['apply','restore'].includes(operation)) {
-      await pendingSave;
-      state = (await desktop.load()).state; state.active = j.planId;
-      await desktop.setActivePlan(j.planId); await openLesson(j.lessonId,'read');
-    }
-    toast(operation === 'save' ? '草稿已保存；没有调用模型。' : operation === 'apply' ? '已应用修订并保存对应报告。' : operation === 'restore' ? '已恢复本轮修订前的内容。' : '修订任务已保存。');
-  } catch (error) {
-    qualityRevisionError = error.message;
-    if (qualityRevisionView?.job.id === id) { try { qualityRevisionView = await desktop.inspectRevision(id); } catch {} }
-  } finally { qualityRevisionBusy = false; if (qualityRevisionView) renderQualityRevision(); }
-}
-function closeQualityRevision() {
-  if (qualityRevisionBusy) { toast('正在处理修订，请等待本次操作完成。'); return false; }
-  if (qualityRevisionEdits.size && !window.confirm('还有未保存的草稿编辑，关闭将放弃这些编辑。已保存的任务仍可继续。')) return false;
-  $('#quality-revision-dialog').close(); qualityRevisionView = null; qualityRevisionEdits.clear(); return true;
 }
 function webSearchSettingsPanel() {
   const cfg = webSearchSettings || { enabled: false };
@@ -1280,6 +1191,7 @@ async function openLesson(id, tab = 'read') {
     state.blockCourses = detail.blockCourse ? { [id]: detail.blockCourse } : {};
     state.reflections = { [id]: detail.reflection };
     state.annotations = { [id]: detail.annotations || [] };
+    (state.factChecks ||= {})[id] = detail.factChecks || [];
     state.chats = { [id]: detail.chats };
     (state.sourceSearch ||= {})[id] = detail.sourceSearch || { enabled: false, revision: 0 };
     if (detail.quizRecord) (state.quizRecords ||= {})[id] = detail.quizRecord;
@@ -1398,30 +1310,41 @@ function markdown(n) { return `# ${n.title}\n\n${n.summary.split('\n').map(line 
 async function action(name, element) {
   if (name === 'toggle-generation-progress') { generationProgress.toggle(); return; }
   if (name === 'dismiss-generation-task') { generationProgress.dismiss(element.dataset.id); return; }
+  if (['check-block-facts', 'restore-fact-check', 'correct-fact-issues'].includes(name) && desktop) {
+    const lessonId = element.dataset.id, blockId = element.dataset.block, key = `${lessonId}:${blockId}`;
+    if (factCheckBusy.has(key)) return;
+    const issueIndexes = [...(factCorrectionSelections.get(element.dataset.record) || [])];
+    if (name === 'correct-fact-issues') {
+      if (!issueIndexes.length) throw new Error('请先勾选需要修正的疑点。');
+      if (!window.confirm(`确认修正选中的 ${issueIndexes.length} 个疑点并直接更新教程？将调用一次生成模型，可能计费。疑点可能被误判，修正结果尚未重新核查；原版本可恢复。`)) return;
+    }
+    const wasOpen = element.closest?.('.fact-check-strip')?.open;
+    factCheckBusy.add(key);
+    factCorrectionErrors.delete(key);
+    const refresh = () => { if (page === 'study' && activeLesson === lessonId) { render(); if (wasOpen) { const details = document.querySelector(`[data-block-id="${blockId}"] .fact-check-strip`); if (details) details.open = true; } } };
+    refresh();
+    try {
+      const result = name === 'restore-fact-check' ? await desktop.restoreFactCheck(lessonId, blockId, element.dataset.record) : name === 'correct-fact-issues' ? await generationProgress.run({ title: '修正所选疑点' }, task => desktop.correctFactIssues({ lessonId, blockId, recordId: element.dataset.record, issueIndexes, confirmed: true }, task.id)) : await generationProgress.run({ title: '独立事实核查' }, task => desktop.checkBlockFacts(lessonId, blockId, task.id));
+      const block = state.blockCourses?.[lessonId]?.blocks.find(b => b.id === blockId);
+      if (block) block.content = result.content;
+      (state.factChecks ||= {})[lessonId] = result.factChecks || [];
+      if (result.quizRecord) (state.quizRecords ||= {})[lessonId] = result.quizRecord;
+      if (name === 'restore-fact-check') toast('已恢复修正前内容，该版本需要重新核查。');
+      else if (name === 'correct-fact-issues') { factCorrectionSelections.delete(element.dataset.record); toast('已按所选疑点更新文案，可恢复原版本；建议重新核查。'); }
+      else if (result.cached) toast('内容未变化，已复用已有核查结果。');
+    } catch (error) { if (name === 'correct-fact-issues') factCorrectionErrors.set(key, error.message); throw error;
+    } finally { factCheckBusy.delete(key); refresh(); }
+    return;
+  }
   if (name === 'toggle-settings-panel') {
     const id = element.dataset.panel, panel = $('#settings-' + id);
     if (panel && Object.hasOwn(settingsPanels, id)) { panel.open = !panel.open; rememberSettingsPanel(id, panel.open); }
     return;
   }
   if (name === 'settings-jump') return jumpToSettings(element.dataset.target);
-  if (name === 'quality-create-revision') {
-    const v = qualityView, indexes = Array.from(document.querySelectorAll('#quality-dialog input[name="revision-issue"]:checked')).map(input => Number(input.value));
-    if (!indexes.length) throw new Error('请先勾选要修订的问题。');
-    const result = await desktop.createRevision(v.selectedReportId,indexes,v.fingerprint); return openQualityRevision(result.job.id,result);
-  }
-  if (name === 'quality-open-revision') return openQualityRevision(element.dataset.job);
-  if (name === 'quality-close-revision') return closeQualityRevision();
-  const workflowAction = /^quality-(generate|save|review|apply|restore|discard)-revision$/.exec(name);
-  if (workflowAction) return runQualityRevision(workflowAction[1]);
-  if (name === 'quality-disposition') {
-    const index = Number(element.dataset.issue), note = $(`#quality-disposition-${index}`).value;
-    qualityView.dispositions = await desktop.saveQualityDisposition(qualityView.selectedReportId,index,element.dataset.status,note);
-    renderQualityDialog(); return;
-  }
   if (name === 'open-quality' && desktop) return openQuality(element.dataset.scope, element.dataset.id);
   if (name === 'close-quality') { $('#quality-dialog').close(); qualityView = null; return; }
   if (name === 'evaluate-quality' && desktop) return evaluateQuality();
-  if (name === 'quality-locate') return locateQualityIssue(Number(element.dataset.issue));
   if (name === 'quality-settings') { $('#quality-dialog').close(); qualityView = null; navigate('settings'); return jumpToSettings('reviewer'); }
   if (name === 'test-quality-connection' && desktop) {
     const button = element; button.disabled = true;
@@ -1584,6 +1507,17 @@ async function action(name, element) {
     state = restored; activeLesson = null; activeNote = null; answer = null; navigate('routes'); toast('已恢复删除前的学习记录。'); return;
   }
   if (name === 'open-lesson') return openLesson(id);
+  if (name === 'configure-fact-check' && desktop) { navigate('settings'); jumpToSettings('reviewer'); return; }
+  if (name === 'toggle-course-fact-check' && desktop) {
+    if (factCheckToggleBusy) return;
+    if (courseGenerationBusy.size || factCheckBusy.size || modelSettingsSaving) throw new Error('请等待生成、核查或配置保存完成后再切换质量审查。');
+    factCheckToggleBusy = true; factCheckToggleError = ''; decorateCourseSearch();
+    try {
+      factCheckPreferences = await desktop.setFactCheckEnabled(!factCheckPreferences.enabled);
+    } catch (error) { factCheckToggleError = error.message; throw error; }
+    finally { factCheckToggleBusy = false; decorateCourseSearch(); }
+    return;
+  }
   if (name === 'toggle-course-search') {
     if (courseGenerationBusy.has(id)) throw new Error('请等待本课生成完成后再切换。');
     const old = courseSearchPreference(id);
@@ -1608,7 +1542,7 @@ async function action(name, element) {
     if (['quiz','summary'].includes(block.type) && !context.teachingContext.sources.some(s=>['reading','example'].includes(s.type))) throw new Error('请先生成至少一个前序讲解或案例，再生成测验或总结；未调用模型。');
     const content = await courseBlockRequest(id, { goal: p.goal, level: p.level, ...(p.learningBrief ? { learningBrief: p.learningBrief } : {}), title: meta.title, objective: meta.objective, minutes: meta.minutes, ...context, block: { type: block.type, title: block.title, objective: block.objective } });
     if (!validBlockContent(block.type, content)) throw new Error('模型返回的内容格式不正确，请重试。');
-    if (desktop) await desktop.saveBlock(id, block.id, content);
+    if (desktop && !desktop.generateCourseBlock) await desktop.saveBlock(id, block.id, content);
     block.content = content;
     if (block.type === 'quiz' && desktop && state.quizRecords?.[id]) state.quizRecords[id] = (await desktop.getLesson(id)).quizRecord;
     else if (block.type === 'quiz' && state.progress[id]) state.progress[id] = { ...state.progress[id], completed: false, lastScore: 0, lastAnswers: [] };
@@ -1998,7 +1932,7 @@ document.addEventListener('submit', async event => {
   try {
     if (form.id === 'quality-settings-form' && desktop) {
       const result = await desktop.saveQualitySettings({ provider: values.get('provider'), model: values.get('model'), baseUrl: values.get('baseUrl'), ...modelKeyValues(values), localOnly: values.get('localOnly') === 'on', jsonMode: values.get('jsonMode'), thinkingMode: values.get('thinkingMode') || 'auto', timeoutMs: Number(values.get('timeout')) * 1000, maxTokens: Number(values.get('maxTokens')) });
-      qualitySettings = result.settings; qualityStatus = result.status; qualityConnectionResult = '独立评审模型已保存，可以测试连接或主动评价课程。';
+      qualitySettings = result.settings; qualityStatus = result.status; factCheckPreferences = result.factCheck || factCheckPreferences; qualityConnectionResult = factCheckPreferences.enabled ? '事实核查已开启，后续生成会自动核查。' : '核查模型已保存，可在阅读页核查已有内容。';
       modelConnectionChecks.delete(form.id);
       clearSavedModelDraft(form); modelFormDrafts.delete(form.id); render(); toast('评审模型配置已保存在本机。');
     } else if (form.id === 'web-search-settings-form' && desktop) {
@@ -2110,7 +2044,7 @@ document.addEventListener('submit', async event => {
       const content = await courseBlockRequest(id, { goal: p.goal, level: p.level, ...(p.learningBrief ? { learningBrief: p.learningBrief } : {}), title: meta.title, objective: meta.objective, minutes: meta.minutes, ...context, block: { type: block.type, title: block.title, objective: block.objective }, revisionRequest: request, currentExcerpt: previous.text.slice(0, 12000) });
       if (!validBlockContent(block.type, content)) throw new Error('模型返回的内容格式不正确，原内容已保留，请重试。');
       if (block.content !== previous) throw new Error('内容已更新，原请求未覆盖当前内容，请重新提交。');
-      block.content = desktop ? await desktop.reviseBlock(id, block.id, content, previous.text) : revisedContent(block.type, previous, content);
+      block.content = desktop?.generateCourseBlock ? content : desktop ? await desktop.reviseBlock(id, block.id, content, previous.text) : revisedContent(block.type, previous, content);
       if (!desktop) save();
       $('#revise-block-dialog').close(); render(); toast('已按你的要求更新；可在模块右上角恢复上一版。');
     } else if (form.id === 'append-block-form') {
@@ -2255,12 +2189,16 @@ $('#knowledge-draft-dialog')?.addEventListener?.('close', () => { if (!knowledge
 $('#knowledge-organize-dialog')?.addEventListener?.('cancel', event => { if (knowledgeOrganizeBusy) event.preventDefault(); });
 $('#knowledge-organize-dialog')?.addEventListener?.('close', () => { if (!knowledgeOrganizeBusy) knowledgeOrganize = null; });
 $('#quality-dialog')?.addEventListener?.('cancel', () => { qualityView = null; });
-$('#quality-revision-dialog')?.addEventListener?.('cancel', event => { if (!closeQualityRevision()) event.preventDefault(); });
-document.addEventListener('input', event => {
-  const id = event.target.dataset?.revisionUnit;
-  if (id && qualityRevisionView) { qualityRevisionEdits.set(id,event.target.value); $('[data-action="quality-apply-revision"]')?.setAttribute('disabled',''); }
-});
 document.addEventListener('change', event => { if (event.target.id === 'quality-report-select' && qualityView) { qualityView.selectedReportId = event.target.value; renderQualityDialog(); } });
+document.addEventListener('change', event => {
+  const input = event.target;
+  if (!input.matches?.('[data-fact-selection]')) return;
+  const recordId = input.dataset.factRecord, index = Number(input.dataset.issue), selection = factCorrectionSelections.get(recordId) || new Set();
+  if (input.checked) selection.add(index); else selection.delete(index);
+  factCorrectionSelections.set(recordId, selection);
+  const button = input.closest('.fact-check-details')?.querySelector('[data-action=correct-fact-issues]');
+  if (button) { button.textContent = `确认修正（${selection.size}）`; button.disabled = !selection.size || status.mode !== 'ai'; }
+});
 if (desktop) {
   $('#app').innerHTML = '<div class="empty-state"><h2>正在读取本地数据…</h2></div>';
   desktop.load().then(result => {
@@ -2269,7 +2207,7 @@ if (desktop) {
     if (result.settingsLayout) {
       for (const id of Object.keys(settingsPanels)) if (typeof result.settingsLayout[id] === 'boolean') settingsPanels[id] = result.settingsLayout[id];
     } else if (desktop?.saveSettingsLayout) settingsPanels.generator = !desktopSettings?.model;
-    qualitySettings = result.qualitySettings || null; qualityStatus = result.qualityStatus || { mode: 'demo' };
+    qualitySettings = result.qualitySettings || null; qualityStatus = result.qualityStatus || { mode: 'demo' }; factCheckPreferences = result.factCheck || { enabled: false, error: '' };
     if (result.startPage === 'settings') page = 'settings';
     storageWarning = result.stateError || ''; render();
   }).catch(error => {

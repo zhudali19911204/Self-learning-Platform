@@ -10,7 +10,11 @@ exports.run = async (window, directory) => {
   const evaluate = code => window.webContents.executeJavaScript(code);
   const wait = expression => evaluate(`new Promise((resolve,reject)=>{let attempts=0;const timer=setInterval(()=>{if(${expression}){clearInterval(timer);resolve(true);}else if(++attempts>150){clearInterval(timer);reject(new Error('Quality smoke timed out'));}},100);})`);
   const reload = async () => { window.webContents.reload(); await new Promise(resolve => window.webContents.once('did-finish-load', resolve)); await wait("document.querySelector('main h1')"); };
-  const original = await evaluate('window.learnflowDesktop.load()');
+  let original = await evaluate('window.learnflowDesktop.load()');
+  if (!original.settings.model) {
+    await evaluate(`window.learnflowDesktop.saveSettings(${JSON.stringify({ provider: 'ollama', model: 'quality-smoke-generator', baseUrl: '', localOnly: true, jsonMode: 'auto', timeoutMs: 30000, maxTokens: 8192, keyAction: 'clear', apiKey: '' })})`);
+    original = await evaluate('window.learnflowDesktop.load()');
+  }
   const requests = []; let checks = 0, invalidQuote = false;
   const model = http.createServer(async (req, res) => {
     try {
@@ -48,7 +52,7 @@ exports.run = async (window, directory) => {
     assert.equal((await evaluate('window.learnflowDesktop.load()')).qualitySettings.model, '');
     assert.equal(await evaluate("document.querySelector('#quality-model-key').value"), 'quality-smoke-key-not-real');
     await evaluate("document.querySelector('#model-name').value='pending-generator-draft';document.querySelector('#model-name').dispatchEvent(new Event('input',{bubbles:true}));document.querySelector('#quality-model-name').value='quality-smoke-reviewer';document.querySelector('#quality-settings-form').requestSubmit()");
-    await wait("document.querySelector('#quality-connection-result')?.textContent.includes('独立评审模型已保存')");
+    await wait("document.querySelector('#quality-connection-result')?.textContent.includes('核查模型已保存')");
     assert.equal(await evaluate("document.querySelector('#model-name').value"), 'pending-generator-draft');
     const encrypted = await readFile(path.join(directory, 'quality-settings.json'), 'utf8');
     assert.ok(!encrypted.includes('quality-smoke-key-not-real')); assert.ok(JSON.parse(encrypted).encryptedApiKey);
@@ -73,6 +77,10 @@ exports.run = async (window, directory) => {
     await wait("document.querySelector('[data-action=open-quality][data-scope=lesson]')");
     await evaluate("document.querySelector('[data-action=open-quality][data-scope=lesson]').click()");
     await wait("document.querySelector('#quality-dialog').open");
+    assert.equal(await evaluate("document.querySelector('[data-action=open-quality]').textContent"), '课程评分');
+    assert.equal(await evaluate("document.querySelector('#quality-title').textContent"), '课程评分');
+    assert.equal(await evaluate("document.querySelector('#quality-revision-dialog')"), null);
+    assert.equal(await evaluate("document.querySelector('#quality-dialog [name=revision-issue],#quality-dialog [data-action=quality-locate],.quality-legacy-tools')"), null);
     assert.equal(requests.length, 0);
     await evaluate("document.querySelector('[data-action=evaluate-quality]').click()");
     await wait("document.querySelector('.quality-report') && !document.querySelector('[data-action=evaluate-quality]').disabled");
@@ -88,8 +96,6 @@ exports.run = async (window, directory) => {
     await wait("document.querySelector('#quality-error')?.textContent.includes('格式不符合要求') && !document.querySelector('[data-action=evaluate-quality]').disabled");
     assert.equal(requests.length, 2);
     assert.equal((await evaluate(`window.learnflowDesktop.inspectQuality('lesson',${JSON.stringify(lessonId)})`)).reports[0].id, inspected.reports[0].id);
-    await evaluate("document.querySelector('[data-action=quality-locate]').click()");
-    await wait("!document.querySelector('#quality-dialog').open && document.querySelector('.quality-target')");
     await reload();
     await evaluate(`document.querySelector('[data-page=routes]').click();document.querySelector('[data-action=open-lesson][data-id="${lessonId}"]').click()`);
     await wait("document.querySelector('[data-action=open-quality][data-scope=lesson]')");
@@ -103,7 +109,7 @@ exports.run = async (window, directory) => {
     assert.equal((await evaluate(`window.learnflowDesktop.inspectQuality('lesson',${JSON.stringify(lessonId)})`)).currentReportId, null);
     assert.equal(requests.length, 2);
     await evaluate("document.querySelector('[data-action=close-quality]').click()");
-    console.log('QUALITY_SMOKE', JSON.stringify({ passed: true, checks: ['independent-form-ipc-and-os-encryption', 'both-model-role-exclusions', 'save-load-open-no-evaluation', 'connection-test-no-course', 'partial-review-and-blind-quiz-solutions', 'failed-evidence-no-retry-no-overwrite', 'source-location', 'reload-report-persistence', 'stale-report-warning'], screenshot: path.join(directory, '..', 'quality-smoke.png') }));
+    console.log('QUALITY_SMOKE', JSON.stringify({ passed: true, checks: ['independent-form-ipc-and-os-encryption', 'both-model-role-exclusions', 'save-load-open-no-evaluation', 'connection-test-no-course', 'partial-review-and-blind-quiz-solutions', 'failed-evidence-no-retry-no-overwrite', 'score-only-no-revision-or-issue-actions', 'reload-report-persistence', 'stale-report-warning'], screenshot: path.join(directory, '..', 'quality-smoke.png') }));
   } finally {
     model.closeAllConnections(); await new Promise(resolve => model.close(resolve));
     await evaluate(`window.learnflowDesktop.saveQualitySettings(${JSON.stringify(reset)})`);

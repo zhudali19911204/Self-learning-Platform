@@ -1,6 +1,6 @@
 {
   "name": "learnflow",
-  "version": "1.2.6",
+  "version": "1.2.7",
   "main": "desktop/main.cjs",
   "private": true,
   "type": "module",
@@ -38,6 +38,8 @@
       "web-images.mjs",
       "speech-model.mjs",
       "course-quality.mjs",
+      "course-fact-check.mjs",
+      "course-fact-correction.mjs",
       "course-revision.mjs",
       "course-generation.mjs",
       "course-sources.mjs",

@@ -1,5 +1,6 @@
 import test from 'node:test';
 import { createGenerationProgress } from '../public/generation-progress.js';
+import { factCheckLabels, sameFactContent } from '../public/fact-check.js';
 import assert from 'node:assert/strict';
 import vm from 'node:vm';
 import { readFile } from 'node:fs/promises';
@@ -273,7 +274,8 @@ test('opening quality reports never evaluates automatically, and failures preser
   assert.equal(dialog.open, true); assert.equal(inspections, 1); assert.equal(reviews, 0);
   assert.match(dialog.textContent, /旧内容版本/); assert.match(dialog.textContent, /未经人工校准/);
   assert.equal(dialog.querySelector('script'), null);
-  await assert.rejects(app.run('locateQualityIssue(0)'), /历史版本/);
+  assert.equal(dialog.querySelector('[data-action=quality-locate]'), null);
+  assert.equal(dialog.querySelector('[name=revision-issue]'), null);
   await app.run('evaluateQuality()');
   assert.equal(reviews, 1); assert.equal(dialog.open, true);
   assert.match(dialog.textContent, /评审模型暂时不可用/);
@@ -281,30 +283,40 @@ test('opening quality reports never evaluates automatically, and failures preser
   assert.equal(app.run('JSON.stringify(state.lessons)'), courseBefore);
 });
 
-test('quality workflow entry is free, invalid quiz edits stay visible without a paid review, and saved edits invalidate review', async t => {
-  const units=[{id:'reading-1',type:'reading',title:'讲解',objective:'理解提交',text:'提交前配置身份。'},{id:'quiz-1',type:'quiz',title:'测验',objective:'判断提交时机',questions:[{prompt:'何时配置？',options:['提交前','提交后','删除时','无关'],answer:0,explanation:'提交前配置。'}]}];
-  const report={id:'r1',scope:'lesson',targetId:'p1',fingerprint:'current',score:75,status:'needs_revision',partial:false,summary:'需要具体解释。',created:Date.now(),reviewer:{model:'reviewer-b',provider:'compatible'},generator:{model:'generator-a'},rubricVersion:'course-quality-v1',dimensions:qualityRubric.map(r=>({id:r.id,rating:3,reason:'需补充说明。'})),issues:units.map(u=>({unitId:u.id,kind:u.type==='quiz'?'quiz':'clarity',severity:'minor',quote:u.text||u.questions[0].prompt,reason:'解释不足。',suggestion:'补充具体步骤。',origin:'ai'}))};
-  let job={id:'j1',lessonId:'p1',planId:demoPlan.id,title:'测试课',rev:1,status:'draft',created:Date.now(),updated:Date.now(),sourceReport:report,issueIndexes:[0,1],baseSnapshot:{units},changes:units.map(u=>({unitId:u.id,content:revisionContent(u),note:'补充说明。'})),review:null};
-  const view=()=>({job:structuredClone(job),stale:false,running:false,linkedCards:0});let paid=0,edits=0;
-  const app=realSettingsHarness({load:async()=>({status:{mode:'ai',model:'generator-a'},qualityStatus:{mode:'ai',model:'reviewer-b'}}),
-    inspectQuality:async()=>({scope:'lesson',targetId:'p1',fingerprint:'current',title:'测试课',objective:'理解提交',units,rules:{ready:2,total:2,partial:false,issues:[]},reports:[report],currentReportId:report.id,jobs:[]}),
-    createRevision:async(id,indexes)=>{assert.equal(id,'r1');assert.deepEqual(Array.from(indexes),[0,1]);return view();},inspectRevision:async()=>view(),
-    editRevision:async(id,rev,changes)=>{edits++;job={...job,changes:structuredClone(changes),rev:rev+1,review:null};return view();},
-    reviewRevision:async()=>{paid++;job={...job,rev:job.rev+1,review:{report:{...report,score:100,status:'reviewed'},checks:[{issueIndex:0,status:'not_found',reason:'已经补充。'},{issueIndex:1,status:'not_found',reason:'已经补充。'}]}};return view();}});
-  t.after(()=>app.close());await app.ready();await app.run("openQuality('lesson','p1')");
-  app.document.querySelectorAll('[name=revision-issue]').forEach(input=>{input.checked=true;});
-  await app.run("action('quality-create-revision',document.querySelector('[data-action=quality-create-revision]'))");
-  assert.equal(app.document.querySelector('#quality-revision-dialog').open,true);assert.equal(paid,0);
-  let field=app.document.querySelector('#revision-edit-quiz-1');field.value='not JSON';await app.fire('input',field);
-  await app.run("runQualityRevision('review')");assert.equal(paid,0);assert.equal(edits,0);
-  assert.equal(app.document.querySelector('#revision-edit-quiz-1').value,'not JSON');
-  assert.match(app.document.querySelector('#quality-revision-dialog').textContent,/不是有效的题目 JSON/);
-  field=app.document.querySelector('#revision-edit-quiz-1');field.value=JSON.stringify(units[1].questions);await app.fire('input',field);
-  await app.run("runQualityRevision('review')");assert.equal(paid,1);assert.ok(app.document.querySelector('.revision-review'));
-  field=app.document.querySelector('#revision-edit-reading-1');field.value+='\n检查身份配置。';await app.fire('input',field);
-  assert.equal(app.document.querySelector('[data-action=quality-apply-revision]').disabled,true);
-  await app.run("runQualityRevision('save')");assert.equal(paid,1);assert.equal(job.review,null);
-  assert.equal(app.document.querySelector('.revision-review'),null);
+test('course scoring is read-only and exposes only scores, reasons and history, even with legacy revision records', async t => {
+  const report = { id: 'score-1', scope: 'lesson', targetId: 'p1', fingerprint: 'current', score: 75, status: 'needs_revision', partial: false,
+    summary: '例子与目标仍有提升空间。', created: Date.now(), reviewer: { model: 'reviewer-b' }, generator: { model: 'generator-a' },
+    dimensions: qualityRubric.map(r => ({ id: r.id, rating: 3, reason: '补充解释有助于理解。' })),
+    issues: [{ unitId: 'reading-1', severity: 'major', kind: 'clarity', reason: '旧问题', quote: '原文', suggestion: '旧建议', origin: 'ai' }] };
+  const view = { scope: 'lesson', targetId: 'p1', title: '测试课', objective: '理解提交', fingerprint: 'current',
+    units: [{ id: 'reading-1', type: 'reading', title: '讲解', objective: '理解', text: '原文' }],
+    rules: { ready: 1, total: 2, partial: true, issues: report.issues }, reports: [report], currentReportId: report.id,
+    jobs: [{ id: 'old-job', status: 'draft', updated: Date.now() }], dispositions: [{ status: 'verify' }] };
+  let paid = 0, revisions = 0;
+  const app = realSettingsHarness({ load: async () => ({ status: { mode: 'ai' }, qualityStatus: { mode: 'ai' } }),
+    inspectQuality: async () => structuredClone(view),
+    evaluateQuality: async () => { paid++; return { ...view, reports: [{ ...report, id: 'score-2', score: 90, status: 'reviewed' }, report] }; },
+    createRevision: async () => { revisions++; }, saveQualityDisposition: async () => { revisions++; } });
+  t.after(() => app.close()); await app.ready(); app.run("navigate('routes')");
+  const doc = app.document;
+  assert.equal(doc.querySelector('[data-action=open-quality]').textContent, '课程评分');
+  assert.equal(doc.querySelector('.quality-legacy-tools'), null);
+  const before = app.run('JSON.stringify(state.lessons)');
+  await app.run("openQuality('lesson','p1')");
+  const dialog = doc.querySelector('#quality-dialog');
+  assert.equal(doc.querySelector('#quality-title').textContent, '课程评分');
+  assert.match(dialog.querySelector('.quality-score').textContent, /75/);
+  assert.equal(dialog.querySelectorAll('.quality-dimensions details').length, 7);
+  assert.equal(dialog.querySelectorAll('input, textarea, .quality-issue, .quality-objectives, .quality-revision-entry').length, 0);
+  assert.deepEqual(Array.from(dialog.querySelectorAll('[data-action]'), n => n.dataset.action).sort(), ['close-quality', 'evaluate-quality']);
+  assert.equal(doc.querySelector('#quality-revision-dialog'), null);
+  assert.equal(paid, 0); assert.equal(revisions, 0);
+  await app.run('evaluateQuality()');
+  assert.equal(paid, 1); assert.equal(revisions, 0);
+  assert.match(dialog.querySelector('.quality-score').textContent, /90/);
+  const history = doc.querySelector('#quality-report-select'); history.value = report.id; await app.fire('change', history);
+  assert.match(dialog.querySelector('.quality-score').textContent, /75/);
+  assert.equal(paid, 1); assert.equal(app.run('JSON.stringify(state.lessons)'), before);
 });
 
 test('web search consent uses a real keyless DOM form, persists checked and unchecked values and reloads', async t => {
@@ -653,7 +665,7 @@ test('course search has one independent persistent switch; generation locks it a
   });
   t.after(() => app.close()); await app.ready(); await app.run("openLesson('p1')");
   const doc = app.document;
-  assert.equal(doc.querySelectorAll('[role=switch]').length, 1); assert.equal(doc.querySelector('[role=switch]').getAttribute('aria-checked'), 'false');
+  assert.equal(doc.querySelectorAll('[data-action=toggle-course-search]').length, 1); assert.equal(doc.querySelector('[data-action=toggle-course-search]').getAttribute('aria-checked'), 'false');
   await app.fire('click', doc.querySelector('[data-action=toggle-course-search]'));
   assert.equal(preference.enabled, true); assert.equal(requests, 0, 'toggling alone never searches');
   const pending = app.run("action('generate-block',{dataset:{id:'p1',block:'b1'}})"); await Promise.resolve();
@@ -680,14 +692,13 @@ function realSettingsHarness(bridge) {
   const document = dom.window.document, listeners = new Map();
   document.querySelector('#knowledge-organize-dialog').showModal = function () { this.open = true; };
   document.querySelector('#knowledge-organize-dialog').close = function () { this.open = false; };
-  const workflowDialog = document.createElement('dialog'); workflowDialog.id = 'quality-revision-dialog'; document.body.append(workflowDialog);
-  for (const id of ['annotation-dialog', 'knowledge-draft-dialog', 'quality-dialog','quality-revision-dialog']) {
+  for (const id of ['annotation-dialog', 'knowledge-draft-dialog', 'quality-dialog']) {
     document.querySelector(`#${id}`).showModal = function () { this.open = true; };
     document.querySelector(`#${id}`).close = function () { this.open = false; };
   }
   document.addEventListener = (name, listener) => { const group = listeners.get(name) || []; group.push(listener); listeners.set(name, group); };
   dom.window.learnflowDesktop = bridge; dom.window.scrollTo = () => {};
-  const context = vm.createContext({ createGenerationProgress, officialSource, validSourceSearch, courseReferences, teachingContextNotice, qualityRubric, qualityLabels, qualityModelId, revisionTypes, revisionStatuses, revisionCheckLabels, revisionContent, revisionText, revisionDiff,
+  const context = vm.createContext({ createGenerationProgress, factCheckLabels, sameFactContent, officialSource, validSourceSearch, courseReferences, teachingContextNotice, qualityRubric, qualityLabels, qualityModelId, revisionTypes, revisionStatuses, revisionCheckLabels, revisionContent, revisionText, revisionDiff,
     demoPlan, demoLessons, lessonFromBlocks, validOutline, validBlockContent, validBlockSpec, blockGenerationContext, revisedContent, restoredContent, assistedBlockTypes, Marked, DOMPurify, createMarkdownRenderer, validQuestionnaire, validClarification, learningBriefFrom, validIllustration, validImageProposal, speechDefaults, speechVoices, listeningText, speechTurns, speechRequest, validAudioId, validKnowledgeSource, validKnowledgeDraft, localKnowledgeDraft, knowledgeTags, knowledgeConditions, validAnnotations, personalNotesForSource, personalNotesMarkdown, knowledgeCatalog, knowledgeDomain, knowledgeDomainColors, knowledgeTopic, retrieveKnowledge, validKnowledgeOrganization, courseKnowledgeTree, knowledgeTree, knowledgeGraph, filterKnowledgeGraph, createGraphMotion, stepGraphMotion, structuredClone, crypto: webcrypto, AbortSignal,
     document, window: dom.window, FormData: dom.window.FormData, setTimeout: () => 1, clearTimeout() {}
   });
@@ -704,7 +715,7 @@ function harness(saved, fetchImpl, desktopBridge) {
     if (!nodes.has(selector)) nodes.set(selector, { innerHTML: '', textContent: '', open: false, attributes: {}, setAttribute(name, value) { this.attributes[name] = value; }, classList: { add() {}, remove() {} }, scrollIntoView() {}, focus() {}, showModal() { this.open = true; }, close() { this.open = false; } });
     return nodes.get(selector);
   };
-  const context = vm.createContext({ createGenerationProgress, officialSource, validSourceSearch, courseReferences, teachingContextNotice, qualityRubric, qualityLabels, qualityModelId, revisionTypes, revisionStatuses, revisionCheckLabels, revisionContent, revisionText, revisionDiff,
+  const context = vm.createContext({ createGenerationProgress, factCheckLabels, sameFactContent, officialSource, validSourceSearch, courseReferences, teachingContextNotice, qualityRubric, qualityLabels, qualityModelId, revisionTypes, revisionStatuses, revisionCheckLabels, revisionContent, revisionText, revisionDiff,
     demoPlan, demoLessons, lessonFromBlocks, validOutline, validBlockContent, validBlockSpec, blockGenerationContext, revisedContent, restoredContent, assistedBlockTypes, Marked, DOMPurify, createMarkdownRenderer, validQuestionnaire, validClarification, learningBriefFrom, validIllustration, validImageProposal, speechDefaults, speechVoices, listeningText, speechTurns, speechRequest, validAudioId, validKnowledgeSource, validKnowledgeDraft, localKnowledgeDraft, knowledgeTags, knowledgeConditions, validAnnotations, personalNotesForSource, personalNotesMarkdown, knowledgeCatalog, knowledgeDomain, knowledgeDomainColors, knowledgeTopic, retrieveKnowledge, validKnowledgeOrganization, courseKnowledgeTree, knowledgeTree, knowledgeGraph, filterKnowledgeGraph, createGraphMotion, stepGraphMotion, structuredClone, crypto: webcrypto, AbortSignal,
     document: { querySelector: node, addEventListener(name, listener) { const group = listeners.get(name) || []; group.push(listener); listeners.set(name, group); } },
     localStorage: { get length() { return storage.size; }, key: index => [...storage.keys()][index] ?? null, getItem: key => storage.get(key) ?? null, setItem: (key, value) => storage.set(key, value), removeItem: key => storage.delete(key) },
@@ -1049,6 +1060,128 @@ test('in-flight clarification prevents duplicate requests and closing; model que
   assert.doesNotMatch(app.node('#planner').innerHTML,/<button data-action="delete-plan">/);
   assert.match(app.node('#planner').innerHTML,/&lt;button/);
 });
+test('simplified fact-check settings and one-click generation expose status without duplicate saves or a revision workbench', async t => {
+  const saved = [], cfg = { provider: 'ollama', model: 'reviewer', baseUrl: '', localOnly: true, jsonMode: 'auto', thinkingMode: 'auto', timeoutMs: 120000, maxTokens: 8192 };
+  let generated = 0, restored = 0, enabled = true;
+  const original = { text: '待核实的原文。' }, checked = { text: '修正后的正文。' };
+  const record = { id: 'check-1', blockId: 'r1', status: 'corrected', summary: '已修正并复核。', content: checked, beforeContent: original, issues: [], sources: [] };
+  const app = realSettingsHarness({ load: async () => ({ status: { mode: 'ai', model: 'generator' }, qualityStatus: { mode: 'ai' }, qualitySettings: cfg, factCheck: { enabled: true } }),
+    saveQualitySettings: async value => { saved.push(value); return { settings: cfg, status: { mode: 'ai' }, factCheck: { enabled } }; },
+    setFactCheckEnabled: async value => { enabled = value; return { enabled, error: '' }; },
+    generateCourseBlock: async (value, progressId) => {
+      generated++; assert.equal(value.lessonId, 'custom-1'); assert.equal(value.blockId, 'r1'); assert.match(progressId, /^generation-/);
+      return { content: checked, factChecks: [record] };
+    },
+    saveBlock: async () => { throw new Error('Must not save the same generated block twice'); },
+    checkBlockFacts: async () => ({ content: checked, factChecks: [record], cached: true }),
+    restoreFactCheck: async (lessonId, blockId, id) => { restored++; assert.equal(id, 'check-1'); return { content: original, factChecks: [record] }; }
+  });
+  t.after(() => app.close()); await app.ready(); app.run("navigate('settings')");
+  const doc = app.document;
+  assert.match(doc.querySelector('#settings-reviewer').textContent, /事实核查模型/);
+  assert.equal(doc.querySelector('[name="autoFactCheck"]'), null);
+  await app.fire('submit', doc.querySelector('#quality-settings-form')); assert.equal(Object.hasOwn(saved[0], 'autoFactCheck'), false);
+  assert.equal(enabled, true, 'saving model settings must not change the switch');
+  app.run("state.plans[0].source='ai'; state.plans[0].lessons[0].id='custom-1'; state.lessons={}; state.blockCourses={'custom-1':{intro:'导语',blocks:[{id:'r1',type:'reading',title:'讲解',objective:'理解',content:null},{id:'q1',type:'quiz',title:'测验',objective:'应用',content:null}]}}; activeLesson='custom-1'; page='study'; render()");
+  const controls = doc.querySelector('.course-source-controls');
+  assert.equal(controls.querySelectorAll('[role=switch]').length, 2);
+  assert.ok(controls.children[0].querySelector('[data-action=toggle-course-search]'));
+  assert.ok(controls.children[1].querySelector('[data-action=toggle-course-fact-check]'));
+  assert.equal(doc.querySelector('[data-action=toggle-course-fact-check]').getAttribute('aria-checked'), 'true');
+  await app.fire('click', doc.querySelector('[data-action=toggle-course-fact-check]'));
+  assert.equal(enabled, false); assert.equal(generated, 0, 'toggling must not call the model');
+  assert.equal(doc.querySelector('[data-action=toggle-course-fact-check]').getAttribute('aria-checked'), 'false');
+  assert.equal(doc.querySelector('[data-action=toggle-course-search]').getAttribute('aria-checked'), 'false');
+  await app.fire('click', doc.querySelector('[data-action=toggle-course-fact-check]'));
+  assert.equal(enabled, true); assert.equal(generated, 0);
+  await app.fire('click', doc.querySelector('[data-action="generate-block"][data-block="r1"]'));
+  assert.equal(generated, 1); assert.ok(doc.querySelector('.fact-check-strip.is-corrected'));
+  assert.match(doc.querySelector('.fact-check-strip summary').textContent, /已自动修正/);
+  assert.equal(doc.querySelector('.fact-check-strip').open, false);
+  assert.equal(doc.querySelector('#quality-revision-dialog'), null);
+  const details = doc.querySelector('.fact-check-strip'); details.open = true;
+  await app.fire('click', details.querySelector('[data-action="check-block-facts"]'));
+  assert.match(doc.querySelector('#toast').textContent, /复用/);
+  doc.querySelector('.fact-check-strip').open = true;
+  await app.fire('click', doc.querySelector('[data-action="restore-fact-check"]'));
+  assert.equal(restored, 1); assert.ok(doc.querySelector('.fact-check-strip.is-unchecked'));
+  assert.match(doc.querySelector('.block-text').textContent, /待核实的原文/);
+});
+
+test('selecting fact concerns requires confirmation, preserves choices on failure and directly updates restorable text', async t => {
+  const original = { text: '第一处有疑点。第二处也有疑点。' }, corrected = { text: '第一处有疑点。第二处补充适用条件。' };
+  const issues = ['第一处有疑点。', '第二处也有疑点。'].map(quote => ({ quote, reason: '缺少条件。', suggestion: '补充说明。', evidence: [] }));
+  const source = { id: 'suspect-1', blockId: 'r1', status: 'uncertain', content: original, issues, sources: [], summary: '有两处待核实。' };
+  const edited = { ...source, id: 'edited-1', status: 'edited', content: corrected, beforeContent: original, issues: [issues[0]], summary: '已按选择修正，尚未重新核查。' };
+  let corrections = 0, fail = true;
+  const app = realSettingsHarness({ load: async () => ({ status: { mode: 'ai' }, qualityStatus: { mode: 'ai' } }), checkBlockFacts: async () => { throw new Error('Must not automatically recheck'); },
+    correctFactIssues: async (value, progressId) => {
+      corrections++; assert.equal(value.confirmed, true); assert.deepEqual(Array.from(value.issueIndexes), [1]); assert.equal(value.recordId, source.id); assert.match(progressId, /^generation-/);
+      if (fail) throw new Error('修正模型暂时不可用');
+      return { content: corrected, factChecks: [source, edited] };
+    },
+    restoreFactCheck: async () => ({ content: original, factChecks: [source, edited] }) });
+  t.after(() => app.close()); await app.ready();
+  app.run(`state.plans[0].source='ai'; state.lessons={}; state.blockCourses={p1:{intro:'导语',blocks:[{id:'r1',type:'reading',title:'讲解',objective:'理解',content:${JSON.stringify(original)}}]}}; state.factChecks={p1:[${JSON.stringify(source)}]}; activeLesson='p1'; page='study'; render()`);
+  const doc = app.document;
+  assert.equal(doc.querySelectorAll('[data-fact-selection]').length, 2);
+  assert.equal(doc.querySelector('[data-action=correct-fact-issues]').disabled, true);
+  const select = doc.querySelector('[data-fact-selection][data-issue="1"]'); select.checked = true; await app.fire('change', select);
+  assert.equal(doc.querySelector('[data-action=correct-fact-issues]').disabled, false);
+  assert.match(doc.querySelector('[data-action=correct-fact-issues]').textContent, /1/);
+  app.run('window.confirm = () => false');
+  await app.fire('click', doc.querySelector('[data-action=correct-fact-issues]')); assert.equal(corrections, 0);
+  app.run('window.confirm = () => true'); doc.querySelector('.fact-check-strip').open = true;
+  await assert.rejects(app.run("action('correct-fact-issues',document.querySelector('[data-action=correct-fact-issues]'))"), /暂时不可用/);
+  assert.equal(corrections, 1); assert.match(doc.querySelector('.fact-check-details').textContent, /暂时不可用/);
+  assert.equal(doc.querySelector('[data-fact-selection][data-issue="1"]').checked, true);
+  assert.equal(app.run('state.blockCourses.p1.blocks[0].content.text'), original.text);
+  fail = false;
+  await app.fire('click', doc.querySelector('[data-action=correct-fact-issues]'));
+  assert.equal(corrections, 2); assert.match(doc.querySelector('.block-text').textContent, /第二处补充适用条件/);
+  assert.ok(doc.querySelector('.fact-check-strip.is-edited')); assert.equal(doc.querySelector('.fact-check-strip').open, true);
+  assert.match(doc.querySelector('.fact-check-strip summary').textContent, /待重新核查/);
+  assert.equal(doc.querySelectorAll('[data-fact-selection]').length, 1);
+  await app.fire('click', doc.querySelector('[data-action=restore-fact-check]'));
+  assert.equal(app.run('state.blockCourses.p1.blocks[0].content.text'), original.text); assert.equal(corrections, 2);
+});
+
+test('course quality switch preserves state on save failure and locks during generation and preference saves', async t => {
+  let finish, saves = 0;
+  const app = realSettingsHarness({ load: async () => ({ status: { mode: 'ai' }, qualityStatus: { mode: 'ai' }, factCheck: { enabled: false } }),
+    setFactCheckEnabled: async () => { saves++; return new Promise(resolve => { finish = resolve; }); } });
+  t.after(() => app.close()); await app.ready();
+  app.run("state.plans[0].source='ai'; state.lessons={}; state.blockCourses={p1:{intro:'导语',blocks:[{id:'r1',type:'reading',title:'讲解',objective:'理解',content:null}]}}; activeLesson='p1'; page='study'; render()");
+  const doc = app.document;
+  app.run("courseGenerationBusy.add('other-course'); decorateCourseSearch()");
+  assert.equal(doc.querySelector('[data-action=toggle-course-fact-check]').disabled, true);
+  await assert.rejects(app.run("action('toggle-course-fact-check',{dataset:{}})"), /等待/); assert.equal(saves, 0);
+  app.run("courseGenerationBusy.clear(); decorateCourseSearch()");
+  const saving = app.run("action('toggle-course-fact-check',{dataset:{}})");
+  assert.equal(doc.querySelector('[data-action=toggle-course-fact-check]').disabled, true);
+  assert.equal(doc.querySelector('[data-action=generate-block]').disabled, true);
+  await app.run("action('toggle-course-fact-check',{dataset:{}})"); assert.equal(saves, 1);
+  finish({ enabled: true, error: '' }); await saving;
+  assert.equal(doc.querySelector('[data-action=toggle-course-fact-check]').getAttribute('aria-checked'), 'true');
+  app.run("desktop.setFactCheckEnabled = async () => { throw new Error('设置保存失败'); }");
+  await assert.rejects(app.run("action('toggle-course-fact-check',{dataset:{}})"), /设置保存失败/);
+  assert.equal(doc.querySelector('[data-action=toggle-course-fact-check]').getAttribute('aria-checked'), 'true');
+  assert.equal(doc.querySelector('[data-action=toggle-course-fact-check]').disabled, false);
+  assert.match(doc.querySelector('.course-source-controls').textContent, /设置保存失败/);
+  app.run('render()'); assert.equal(doc.querySelector('[data-action=toggle-course-fact-check]').getAttribute('aria-checked'), 'true');
+});
+
+test('an unconfigured quality switch offers a direct link to the independent model without calling an API', async t => {
+  const app = realSettingsHarness({ load: async () => ({ status: { mode: 'ai' }, qualityStatus: { mode: 'demo' }, factCheck: { enabled: false } }) });
+  t.after(() => app.close()); await app.ready();
+  app.run("state.plans[0].source='ai'; state.lessons={}; state.blockCourses={p1:{intro:'导语',blocks:[{id:'r1',type:'reading',title:'讲解',objective:'理解',content:null}]}}; activeLesson='p1'; page='study'; render()");
+  const doc = app.document;
+  assert.ok(doc.querySelector('[data-action=configure-fact-check]'));
+  await app.fire('click', doc.querySelector('[data-action=configure-fact-check]'));
+  assert.equal(doc.querySelector('#settings-reviewer').open, true);
+  assert.equal(doc.querySelector('[name=autoFactCheck]'), null);
+});
+
 test('generation panel spans pages, receives actual desktop stages and finishes only after the request returns', async t => {
   let listener, resolveRequest, requestId;
   const outline = { intro: '课程目标', blocks: [{ type: 'reading', title: '讲解', objective: '理解' }, { type: 'example', title: '案例', objective: '应用' }, { type: 'quiz', title: '检验', objective: '判断' }] };

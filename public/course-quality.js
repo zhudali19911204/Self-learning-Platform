@@ -9,7 +9,7 @@ export const qualityRubric = Object.freeze([
   { id: 'coherence', label: '连贯与完整性', weight: 5 },
   { id: 'workload', label: '篇幅与时间适配', weight: 5 }
 ]);
-export const qualityLabels = { reviewed: 'AI 已审查', needs_revision: '建议修订' };
+export const qualityLabels = { reviewed: '已评分', needs_revision: '有提升空间' };
 export const qualityModelId = value => typeof value === 'string' ? value.trim().toLowerCase().replace(/:latest$/, '') : '';
 export function assertDistinctQualityModels(generator, reviewer) {
   if (qualityModelId(generator?.model) && qualityModelId(generator.model) === qualityModelId(reviewer?.model)) throw new Error('课程生成模型与评审模型必须不同；更换服务或接口地址不能让同一模型兼任两个角色。');
