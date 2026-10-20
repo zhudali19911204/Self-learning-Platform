@@ -624,8 +624,8 @@ exports.run = async (window, store, directory) => {
     await evaluate(`document.querySelector('[data-page=routes]').click(); document.querySelector('[data-action=open-lesson][data-id="${lessonId}"]').click()`);
     await wait(`document.querySelector('[data-block-id="${practiceBlock.id}"] [data-action=request-revision]')`);
     const practiceActions = await evaluate(`Array.from(document.querySelectorAll('[data-block-id="${practiceBlock.id}"] .revision-actions button')).map(button=>({action:button.dataset.action,text:button.textContent}))`);
-    assert.deepEqual(practiceActions.map(button=>button.action),['create-note','request-illustration','request-revision']);
-    assert.equal(practiceActions[2].text,'换个任务');
+    assert.deepEqual(practiceActions.map(button=>button.action),['request-revision','create-note','request-illustration']);
+    assert.equal(practiceActions[0].text,'换个任务');
     await evaluate(`document.querySelector('[data-block-id="${practiceBlock.id}"]').scrollIntoView({block:'center'}); document.querySelector('.quick-speech-button').click()`);
     await wait("document.querySelector('#speech-dialog').open && !document.querySelector('#speech-preview-fields').disabled");
     assert.match(await evaluate("document.querySelector('#speech-material').value"),/^Sarah: Alright/);

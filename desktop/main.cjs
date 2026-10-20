@@ -11,6 +11,8 @@ if (process.argv.includes('--verify-revision')) { console.error('旧修订工作
 if (smoke) app.setPath('userData', path.resolve('.desktop-test'));
 else if (development) app.setPath('userData', path.resolve('.desktop-dev'));
 let window, server, store, imageStore, speechStore, webSearchStore, qualityStore, settingsLayoutStore, learning, base, shuttingDown = false;
+let generationTasks, cancellation;
+const cancellableChannels = new Set(['request', 'generate-course-block', 'check-block-facts', 'correct-fact-issues', 'evaluate-quality', 'suggest-illustration', 'auto-search-commons-images', 'auto-search-web-images', 'generate-illustration', 'retry-illustration-download', 'generate-speech'].map(name => `learnflow:${name}`));
 const token = randomBytes(32).toString('hex');
 if (!app.requestSingleInstanceLock()) app.quit();
 else {
@@ -21,11 +23,15 @@ else {
 function handle(channel, fn) {
   ipcMain.handle(channel, async (event, ...args) => {
     if (!window || event.sender !== window.webContents || event.senderFrame !== window.webContents.mainFrame || event.senderFrame.url !== base + '/') return { ok: false, error: '不允许的应用请求。' };
-    try { return { ok: true, value: await fn(...args) }; }
-    catch (error) { return { ok: false, error: error.code ? '本地文件操作失败，请检查目录权限和磁盘空间。' : error.message }; }
+    try { return { ok: true, value: await (cancellableChannels.has(channel) ? generationTasks.run(args.at(-1), () => fn(...args)) : fn(...args)) }; }
+    catch (error) { return { ok: false, error: cancellation?.isGenerationCancelled(error) ? error.message : error.code ? '本地文件操作失败，请检查目录权限和磁盘空间。' : error.message, ...(cancellation?.isGenerationCancelled(error) ? { code: 'GENERATION_CANCELLED' } : {}) }; }
   });
 }
 async function start() {
+  cancellation = await import(pathToFileURL(path.join(__dirname, '..', 'generation-cancellation.mjs')));
+  generationTasks = cancellation.createGenerationTasks();
+  const checkCancelled = cancellation.checkGenerationCancellation;
+  handle('learnflow:cancel-generation', id => generationTasks.cancel(id));
   const { createApp, illustrationGuidance } = await import(pathToFileURL(path.join(__dirname, '..', 'server.mjs')));
   const { createLLM } = await import(pathToFileURL(path.join(__dirname, '..', 'llm.mjs')));
   const { assertDistinctQualityModels } = await import(pathToFileURL(path.join(__dirname, '..', 'public', 'course-quality.js')));
@@ -49,7 +55,7 @@ async function start() {
   const { createSpeechModel } = await import(pathToFileURL(path.join(__dirname, '..', 'speech-model.mjs')));
   const { assistedBlockTypes } = await import(pathToFileURL(path.join(__dirname, '..', 'public', 'blocks.js')));
   const { validImageSuggestion, validImageProposal } = await import(pathToFileURL(path.join(__dirname, '..', 'public', 'illustrations.js')));
-  const isolatedTest = smoke && (process.argv.includes('--facts-only') ? 'fact-tests' : process.argv.includes('--sources-only') ? 'source-tests' : process.argv.includes('--quality-only') || process.argv.includes('--revision-only') ? 'score-tests' : process.argv.includes('--sharing-only') ? 'sharing-tests' : '');
+  const isolatedTest = smoke && (process.argv.includes('--cancel-only') ? 'cancel-tests' : process.argv.includes('--quiz-only') ? 'quiz-tests' : process.argv.includes('--facts-only') ? 'fact-tests' : process.argv.includes('--sources-only') ? 'source-tests' : process.argv.includes('--quality-only') || process.argv.includes('--revision-only') ? 'score-tests' : process.argv.includes('--sharing-only') ? 'sharing-tests' : '');
   const dataDirectory = isolatedTest ? path.join(app.getPath('userData'), isolatedTest, randomBytes(8).toString('hex')) : path.join(app.getPath('userData'), 'data');
   await mkdir(dataDirectory, { recursive: true });
   settingsLayoutStore = createSettingsLayoutStore(dataDirectory);
@@ -81,7 +87,7 @@ async function start() {
   const modelSession = session.fromPartition('learnflow-model-network');
   modelSession.setPermissionRequestHandler((_, __, callback) => callback(false));
   modelSession.setPermissionCheckHandler(() => false);
-  const modelFetch = (url, options) => modelSession.fetch(url, { ...options, credentials: 'omit' });
+  const modelFetch = (url, options) => { checkCancelled(); return cancellation.generationAwait(modelSession.fetch(url, { ...options, signal: cancellation.generationSignal(null, options?.signal), credentials: 'omit' })); };
   const speechService = createSpeechService(speechStore, modelFetch);
   let llm = createLLM({ ...store.getModelConfig(), fetchImpl: modelFetch });
   const sourceFixture = smoke && process.argv.includes('--sources-only') ? (await import('./sources-fixture.mjs')).sourcesFixture() : null;
@@ -115,7 +121,7 @@ async function start() {
   const onGenerationProgress = (requestId, stage) => {
     if (progressRequests.has(requestId) && window && !window.isDestroyed()) window.webContents.send('learnflow:generation-progress', { requestId, stage });
   };
-  server = createApp({ getLLM: () => llm, courseSources, onGenerationProgress, getCourseSourceSearch: id => learning.getLesson(id).sourceSearch, getCourseBlockCourse: id => learning.getLesson(id).blockCourse, apiToken: token, getImageSettings: () => imageStore.getSettings(), getImageAsset: async id => {
+  server = createApp({ getLLM: () => llm, courseSources, onGenerationProgress, getGenerationSignal: id => generationTasks.signal(id), getCourseSourceSearch: id => learning.getLesson(id).sourceSearch, getCourseBlockCourse: id => learning.getLesson(id).blockCourse, apiToken: token, getImageSettings: () => imageStore.getSettings(), getImageAsset: async id => {
     try { return await imageStore.readAsset(id); } catch { return null; }
   }, getAudioAsset: async id => { try { return await speechStore.readAsset(id); } catch { return null; } } });
   await new Promise((resolve, reject) => { server.once('error', reject); server.listen(0, '127.0.0.1', resolve); });
@@ -189,6 +195,7 @@ async function start() {
   handle('learnflow:save-lesson', (id, value) => learning.saveLesson(id, value));
   handle('learnflow:save-outline', (id, value) => learning.saveOutline(id, value));
   handle('learnflow:append-block', (id, value) => learning.appendBlock(id, value));
+  handle('learnflow:remove-pending-quiz', (id, blockId) => learning.removePendingQuiz(id, blockId));
   handle('learnflow:save-block', (id, blockId, value) => learning.saveBlock(id, blockId, value));
   handle('learnflow:revise-block', (id, blockId, value, expectedText) => learning.reviseBlock(id, blockId, value, expectedText));
   handle('learnflow:restore-block', (id, blockId, expectedText) => learning.restoreBlock(id, blockId, expectedText));
@@ -320,9 +327,11 @@ async function start() {
     try {
       const bytes = await createImageModel(imageStore.getConfig(), modelFetch).download(record.url);
       const id = await imageStore.put(bytes);
+      checkCancelled();
       const content = learning.attachIllustration(value.lessonId, value.blockId, { id, prompt: record.prompt, caption: record.caption, model: record.model, created: Date.now() }, record.expectedContent);
       pendingImages.drop(key, record.id); return content;
     } catch (error) {
+      checkCancelled();
       record.error = error.code ? '本地图片保存失败，请检查目录权限和磁盘空间。' : error.message;
       return pendingImages.public(record);
     } finally { imageRequests.delete(key); }
@@ -349,8 +358,10 @@ async function start() {
     try {
       const bytes = await createImageModel(config, modelFetch).generate(value.prompt, (url, host) => { downloadURL = url; downloadHost = host; });
       const id = await imageStore.put(bytes);
+      checkCancelled();
       return learning.attachIllustration(value.lessonId, value.blockId, { id, prompt: value.prompt, caption: value.caption, model: config.model, created: Date.now() }, expectedContent);
     } catch (error) {
+      checkCancelled();
       if (!downloadURL) throw error;
       const record = pendingImages.put(requestId, { url: downloadURL, host: downloadHost, expectedContent, baseUrl: config.baseUrl, protocol: config.protocol, model: config.model, prompt: value.prompt, caption: value.caption, error: error.code ? '本地图片保存失败，请检查目录权限和磁盘空间。' : error.message });
       return pendingImages.public(record);
@@ -367,6 +378,7 @@ async function start() {
     }
   }));
   const modelRequest = async (endpoint, data, progressId) => {
+    checkCancelled();
     if (!['status', 'plan-clarify', 'plan', 'lesson', 'lesson-outline', 'lesson-block', 'lesson-ask', 'wiki', 'wiki-draft', 'knowledge-organize', 'ask', 'test-connection'].includes(endpoint)) throw new Error('接口不存在。');
     const courseId = endpoint === 'lesson-block' ? data?.lessonId : null;
     if (courseId && courseRequests.has(courseId)) throw new Error('本课正在生成，请稍候。');
@@ -378,12 +390,14 @@ async function start() {
       method: endpoint === 'status' ? 'GET' : 'POST',
       headers: { 'Content-Type': 'application/json', 'X-Learnflow-Token': token, ...(requestId ? { 'X-Learnflow-Progress': requestId } : {}) },
       ...(endpoint === 'status' ? {} : { body: JSON.stringify(data) }),
-      signal: AbortSignal.timeout((llm.status().timeoutMs || 120000) * (endpoint === 'lesson-block' ? 2 : 1) + (endpoint === 'lesson-block' ? 120000 : 10000))
+      signal: cancellation.generationSignal((llm.status().timeoutMs || 120000) * (endpoint === 'lesson-block' ? 2 : 1) + (endpoint === 'lesson-block' ? 120000 : 10000))
     });
     const value = await response.json();
+    checkCancelled();
     if (!response.ok) throw new Error(value.error || '请求失败。');
     return value;
-    } finally { if (courseId) courseRequests.delete(courseId); if (requestId) progressRequests.delete(requestId); }
+    } catch (error) { checkCancelled(); throw error; }
+    finally { if (courseId) courseRequests.delete(courseId); if (requestId) progressRequests.delete(requestId); }
   };
   handle('learnflow:request', modelRequest);
   const checkedOperation = async (lessonId, progressId, operation) => {
@@ -401,8 +415,10 @@ async function start() {
     if (revising ? !block.content || block.content.text !== value.expectedText : !!block.content) throw new Error('模块内容已变化，请重新打开后生成。');
     const original = block.content, generator = llm;
     const generated = await modelRequest('lesson-block', { ...value.request, lessonId: value.lessonId, block: { type: block.type, title: block.title, objective: block.objective } }, progressId);
+    checkCancelled();
     let checked = { content: generated, record: null };
     if (factCheckSettings.get().enabled) checked = await factChecker.process(value.lessonId, value.blockId, generated, { notify, generator });
+    checkCancelled();
     const saved = learning.saveFactCheckedBlock(value.lessonId, value.blockId, { ...generated, ...checked.content }, checked.record, original);
     return { ...saved, factCheck: checked.record, ...(checked.record?.status === 'failed' ? { error: `正文已生成，事实核查未完成：${checked.record.error}` } : {}) };
   }));
@@ -410,6 +426,7 @@ async function start() {
     const block = learning.getLesson(lessonId).blockCourse?.blocks.find(b => b.id === blockId);
     if (!block?.content) throw new Error('请先生成模块内容。');
     const checked = await factChecker.process(lessonId, blockId, block.content, { notify });
+    checkCancelled();
     return { ...learning.saveFactCheckedBlock(lessonId, blockId, checked.content, checked.record, block.content), cached: checked.cached, ...(checked.record.status === 'failed' ? { error: checked.record.error } : {}) };
   }));
   handle('learnflow:restore-fact-check', (lessonId, blockId, recordId) => {
@@ -511,7 +528,9 @@ async function start() {
   if (!smoke) window.focus();
   if (development) { window.setTitle('知行 Learnflow · 开发测试版'); console.log('DESKTOP_DEV_READY'); }
   if (smoke) {
-    if (process.argv.includes('--facts-only')) await require('./fact-check-smoke.cjs').run(window,dataDirectory);
+    if (process.argv.includes('--cancel-only')) await require('./cancellation-smoke.cjs').run(window,dataDirectory);
+    else if (process.argv.includes('--quiz-only')) await require('./quiz-smoke.cjs').run(window,dataDirectory);
+    else if (process.argv.includes('--facts-only')) await require('./fact-check-smoke.cjs').run(window,dataDirectory);
     else if (process.argv.includes('--quality-only') || process.argv.includes('--revision-only')) await require('./quality-smoke.cjs').run(window,dataDirectory);
     else if (process.argv.includes('--sharing-only')) await require('./sharing-smoke.cjs').run(window,dataDirectory);
     else if (process.argv.includes('--settings-only')) await require('./settings-smoke.cjs').run(window,dataDirectory);

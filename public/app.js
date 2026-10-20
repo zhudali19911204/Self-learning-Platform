@@ -16,6 +16,8 @@ import { teachingContextNotice } from './teaching-context.js';
 import { officialSource, validSourceSearch, courseReferences } from './course-sources.js';
 import { createGenerationProgress } from './generation-progress.js';
 import { factCheckLabels, sameFactContent } from './fact-check.js';
+import { masteredQuizQuestions, quizRecordAfterChange, quizQuestionKey, quizBatchLimit, quizQuestionLimit } from './quiz-progress.js';
+import { generationCancelled, isGenerationCancelled } from './task-cancellation.js';
 
 const renderMarkdown = createMarkdownRenderer(Marked, DOMPurify);
 
@@ -44,7 +46,7 @@ const icons = {
 };
 const icon = (name, cls = '') => `<svg class="icon ${cls}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${icons[name] || icons.spark}</svg>`;
 const desktop = window.learnflowDesktop;
-const generationProgress = createGenerationProgress({ document, setTimer: setTimeout, clearTimer: clearTimeout });
+const generationProgress = createGenerationProgress({ document, cancelTask: desktop ? id => desktop.cancelGeneration(id) : undefined, setTimer: setTimeout, clearTimer: clearTimeout });
 desktop?.onGenerationProgress?.(({ requestId, stage }) => {
   const messages = { preparing: '正在准备请求…', searching: '正在搜索并读取参考资料…', generating: '模型正在生成内容…', validating: '正在检查生成内容与格式…', fact_checking: '独立模型正在核查事实与资料依据…', fact_correcting: '正在按资料修正明确错误（最多一轮）…', fact_rechecking: '独立模型正在复核修正结果…' };
   if (messages[stage]) generationProgress.update(requestId, messages[stage]);
@@ -74,6 +76,7 @@ let readingReturn = null;
 let syllabusCollapsed = false, annotationDraft = null, pendingAnnotationAnchor = null;
 const collapsedBlocks = new Set();
 const courseGenerationBusy = new Set(), courseSearchMessages = new Map();
+const quizAdditionBusy = new Set(), quizAdditionErrors = new Map(), quizAdditionCounts = new Map(), quizAnswerDrafts = new Map();
 // Session-only drafts are deliberately separate from saved, validated courses.
 const outlineDrafts = new Map();
 let factCheckPreferences = { enabled: false, error: '' };
@@ -337,6 +340,16 @@ function categoryFor(planValue) {
   return '其他主题';
 }
 const progress = id => state.quizRecords?.[id] && state.quizRecords[id].currentFingerprint !== state.quizRecords[id].progressFingerprint ? {} : state.progress[id] || {};
+function applyQuizState(id, result) {
+  if (Object.hasOwn(result, 'quizRecord')) {
+    if (result.quizRecord) (state.quizRecords ||= {})[id] = result.quizRecord;
+    else if (state.quizRecords) delete state.quizRecords[id];
+  }
+  if (Object.hasOwn(result, 'progress')) {
+    if (result.progress) state.progress[id] = result.progress;
+    else delete state.progress[id];
+  }
+}
 const completed = () => plan().lessons.filter(l => progress(l.id).completed).length;
 const percent = () => Math.round(completed() / plan().lessons.length * 100);
 const nextLesson = () => plan().lessons.find(l => !progress(l.id).completed) || plan().lessons[0];
@@ -367,18 +380,21 @@ function toast(message) { $('#toast').textContent = message; $('#toast').classLi
 async function api(path, body) {
   const quiz = path === 'lesson-block' && body?.block?.type === 'quiz';
   const names = { 'plan-clarify': '分析学习需求', plan: '规划学习路线', lesson: '生成课程内容', 'lesson-outline': body?.repairDraft ? '补充配套案例大纲' : '生成课程大纲', 'lesson-block': body?.revisionRequest ? '调整课程内容' : quiz ? '生成随堂练习' : '生成课程内容', 'lesson-ask': 'AI 答疑', wiki: '生成知识卡片', 'wiki-draft': '生成知识卡片', 'knowledge-organize': '整理知识目录', ask: '知识问答' };
-  if (names[path]) return generationProgress.run({ title: names[path], detail: body?.block?.title || body?.title || body?.courseTitle || '', message: quiz ? '正在依据已讲内容生成练习，不重新联网搜索…' : body?.sourceSearch?.enabled ? '正在联网检索并生成内容…' : '正在等待模型返回…' }, task => apiRequest(path, body, task.id));
+  if (names[path]) return generationProgress.run({ title: names[path], detail: body?.block?.title || body?.title || body?.courseTitle || '', message: quiz ? '正在依据已讲内容生成练习，不重新联网搜索…' : body?.sourceSearch?.enabled ? '正在联网检索并生成内容…' : '正在等待模型返回…' }, task => apiRequest(path, body, task.id, task.signal));
   return apiRequest(path, body);
 }
-async function apiRequest(path, body, progressId) {
+async function apiRequest(path, body, progressId, signal) {
   if (desktop) return desktop.request(path, body, progressId);
   const timeout = Number.isInteger(status.timeoutMs) && status.timeoutMs >= 1000 && status.timeoutMs <= 600000 ? status.timeoutMs : 120000;
-  const r = await fetch(`/api/${path}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body), signal: AbortSignal.timeout(path === 'lesson-block' ? timeout * 2 + 120000 : timeout + 10000) });
-  const value = await r.json(); if (!r.ok) throw new Error(value.error || '请求失败，请重试。'); return value;
+  try {
+    const deadline = AbortSignal.timeout(path === 'lesson-block' ? timeout * 2 + 120000 : timeout + 10000);
+    const r = await fetch(`/api/${path}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body), signal: signal ? AbortSignal.any([signal, deadline]) : deadline });
+    const value = await r.json(); if (signal?.aborted || value.code === 'GENERATION_CANCELLED') throw generationCancelled(); if (!r.ok) throw new Error(value.error || '请求失败，请重试。'); return value;
+  } catch (error) { if (signal?.aborted) throw generationCancelled(); throw error; }
 }
 function desktopGeneration(method, ...args) {
   const titles = { evaluateQuality: '课程评分', suggestIllustration: '生成配图建议', autoSearchCommonsImages: 'AI 搜索课程配图', autoSearchWebImages: 'AI 搜索课程配图', generateIllustration: '生成课程配图', retryIllustrationDownload: '下载课程配图', generateSpeech: '生成 AI 朗读' };
-  return generationProgress.run({ title: titles[method], message: method === 'generateSpeech' ? '正在合成并下载朗读音频…' : method === 'retryIllustrationDownload' ? '正在下载已生成的配图…' : '正在等待模型返回…' }, () => desktop[method](...args));
+  return generationProgress.run({ title: titles[method], message: method === 'generateSpeech' ? '正在合成并下载朗读音频…' : method === 'retryIllustrationDownload' ? '正在下载已生成的配图…' : '正在等待模型返回…' }, task => desktop[method](...args, task.id));
 }
 const pill = (text, cls = '') => `<span class="pill ${cls}">${escape(text)}</span>`;
 const button = (text, action, cls = 'primary', attrs = '', symbol = 'arrow') => `<button class="btn ${cls}" data-action="${action}" ${attrs}>${escape(text)}${symbol ? icon(symbol) : ''}</button>`;
@@ -573,7 +589,7 @@ async function courseBlockRequest(id, request) {
       if (!block) throw new Error('待生成模块不存在。');
       const result = await generationProgress.run({ title: request.revisionRequest ? '调整课程内容' : quiz ? '生成随堂练习' : '生成课程内容', detail: block.title, ...(quiz ? { message: '依据已讲内容出题，复用已有资料，不重新搜索…' } : {}) }, task => desktop.generateCourseBlock({ lessonId: id, blockId: block.id, request: { ...request, sourceSearch }, ...(request.revisionRequest ? { expectedText: block.content?.text } : {}) }, task.id));
       (state.factChecks ||= {})[id] = result.factChecks || [];
-      if (result.quizRecord) (state.quizRecords ||= {})[id] = result.quizRecord;
+      applyQuizState(id, result);
       content = result.content;
     } else content = await api('lesson-block', { ...request, lessonId: id, sourceSearch });
     if (courseSearchPreference(id).revision !== sourceSearch.revision) throw new Error('联网搜索设置已变化，请重新生成。');
@@ -657,7 +673,7 @@ async function generateLessonOutline(id) {
     state.blockCourses ||= {}; state.blockCourses[id] = course; if (!desktop) save();
     outlineDrafts.delete(id);
   } catch (error) {
-    pending.error = `${pending.outline ? '大纲保存失败' : pending.draft ? '配套案例补充失败，原大纲已保留' : '大纲生成失败'}：${error.message}`;
+    pending.error = isGenerationCancelled(error) ? error.message : `${pending.outline ? '大纲保存失败' : pending.draft ? '配套案例补充失败，原大纲已保留' : '大纲生成失败'}：${error.message}`;
     throw error;
   } finally { pending.busy = false; refresh(); }
 }
@@ -668,9 +684,9 @@ function factCheckStrip(block, lessonId) {
   const phase = busy ? 'checking' : record?.status || 'unchecked';
   const label = busy ? '正在处理…' : record ? record.status === 'uncertain' ? `有 ${record.issues.length} 处待核实` : factCheckLabels[record.status] : '尚未核查';
   const attrs = `data-id="${escape(lessonId)}" data-block="${escape(block.id)}"`;
-  const selectable = desktop.correctFactIssues && record?.issues.length && ['uncertain', 'edited'].includes(record.status);
+  const selectable = desktop.correctFactIssues && record?.issues.some(i => !i.unlocated) && ['uncertain', 'edited'].includes(record.status);
   const selection = factCorrectionSelections.get(record?.id) || new Set();
-  const issues = record?.issues.map((i, index) => `<article>${selectable ? `<label class="check-label fact-issue-selection"><input type="checkbox" data-fact-selection data-fact-record="${escape(record.id)}" data-issue="${index}" ${selection.has(index) ? 'checked' : ''} ${busy ? 'disabled' : ''}>修正此疑点</label>` : ''}<blockquote>${escape(i.quote)}</blockquote><p>${escape(i.reason)}</p><p>建议：${escape(i.suggestion)}</p>${i.evidence.map(e => { const source = record.sources.find(s => s.id === e.id); return `<details><summary>资料依据 · ${escape(source?.title)}</summary><blockquote>${escape(e.quote)}</blockquote><p>${escape(source?.url)}</p></details>`; }).join('')}</article>`).join('') || '';
+  const issues = record?.issues.map((i, index) => `<article>${i.unlocated ? '<p class="field-hint">原句待定位 · 以下为模型描述，未匹配到正文，暂不能直接修正。</p>' : selectable ? `<label class="check-label fact-issue-selection"><input type="checkbox" data-fact-selection data-fact-record="${escape(record.id)}" data-issue="${index}" ${selection.has(index) ? 'checked' : ''} ${busy ? 'disabled' : ''}>修正此疑点</label>` : ''}<blockquote>${escape(i.quote)}</blockquote><p>${escape(i.reason)}</p><p>建议：${escape(i.suggestion)}</p>${i.evidence.map(e => { const source = record.sources.find(s => s.id === e.id); return `<details><summary>资料依据 · ${escape(source?.title)}</summary><blockquote>${escape(e.quote)}</blockquote><p>${escape(source?.url)}</p></details>`; }).join('')}</article>`).join('') || '';
   const correction = selectable ? `<p class="field-hint">勾选后确认，即可直接更新对应文案。不要求提供参考资料；疑点可能误判，修正后仍需核对。每次确认最多调用一次生成模型，可能计费。</p>${button(`确认修正（${selection.size}）`, 'correct-fact-issues', 'primary', `${attrs} data-record="${escape(record.id)}" ${busy || !selection.size || status.mode !== 'ai' ? 'disabled' : ''}`, '')}` : '';
   return `<details class="fact-check-strip is-${phase}"><summary><span class="fact-check-dot" aria-hidden="true"></span>${escape(label)}<span class="fact-check-view">查看</span></summary><div class="fact-check-details"><p>${escape(record?.summary || '使用另一个模型检查事实、适用条件、来源及答案。')}</p>${record?.error ? `<p class="inline-error">${escape(record.error)}</p>` : ''}${issues}${correction}<p class="inline-error" role="alert">${escape(factCorrectionErrors.get(key) || '')}</p><div class="fact-check-actions">${button(busy ? '处理中…' : record?.status === 'failed' ? '重试核查' : '核查当前版本', 'check-block-facts', 'secondary', `${attrs} ${busy || qualityStatus.mode !== 'ai' ? 'disabled' : ''}`, 'check')}${record?.beforeContent && ['corrected', 'edited'].includes(record.status) ? button('恢复修正前版本', 'restore-fact-check', 'secondary', `${attrs} data-record="${escape(record.id)}" ${busy ? 'disabled' : ''}`, 'back') : ''}</div><p class="field-hint">未发现问题不代表事实已证实。未变化的内容复用核查结果；新核查可能计费。</p></div></details>`;
 }
@@ -679,9 +695,8 @@ function blockPart(block, index, lessonId, teaching = false) {
   const attrs = `data-id="${escape(lessonId)}" data-block="${escape(block.id)}"`;
   const editable = assistedBlockTypes.includes(block.type) && block.content;
   const imageAction = editable && desktop ? button(block.content.illustration ? '调整配图' : block.content.imageProposal ? '查看建议配图' : 'AI 配图建议', 'request-illustration', 'secondary', attrs, 'spark') : '';
-  const otherRevision = editable && block.type === 'practice' ? button('换个任务', 'request-revision', 'secondary', attrs, '') : '';
-  const primaryRevision = editable && ['reading', 'example'].includes(block.type) ? button(block.type === 'reading' ? '换个讲法' : '换个例子', 'request-revision', 'secondary', attrs, '') : '';
-  const tools = button('生成知识卡片', 'create-note', 'secondary', attrs, 'brain') + imageAction + otherRevision + (editable && block.content.revisions?.length ? button('恢复上一版', 'restore-block', 'secondary', attrs, 'back') : '');
+  const primaryRevision = editable ? button(block.type === 'reading' ? '换个讲法' : block.type === 'practice' ? '换个任务' : '换个例子', 'request-revision', 'secondary', attrs, '') : '';
+  const tools = button('生成知识卡片', 'create-note', 'secondary', attrs, 'brain') + imageAction + (editable && block.content.revisions?.length ? button('恢复上一版', 'restore-block', 'secondary', attrs, 'back') : '');
   const actions = block.content && block.type !== 'quiz' ? `<div class="revision-actions">${primaryRevision}${moreLearningTools(tools)}</div>` : '';
   const figure = desktop && validIllustration(block.content?.illustration) ? `<figure class="course-illustration"><img src="/course-images/${block.content.illustration.id}" alt="${escape(block.content.illustration.caption)}" loading="lazy"><figcaption>${escape(block.content.illustration.caption)}<small>${['commons', 'web'].includes(block.content.illustration.source) ? `网络资料 · ${block.content.illustration.source === 'commons' ? 'Wikimedia Commons' : '百炼网页搜图'} · ${escape(block.content.illustration.author)} · ${escape(block.content.illustration.license)} <button type="button" class="text-button" data-action="${block.content.illustration.source === 'commons' ? 'open-commons-source' : 'open-image-source'}" data-url="${escape(block.content.illustration.sourceUrl)}">查看来源与许可</button>` : 'AI 生成教学示意 · 请结合正文核验，勿用于精确测量或数据判断'}</small></figcaption></figure>` : '';
   const canCollapse = Boolean(block.content) && ['reading', 'example', 'practice', 'summary'].includes(block.type);
@@ -728,8 +743,59 @@ function studyChat(meta) {
     <p id="lesson-ask-error" class="inline-error" role="alert"></p></section>`;
 }
 function quiz(meta, lesson) {
-  const record = progress(meta.id);
-  return `<div class="quiz-intro"><h2>让理解，在练习中发生。</h2><p>共 ${lesson.questions.length} 道单选题，全部答对即可掌握本课。可以反复练习。</p></div><form id="quiz-form" data-id="${meta.id}">${lesson.questions.map((q, i) => `<fieldset class="question"><legend><span>${String(i + 1).padStart(2, '0')}</span>${escape(q.prompt)}</legend>${q.options.map((o, j) => `<label class="quiz-option"><input type="radio" name="q${i}" value="${j}" required><span class="option-letter">${String.fromCharCode(65 + j)}</span><span>${escape(o)}</span></label>`).join('')}</fieldset>`).join('')}<button class="btn primary" type="submit">提交并查看解析 ${icon('check')}</button></form>${record.lastAnswers?.length === lesson.questions.length ? `<section class="quiz-result ${record.lastScore === 100 ? 'passed' : ''}" aria-live="polite"><h3>${record.lastScore === 100 ? '做得好，本课已掌握！' : '发现盲点，就是进步的开始。'}<span>${record.lastScore} 分</span></h3><p>上次提交 · 已练习 ${record.attempts} 次 · 最高 ${record.bestScore} 分</p>${lesson.questions.map((q, i) => `<div class="answer-review"><strong>${record.lastAnswers[i] === q.answer ? '✓ 回答正确' : '↻ 再想一想'} · 第 ${i + 1} 题</strong><p>你的答案：${escape(q.options[record.lastAnswers[i]])}<br>正确答案：${escape(q.options[q.answer])}</p><p>${escape(q.explanation)}</p></div>`).join('')}${record.completed ? button('制作本课知识卡片', 'create-note', 'primary', `data-id="${meta.id}"`, 'brain') : `<p>结合解析回到上方重新作答，或切换到学习内容复习。</p>`}</section>` : ''}`;
+  const record = progress(meta.id), mastered = masteredQuizQuestions(lesson.questions, state.progress[meta.id], state.quizRecords?.[meta.id]);
+  const remaining = mastered.filter(passed => !passed).length, drafts = quizAnswerDrafts.get(meta.id);
+  return `<div class="quiz-intro"><h2>让理解，在练习中发生。</h2><p>共 ${lesson.questions.length} 道单选题 · 已通过 ${lesson.questions.length - remaining} 题 · 待完成 ${remaining} 题。已通过的题直接显示正确答案，不必重复作答。</p></div><form id="quiz-form" data-id="${meta.id}">${lesson.questions.map((q, i) => `<fieldset class="question${mastered[i] ? ' quiz-mastered' : ''}" data-question-index="${i}"><legend><span>${String(i + 1).padStart(2, '0')}</span>${escape(q.prompt)}${mastered[i] ? pill('已通过', 'success') : ''}</legend>${mastered[i] ? `<p class="quiz-correct-answer">${icon('check')}正确答案：${String.fromCharCode(65 + q.answer)} · ${escape(q.options[q.answer])}</p><p class="quiz-mastered-explanation">${escape(q.explanation)}</p>` : q.options.map((o, j) => `<label class="quiz-option"><input type="radio" name="q${i}" value="${j}" ${drafts?.get(quizQuestionKey(q)) === j ? 'checked' : ''} required><span class="option-letter">${String.fromCharCode(65 + j)}</span><span>${escape(o)}</span></label>`).join('')}</fieldset>`).join('')}${remaining ? `<button class="btn primary" type="submit">提交并查看解析 ${icon('check')}</button>` : '<p class="quiz-all-passed">当前题目均已通过，可以继续生成新题巩固理解。</p>'}</form>${record.lastAnswers?.length === lesson.questions.length ? `<section class="quiz-result ${record.lastScore === 100 ? 'passed' : ''}" aria-live="polite"><h3>${record.lastScore === 100 ? '做得好，本课已掌握！' : '发现盲点，就是进步的开始。'}<span>${record.lastScore} 分</span></h3><p>上次提交 · 已练习 ${record.attempts} 次 · 最高 ${record.bestScore} 分</p>${lesson.questions.map((q, i) => mastered[i] ? '' : `<div class="answer-review"><strong>↻ 再想一想 · 第 ${i + 1} 题</strong><p>你的答案：${escape(q.options[record.lastAnswers[i]])}<br>正确答案：${escape(q.options[q.answer])}</p><p>${escape(q.explanation)}</p></div>`).join('')}${record.completed ? button('制作本课知识卡片', 'create-note', 'primary', `data-id="${meta.id}"`, 'brain') : '<p>只需完成尚未通过的题，也可以返回学习内容复习。</p>'}</section>` : ''}${moreQuizForm(meta, lesson)}`;
+}
+function moreQuizForm(meta, lesson) {
+  if (!state.blockCourses?.[meta.id]) return '';
+  const max = Math.min(quizBatchLimit, quizQuestionLimit - lesson.questions.length);
+  if (max < 1) return `<p class="field-hint">本课已达到 ${quizQuestionLimit} 道题，请先巩固现有练习。</p>`;
+  const busy = quizAdditionBusy.has(meta.id) || courseGenerationBusy.has(meta.id);
+  return `<section class="more-quiz-panel"><h3>还想继续练习？</h3><p>追加新题，不替换原题，已通过的题无需重做。</p><form id="more-quiz-form" data-id="${escape(meta.id)}"><label for="more-quiz-count">新增题数</label><input id="more-quiz-count" name="count" type="number" min="1" max="${max}" step="1" value="${Math.min(quizAdditionCounts.get(meta.id) || 4, max)}" required ${busy ? 'disabled' : ''}><button type="submit" class="btn secondary" ${busy || status.mode !== 'ai' ? 'disabled' : ''}>${busy ? '正在新增题目…' : `继续生成题目 ${icon('plus')}`}</button></form><p class="field-hint">每次 1–${max} 题，可多次追加。本次只依据已讲内容出题，不重新搜索；模型调用可能计费。</p><p class="inline-error" role="alert">${escape(quizAdditionErrors.get(meta.id) || '')}</p></section>`;
+}
+async function appendQuizQuestions(id, count) {
+  const course = state.blockCourses?.[id], meta = lessonById(id);
+  if (status.mode !== 'ai' || !course || !meta) throw new Error('请连接课程生成模型，并打开已有随堂练习的分块课程。');
+  if (!Number.isInteger(count) || count < 1 || count > quizBatchLimit || contentFor(id).questions.length + count > quizQuestionLimit) throw new Error(`每次可新增1–${quizBatchLimit}题，本课最多${quizQuestionLimit}题。`);
+  if (quizAdditionBusy.has(id) || courseGenerationBusy.has(id)) throw new Error('本课正在生成，请等待当前请求完成。');
+  const drafts = new Map(), questions = contentFor(id).questions;
+  for (const input of document.querySelectorAll?.('#quiz-form input[type="radio"]:checked') || []) {
+    const index = Number(input.name.slice(1)); if (questions[index]) drafts.set(quizQuestionKey(questions[index]), Number(input.value));
+  }
+  quizAnswerDrafts.set(id, drafts); quizAdditionBusy.add(id); quizAdditionCounts.set(id, count); quizAdditionErrors.delete(id); render();
+  let appendedBlockId;
+  try {
+    await pendingSave;
+    let block = course.blocks.find(b => b.type === 'quiz' && !b.content && b.title.startsWith('补充练习 · 第'));
+    if (!block) {
+      const spec = { type: 'quiz', title: `补充练习 · 第 ${course.blocks.filter(b => b.type === 'quiz').length + 1} 组`, objective: meta.objective };
+      block = desktop ? await desktop.appendBlock(id, spec) : { ...spec, id: crypto.randomUUID(), content: null };
+      if (!lessonById(id) || state.blockCourses[id] !== course) throw new Error('课程已变化，未覆盖当前内容。');
+      course.blocks.push(block); if (!desktop) save();
+      appendedBlockId = block.id;
+    }
+    await action('generate-block', { dataset: { id, block: block.id, count: String(count) } });
+    toast(`已新增 ${count} 道题，已通过的题保留。`);
+  } catch (error) {
+    if (isGenerationCancelled(error) && appendedBlockId) {
+      if (desktop) await desktop.removePendingQuiz(id, appendedBlockId);
+      course.blocks = course.blocks.filter(block => block.id !== appendedBlockId);
+      if (!desktop) save();
+    }
+    quizAdditionErrors.set(id, error.message + ' 原题和成绩已保留，可重试新增。');
+    // A review can fail after questions were saved. Reload local data before a
+    // retry rather than generating or overwriting that already-saved batch.
+    if (desktop) {
+      const detail = await desktop.getLesson(id).catch(() => null);
+      if (detail?.blockCourse && lessonById(id)) {
+        state.blockCourses[id] = detail.blockCourse;
+        (state.factChecks ||= {})[id] = detail.factChecks || [];
+        applyQuizState(id, detail);
+      }
+    }
+    throw error;
+  } finally { quizAdditionBusy.delete(id); render(); }
 }
 function practice() {
   const p = plan(), reviewed = p.lessons.filter(l => progress(l.id).attempts), weak = reviewed.filter(l => progress(l.id).lastScore < 100);
@@ -1196,7 +1262,7 @@ async function openLesson(id, tab = 'read') {
     (state.factChecks ||= {})[id] = detail.factChecks || [];
     state.chats = { [id]: detail.chats };
     (state.sourceSearch ||= {})[id] = detail.sourceSearch || { enabled: false, revision: 0 };
-    if (detail.quizRecord) (state.quizRecords ||= {})[id] = detail.quizRecord;
+    applyQuizState(id, detail);
   }
   readingReturn = null; activeLesson = id; lessonTab = ['read', 'quiz', 'chat'].includes(tab) ? tab : 'read'; navigate('study');
 }
@@ -1312,6 +1378,7 @@ function markdown(n) { return `# ${n.title}\n\n${n.summary.split('\n').map(line 
 async function action(name, element) {
   if (name === 'toggle-generation-progress') { generationProgress.toggle(); return; }
   if (name === 'dismiss-generation-task') { generationProgress.dismiss(element.dataset.id); return; }
+  if (name === 'cancel-generation-task') { await generationProgress.cancel(element.dataset.id); return; }
   if (['check-block-facts', 'restore-fact-check', 'correct-fact-issues'].includes(name) && desktop) {
     const lessonId = element.dataset.id, blockId = element.dataset.block, key = `${lessonId}:${blockId}`;
     if (factCheckBusy.has(key)) return;
@@ -1330,7 +1397,7 @@ async function action(name, element) {
       const block = state.blockCourses?.[lessonId]?.blocks.find(b => b.id === blockId);
       if (block) block.content = result.content;
       (state.factChecks ||= {})[lessonId] = result.factChecks || [];
-      if (result.quizRecord) (state.quizRecords ||= {})[lessonId] = result.quizRecord;
+      applyQuizState(lessonId, result);
       if (name === 'restore-fact-check') toast('已恢复修正前内容，该版本需要重新核查。');
       else if (name === 'correct-fact-issues') { factCorrectionSelections.delete(element.dataset.record); toast('已按所选疑点更新文案，可恢复原版本；建议重新核查。'); }
       else if (result.cached) toast('内容未变化，已复用已有核查结果。');
@@ -1542,12 +1609,17 @@ async function action(name, element) {
     const meta = lessonById(id), p = state.plans.find(plan => plan.lessons.some(item => item.id === id));
     const context = blockGenerationContext(state.blockCourses[id], block.id);
     if (['quiz','summary'].includes(block.type) && !context.teachingContext.sources.some(s=>['reading','example'].includes(s.type))) throw new Error('请先生成至少一个前序讲解或案例，再生成测验或总结；未调用模型。');
-    const content = await courseBlockRequest(id, { goal: p.goal, level: p.level, ...(p.learningBrief ? { learningBrief: p.learningBrief } : {}), title: meta.title, objective: meta.objective, minutes: meta.minutes, ...context, block: { type: block.type, title: block.title, objective: block.objective } });
+    const beforeQuestions = block.type === 'quiz' ? structuredClone(contentFor(id).questions) : [];
+    const content = await courseBlockRequest(id, { goal: p.goal, level: p.level, ...(p.learningBrief ? { learningBrief: p.learningBrief } : {}), title: meta.title, objective: meta.objective, minutes: meta.minutes, ...context, block: { type: block.type, title: block.title, objective: block.objective }, ...(block.type === 'quiz' ? { existingQuestions: beforeQuestions.map(q => q.prompt), ...(element.dataset.count ? { questionCount: Number(element.dataset.count) } : {}) } : {}) });
     if (!validBlockContent(block.type, content)) throw new Error('模型返回的内容格式不正确，请重试。');
     if (desktop && !desktop.generateCourseBlock) await desktop.saveBlock(id, block.id, content);
     block.content = content;
-    if (block.type === 'quiz' && desktop && state.quizRecords?.[id]) state.quizRecords[id] = (await desktop.getLesson(id)).quizRecord;
-    else if (block.type === 'quiz' && state.progress[id]) state.progress[id] = { ...state.progress[id], completed: false, lastScore: 0, lastAnswers: [] };
+    if (block.type === 'quiz' && desktop && state.quizRecords?.[id]) applyQuizState(id, await desktop.getLesson(id));
+    else if (block.type === 'quiz' && !desktop) {
+      const changed = await quizRecordAfterChange(beforeQuestions, contentFor(id).questions, state.quizRecords?.[id], state.progress[id]);
+      if (changed.record) (state.quizRecords ||= {})[id] = changed.record;
+      if (changed.progress) state.progress[id] = changed.record ? changed.progress : { ...changed.progress, completed: false, lastScore: 0, lastAnswers: [] };
+    }
     if (!desktop) save(); render(); return;
   }
   if (name === 'check-image-connection') {
@@ -2054,16 +2126,27 @@ document.addEventListener('submit', async event => {
       if (!validBlockSpec(spec) || !state.blockCourses?.[id]) throw new Error('请填写有效的内容类型、标题和学习目标。');
       const block = desktop ? await desktop.appendBlock(id, spec) : { id: crypto.randomUUID(), ...spec, content: null };
       state.blockCourses[id].blocks.push(block); if (!desktop) save(); render(); toast('内容块已加入课程，可单独生成。');
+    } else if (form.id === 'more-quiz-form') {
+      await appendQuizQuestions(form.dataset.id, Number(values.get('count')));
     } else if (form.id === 'quiz-form') {
-      const id = form.dataset.id, lesson = contentFor(id), answers = lesson.questions.map((q, i) => Number(values.get('q' + i)));
+      const id = form.dataset.id, lesson = contentFor(id), mastered = masteredQuizQuestions(lesson.questions, state.progress[id], state.quizRecords?.[id]);
+      if (mastered.every(Boolean)) throw new Error('当前题目均已通过，无需再次提交；可以继续生成新题。');
+      const answers = lesson.questions.map((q, i) => {
+        if (mastered[i]) return q.answer;
+        const raw = values.get('q' + i), answer = Number(raw);
+        if (raw === null || raw === '' || !Number.isInteger(answer) || answer < 0 || answer > 3) throw new Error('请完成所有尚未通过的题目，再提交答案。');
+        return answer;
+      });
       const correct = lesson.questions.filter((q, i) => q.answer === answers[i]).length;
       const score = Math.round(correct / lesson.questions.length * 100), previous = progress(id);
       const next = { ...previous, attempts: (previous.attempts || 0) + 1, lastScore: score, bestScore: Math.max(previous.bestScore || 0, score), lastAnswers: answers, completed: previous.completed || correct === lesson.questions.length, updated: Date.now() };
       const record = state.quizRecords?.[id];
-      if (desktop && record) { await pendingSave; await desktop.saveProgress(id,{ ...next, quizFingerprint: record.currentFingerprint }); record.progressFingerprint = record.currentFingerprint; }
+      if (desktop) { await pendingSave; await desktop.saveProgress(id, { ...next, ...(record ? { quizFingerprint: record.currentFingerprint } : {}) }); }
+      if (record) record.progressFingerprint = record.currentFingerprint;
       state.progress[id] = next;
-      if (!desktop || !record) persist('saveProgress', id, next);
-      render(); $('.quiz-result')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      if (!desktop) save();
+      quizAnswerDrafts.delete(id);
+      render(); $('.quiz-result')?.scrollIntoView?.({ behavior: 'smooth', block: 'start' });
     } else if (form.id === 'lesson-ask-form') {
       const id = form.dataset.id, meta = lessonById(id), lesson = contentFor(id), question = values.get('question')?.trim();
       if (status.mode !== 'ai' || !meta || !lesson || !question || question.length > 1000) throw new Error('请先连接 AI 模型，并输入本课问题。');

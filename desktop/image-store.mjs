@@ -4,6 +4,7 @@ import { randomUUID, createHash } from 'node:crypto';
 import { imageDefaults, normalizeImageSettings, imageMime, MAX_IMAGE_BYTES } from '../image-model.mjs';
 import { validImageId, referencedImages } from '../public/illustrations.js';
 import { createModelProfiles } from './model-profiles.mjs';
+import { checkGenerationCancellation, isGenerationCancelled } from '../generation-cancellation.mjs';
 const digest = bytes => createHash('sha256').update(bytes).digest('hex');
 export function createImageStore(directory, secrets, validateBytes = () => {}) {
   let settings = { ...imageDefaults, apiKey: '' }, settingsError = '', queue = Promise.resolve();
@@ -20,13 +21,18 @@ export function createImageStore(directory, secrets, validateBytes = () => {}) {
     return { bytes, mime: imageMime(bytes) };
   }
   async function put(bytes) {
+    checkGenerationCancellation();
     validate(bytes); const id = digest(bytes), target = assetPath(id);
     await mkdir(path.dirname(target), { recursive: true });
-    try { await readAsset(id); return id; } catch (error) { if (error.code !== 'ENOENT') throw error; }
+    try { await readAsset(id); checkGenerationCancellation(); return id; } catch (error) { if (error.code !== 'ENOENT') throw error; }
     const temporary = `${target}.${randomUUID()}.tmp`;
     try {
       await writeFile(temporary, bytes, { flag: 'wx', mode: 0o600 });
       await rename(temporary, target);
+      checkGenerationCancellation();
+    } catch (error) {
+      if (isGenerationCancelled(error)) await unlink(target).catch(e => { if (e.code !== 'ENOENT') throw e; });
+      throw error;
     } finally { try { await unlink(temporary); } catch (error) { if (error.code !== 'ENOENT') throw error; } }
     return id;
   }

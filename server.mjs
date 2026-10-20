@@ -7,6 +7,9 @@ import { createCourseSources, CourseSourceError } from './course-sources.mjs';
 import { createCourseClaimMatcher } from './course-claim-matching.mjs';
 import { withInlineCourseCitations } from './course-inline-citations.mjs';
 import { quizMaterials, quizSourceGuidance } from './course-quiz-sources.mjs';
+import { cleanGenerationCitationContext, generationCitationContextGuidance } from './course-citation-context.mjs';
+import { quizBatchLimit, quizQuestionLimit, quizPromptKey } from './public/quiz-progress.js';
+import { withGenerationSignal, checkGenerationCancellation, generationAwait, generationCancelled } from './generation-cancellation.mjs';
 import { sourceGenerationGuidance, sourceCitationIssue, groundedContent, validSourceSearch } from './public/course-sources.js';
 import { blockCommonGuidance, blockTypeGuidance, blockOutputGuidance, blockRevisionGuidance, outlineGuidance, planGuidance, validGeneratedBlock, normalizeOutline, inspectOutline, outlineRepairGuidance, mergeOutlineExamples } from './course-generation.mjs';
 import { validTeachingContext, cleanTeachingContext } from './public/teaching-context.js';
@@ -32,6 +35,8 @@ assets['/knowledge-views.js'] = ['knowledge-views.js', 'text/javascript'];
 assets['/graph-motion.js'] = ['graph-motion.js', 'text/javascript'];
 assets['/generation-progress.js'] = ['generation-progress.js', 'text/javascript'];
 assets['/fact-check.js'] = ['fact-check.js', 'text/javascript'];
+assets['/quiz-progress.js'] = ['quiz-progress.js', 'text/javascript'];
+assets['/task-cancellation.js'] = ['task-cancellation.js', 'text/javascript'];
 const strings = (v, max = 20) => Array.isArray(v) && v.length > 0 && v.length <= max && v.every(x => str(x, 5000));
 const validPlanningInput = data => str(data.goal, 1000) && ['零基础', '有一点基础', '希望进阶'].includes(data.level) && Number.isInteger(data.daily) && data.daily >= 10 && data.daily <= 120 && Number.isInteger(data.days) && data.days >= 7 && data.days <= 90;
 function clarificationAssessmentIssue(value) {
@@ -89,8 +94,13 @@ export function createApp(config = {}) {
   const defaultLLM = config.getLLM ? null : createLLM(config);
   const courseSources = config.courseSources || createCourseSources({ getConfig: () => ({ ...resolveConfig(config, config.env ?? process.env), localOnly: config.localOnly }), fetchImpl: config.fetchImpl });
   const sourceOperations = new Set();
-  return http.createServer(async (req, res) => {
-    const send = (code, data) => { res.writeHead(code, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' }); res.end(JSON.stringify(data)); };
+  return http.createServer((req, res) => {
+    const controller = new AbortController(), inherited = config.getGenerationSignal?.(req.headers['x-learnflow-progress']);
+    const signal = inherited ? AbortSignal.any([controller.signal, inherited]) : controller.signal;
+    const disconnect = () => { if (!res.writableEnded) controller.abort(generationCancelled()); };
+    req.once('aborted', disconnect); res.once('close', disconnect);
+    return withGenerationSignal(signal, async () => {
+    const send = (code, data) => { if (res.destroyed || res.writableEnded) return; res.writeHead(code, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' }); res.end(JSON.stringify(data)); };
     res.setHeader('X-Content-Type-Options', 'nosniff');
     res.setHeader('Referrer-Policy', 'no-referrer');
     res.setHeader('Content-Security-Policy', "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; media-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'");
@@ -107,8 +117,9 @@ export function createApp(config = {}) {
         try { config.onGenerationProgress?.(requestId, stage); } catch { /* Notifications must not affect paid requests. */ }
       };
       const generate = (instruction, input, validate) => {
+        checkGenerationCancellation();
         notify('generating');
-        return llm.generate(input?.learningBrief && path !== '/api/plan' ? `${learnerGuidance} ${instruction}` : instruction, input, value => { notify('validating'); return validate(value); });
+        return generationAwait(llm.generate(input?.learningBrief && path !== '/api/plan' ? `${learnerGuidance} ${instruction}` : instruction, input, value => { checkGenerationCancellation(); notify('validating'); return validate(value); }));
       };
       if (path === '/api/status' && req.method === 'GET') return send(200, llm.status());
       if (path.startsWith('/api/') && req.method === 'POST') {
@@ -193,6 +204,8 @@ export function createApp(config = {}) {
             result = check.missingExamples.length ? { status: 'needs_examples', draft, missingExamples: check.missingExamples } : draft;
           }
         } else if (path === '/api/lesson-block') {
+          if (data.questionCount !== undefined && (data.block?.type !== 'quiz' || !Number.isInteger(data.questionCount) || data.questionCount < 1 || data.questionCount > quizBatchLimit)) fail(`每次新增题数须为1–${quizBatchLimit}的整数。`);
+          if (data.existingQuestions !== undefined && (!Array.isArray(data.existingQuestions) || data.existingQuestions.length > quizQuestionLimit || !data.existingQuestions.every(q => str(q, 2000)))) fail('已有题目上下文无效。');
           if (!str(data.goal, 1000) || !str(data.title, 160) || !str(data.objective, 1000) || !str(data.level, 80) || !validBlockSpec(data.block) || typeof data.intro !== 'string' || data.intro.length > 20000) fail('内容块参数不完整。');
           if (data.minutes !== undefined && (!Number.isInteger(data.minutes) || data.minutes < 5 || data.minutes > 180)) fail('课程时长不正确。');
           if (data.outline !== undefined && (!Array.isArray(data.outline) || data.outline.length < 1 || data.outline.length > 25 || !data.outline.every(validBlockSpec))) fail('课程大纲上下文不正确。');
@@ -220,16 +233,26 @@ export function createApp(config = {}) {
             const quiz = data.block.type === 'quiz';
             const savedCourse = quiz && config.getCourseBlockCourse && data.lessonId ? config.getCourseBlockCourse(data.lessonId) : null;
             const materials = quiz ? quizMaterials(requested, savedCourse) : null;
-            if (materials) Object.assign(requested, materials.context);
+            Object.assign(requested, materials ? materials.context : cleanGenerationCitationContext(requested));
+            const existingQuestions = quiz ? savedCourse ? savedCourse.blocks.filter(b => b.type === 'quiz' && b.content && b.id !== requested.teachingContext?.targetId).flatMap(b => b.content.questions.map(q => q.prompt)) : data.existingQuestions || [] : [];
+            if (data.questionCount !== undefined && existingQuestions.length + data.questionCount > quizQuestionLimit) fail(`本课最多保留${quizQuestionLimit}道题，请先完成现有练习。`);
+            if (quiz) {
+              requested.existingQuestions = existingQuestions.map(q => q.slice(0, 240));
+              if (data.questionCount !== undefined) requested.questionCount = data.questionCount;
+            }
+            const excludedPrompts = new Set(existingQuestions.map(quizPromptKey));
             if (search.enabled && !quiz) notify('searching');
-            const documents = quiz ? materials.documents : search.enabled ? await courseSources.prepare(`${data.title}\n${data.objective}\n${data.block.title}\n${data.block.objective}`.slice(0, 2000)) : null;
+            const documents = quiz ? materials.documents : search.enabled ? await generationAwait(courseSources.prepare(`${data.title}\n${data.objective}\n${data.block.title}\n${data.block.objective}`.slice(0, 2000))) : null;
+            checkGenerationCancellation();
             checkSearch();
             if (documents) requested.officialDocuments = documents;
             const matchClaim = createCourseClaimMatcher();
-            result = await generate(instructions + practiceRevision + (documents ? sourceGenerationGuidance : '') + (quiz ? quizSourceGuidance : '') + (suggestImage ? `${illustrationGuidance}在返回 text 的同时，若有必要，可额外返回 imageProposal:{"prompt":"图片生成提示词","caption":"解释配图的中文图注"}；无需配图则省略该字段。不得返回图片地址。` : ''), requested, value => {
+            result = await generate(instructions + practiceRevision + generationCitationContextGuidance(documents) + (documents ? sourceGenerationGuidance : '') + (quiz ? quizSourceGuidance : '') + (suggestImage ? `${illustrationGuidance}在返回 text 的同时，若有必要，可额外返回 imageProposal:{"prompt":"图片生成提示词","caption":"解释配图的中文图注"}；无需配图则省略该字段。不得返回图片地址。` : ''), requested, value => {
               if (documents) value = withInlineCourseCitations(data.block.type, value);
               if (documents && value?.sourceInsufficient === true) fail(sourceCitationIssue(data.block.type, value, documents), 422);
-              if (!validGeneratedBlock(data.block.type, value)) return false;
+              if (quiz && data.questionCount !== undefined && Array.isArray(value?.questions) && value.questions.length !== data.questionCount) fail(`本次要求新增${data.questionCount}题，模型返回${value.questions.length}题；未保存新题，原题和成绩已保留。`, 422);
+              if (!validGeneratedBlock(data.block.type, value, { questionCount: data.questionCount })) return false;
+              if (quiz && (value.questions.some(q => excludedPrompts.has(quizPromptKey(q.prompt))) || new Set(value.questions.map(q => quizPromptKey(q.prompt))).size !== value.questions.length)) fail('新题与本课已有题目重复或本组新题重复，未保存新题；原题与成绩保留，可手动重试。', 422);
               if (quiz && !documents && withInlineCourseCitations('quiz', value).citations?.length) fail('本次练习依据已讲正文出题，未提供外部资料；模型不能添加未经提供的引用。题目未保存，请重新生成。', 422);
               if (documents) { const issue = sourceCitationIssue(data.block.type, value, documents, matchClaim); if (issue) fail(issue, 422); }
               return true;
@@ -258,6 +281,7 @@ export function createApp(config = {}) {
           if (!str(data.question, 1000) || !Array.isArray(data.notes) || data.notes.length > 30 || !data.notes.length || !data.notes.every(n => str(n.id, 160) && str(n.title, 160) && str(n.content))) fail('请提供问题和最多 30 篇有效知识笔记。');
           result = await generate(`只根据提供的 notes 回答问题。资料不足就明确说明不足，不得补充无依据的知识。返回实际支撑答案的笔记 id；引用只能使用所给 id。${markdownGuidance}格式：{"answer":"Markdown 回答","citations":["笔记id"]}。`, data, v => v && str(v.answer) && Array.isArray(v.citations) && v.citations.every(id => data.notes.some(n => n.id === id)));
         } else return send(404, { error: '接口不存在。' });
+        checkGenerationCancellation();
         return send(200, result);
       }
       if (req.method !== 'GET' && req.method !== 'HEAD') return send(405, { error: '请求方法不支持。' });
@@ -290,7 +314,14 @@ export function createApp(config = {}) {
       const content = await readFile(new URL(asset[0], publicDir));
       res.writeHead(200, { 'Content-Type': `${asset[1]}; charset=utf-8`, 'Cache-Control': 'no-cache' });
       res.end(req.method === 'HEAD' ? undefined : content);
-    } catch (e) { send(e.status || 500, { error: e.status ? e.message : '服务发生错误，请稍后重试。', ...(e instanceof CourseSourceError ? { code: e.code, stage: e.stage } : {}) }); }
+    } catch (e) {
+      // An oversized request also closes its input stream: keep its validation
+      // error instead of misreporting that deliberate rejection as cancellation.
+      const cancelled = signal.aborted && !(e.status >= 400 && e.status < 499);
+      send(cancelled ? 499 : e.status || 500, { error: cancelled ? generationCancelled().message : e.status ? e.message : '服务发生错误，请稍后重试。', ...(cancelled ? { code: 'GENERATION_CANCELLED' } : e instanceof CourseSourceError ? { code: e.code, stage: e.stage } : {}) });
+    }
+    finally { req.removeListener('aborted', disconnect); res.removeListener('close', disconnect); }
+    });
   });
 }
 

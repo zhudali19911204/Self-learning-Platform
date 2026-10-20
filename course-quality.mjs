@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
+import { generationAwait, checkGenerationCancellation } from './generation-cancellation.mjs';
 import { qualityRubric, qualityRubricVersion, assertDistinctQualityModels, validQualityId, validQualityReport } from './public/course-quality.js';
 
 export function qualitySnapshot(state, scope, targetId, lessonData = {}) {
@@ -89,7 +90,8 @@ export function createQualityService({ learning, getReviewer, getGenerator }) {
     if (snapshot.units.length > 80 || Buffer.byteLength(JSON.stringify(snapshot)) > 240000) throw new Error('本课内容超出单次评价范围，请拆分为较小课程后评价。');
     busy.add(requestId);
     try {
-      const result = await reviewer.generate(qualityReviewInstruction, qualityReviewerInput(snapshot), value => validQualityJudgment(value, snapshot));
+      const result = await generationAwait(reviewer.generate(qualityReviewInstruction, qualityReviewerInput(snapshot), value => { checkGenerationCancellation(); return validQualityJudgment(value, snapshot); }));
+      checkGenerationCancellation();
       const report = makeQualityReport(snapshot, result, reviewer.status(), generator);
       learning.saveQualityReport(report);
       return inspect(scope, targetId);

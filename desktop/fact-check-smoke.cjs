@@ -10,6 +10,7 @@ exports.run = async (window, directory) => {
   const reload = async () => { const ready = new Promise(resolve => window.webContents.once('did-finish-load', resolve)); window.webContents.reload(); await ready; await wait("document.querySelector('main h1')"); };
   let calls = 0, omittedSolutions = 0, failReview = true;
   const quote = '标准大气压下，水的沸点为100°C。';
+  const quoteRegressionText = '**观察事实**与解释不同。\n\n具体条件需要核对。';
   // Real DeepSeek regression: non-quiz responses sometimes omit solutions: [].
   const clean = { summary: '未发现明显问题。', issues: [] };
   const backend = http.createServer(async (req, res) => {
@@ -21,9 +22,11 @@ exports.run = async (window, directory) => {
       if (payload.model === 'fact-reviewer') {
         assert.ok(input.target);
         if (input.target.title === '失败保留测试' && failReview) { res.writeHead(503); res.end('mock failure'); return; }
-        output = input.target.text.includes('90°C') ? { summary: '一处事实错误。', issues: [{ kind: 'fact', certainty: 'error', quote: '水的沸点为90°C。', reason: '资料给出标准大气压下为100°C。', suggestion: '按资料补充条件并修正。', evidence: [{ id: '[S1E1]', quote }] }] } : input.target.text.includes('2 + 2 = 5。') ? { summary: '两处计算疑点，未联网核实。', issues: ['2 + 2 = 5。', '3 + 3 = 7。'].map(quote => ({ kind: 'fact', certainty: 'error', quote, reason: '需核对计算。', suggestion: '重新计算并更新文案。', evidence: [{ id: 'R999', quote: '未实际提供的资料引文。' }] })) } : clean;
+        output = input.target.title === '原句定位回归'
+          ? { summary: '有三处待核实描述。', issues: ['观察事实与解释不同。', '具体条件需要核对。', '模型概括的心理学描述，不是原文。'].map(quote => ({ kind: 'scope', certainty: 'uncertain', quote, reason: '需要检查条件。', suggestion: '核对原文和条件。', evidence: [] })) }
+          : input.target.text.includes('90°C') ? { summary: '一处事实错误。', issues: [{ kind: 'fact', certainty: 'error', quote: '水的沸点为90°C。', reason: '资料给出标准大气压下为100°C。', suggestion: '按资料补充条件并修正。', evidence: [{ id: '[S1E1]', quote }] }] } : input.target.text.includes('2 + 2 = 5。') ? { summary: '两处计算疑点，未联网核实。', issues: ['2 + 2 = 5。', '3 + 3 = 7。'].map(quote => ({ kind: 'fact', certainty: 'error', quote, reason: '需核对计算。', suggestion: '重新计算并更新文案。', evidence: [{ id: 'R999', quote: '未实际提供的资料引文。' }] })) } : clean;
         omittedSolutions++;
-      } else output = input.targets ? { replacements: input.targets.map(t => ({ id: t.id, text: t.text.replace('2 + 2 = 5。', '2 + 2 = 4。') })) } : { text: input.confirmedIssues ? quote + '[S1E1]' : '这是公开教学内容，解释本课的定义和适用条件。' };
+      } else output = input.targets ? { replacements: input.targets.map(t => ({ id: t.id, text: t.text.replace('2 + 2 = 5。', '2 + 2 = 4。') })) } : { text: input.confirmedIssues ? quote + '[S1E1]' : input.block?.title === '原句定位回归' ? quoteRegressionText : '这是公开教学内容，解释本课的定义和适用条件。' };
       res.writeHead(200, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ choices: [{ message: { content: JSON.stringify(output) }, finish_reason: 'stop' }] }));
     } catch (error) { console.error('FACT_SMOKE_BACKEND', error.message); res.writeHead(500); res.end('mock validation failed'); }
   });
@@ -37,7 +40,7 @@ exports.run = async (window, directory) => {
     await evaluate(`window.learnflowDesktop.saveQualitySettings(${JSON.stringify({ ...cfg, model: 'fact-reviewer' })})`);
     const plan = { ...structuredClone(demoPlan), id: 'facts-course', title: '事实核查简化测试', source: 'ai', lessons: demoPlan.lessons.map((l, i) => ({ ...l, id: `facts-lesson-${i}` })) }, lessonId = plan.lessons[0].id;
     await evaluate(`window.learnflowDesktop.savePlan(${JSON.stringify(plan)})`);
-    const outline = await evaluate(`window.learnflowDesktop.saveOutline('${lessonId}',${JSON.stringify({ intro: '公开课程导语', blocks: [{ type: 'reading', title: '普通内容', objective: '解释概念' }, { type: 'reading', title: '沸点条件', objective: '解释正确条件和温度' }, { type: 'reading', title: '失败保留测试', objective: '说明概念' }, { type: 'quiz', title: '测验', objective: '应用判断' }] })})`);
+    const outline = await evaluate(`window.learnflowDesktop.saveOutline('${lessonId}',${JSON.stringify({ intro: '公开课程导语', blocks: [{ type: 'reading', title: '普通内容', objective: '解释概念' }, { type: 'reading', title: '沸点条件', objective: '解释正确条件和温度' }, { type: 'reading', title: '失败保留测试', objective: '说明概念' }, { type: 'reading', title: '原句定位回归', objective: '区分观察和解释' }, { type: 'quiz', title: '测验', objective: '应用判断' }] })})`);
     const blockIds = outline.blocks.map(b => b.id);
     const seeded = { text: '水的沸点为90°C。[S1E1]', grounding: { version: 1, citations: [{ excerptId: 'S1E1', url: 'https://docs.example.org/water', title: '沸点资料', publisher: 'docs.example.org', retrievedAt: 1000, quote, claim: '水的沸点为90°C。' }] } };
     await evaluate(`window.learnflowDesktop.saveBlock('${lessonId}','${blockIds[1]}',${JSON.stringify(seeded)})`);
@@ -113,8 +116,26 @@ exports.run = async (window, directory) => {
     await wait(`document.querySelector('[data-block-id="${blockIds[0]}"] .fact-check-strip.is-uncertain')`);
     manuallyEdited = await evaluate(`window.learnflowDesktop.getLesson('${lessonId}')`);
     assert.equal(manuallyEdited.blockCourse.blocks[0].content.text, suspectText); assert.equal(calls, 10);
+    await evaluate(`document.querySelector('[data-action=generate-block][data-block="${blockIds[3]}"]').click()`);
+    await wait(`document.querySelector('[data-block-id="${blockIds[3]}"] .fact-check-strip.is-uncertain')`);
+    assert.equal(calls, 12, 'one generation and one review, without retries or automatic correction');
+    const located = await evaluate(`window.learnflowDesktop.getLesson('${lessonId}')`);
+    const partial = located.factChecks.find(r => r.blockId === blockIds[3]);
+    assert.equal(partial.error, ''); assert.equal(partial.issues.length, 3);
+    assert.equal(partial.issues[0].quote, '**观察事实**与解释不同。');
+    assert.equal(partial.issues[2].unlocated, true); assert.deepEqual(partial.issues[2].evidence, []);
+    assert.equal(located.blockCourse.blocks[3].content.text, quoteRegressionText);
+    assert.equal(await evaluate(`document.querySelectorAll('[data-block-id="${blockIds[3]}"] [data-fact-selection]').length`), 2);
+    assert.equal(await evaluate(`document.querySelectorAll('[data-block-id="${blockIds[3]}"] .fact-check-details article')[2].textContent.includes('原句待定位')`), true);
     await reload();
+    await evaluate(`document.querySelector('[data-page=routes]').click();document.querySelector('[data-action=open-lesson][data-id="${lessonId}"]').click()`);
+    await wait(`document.querySelector('[data-block-id="${blockIds[3]}"] .fact-check-strip.is-uncertain')`);
+    const afterReload = await evaluate(`window.learnflowDesktop.getLesson('${lessonId}')`);
+    assert.deepEqual(afterReload.factChecks.find(r => r.blockId === blockIds[3]), partial);
+    assert.equal(calls, 12, 'reopening the course must not recheck automatically');
+    await evaluate(`document.querySelector('[data-block-id="${blockIds[3]}"] .fact-check-strip').open=true;document.querySelector('[data-block-id="${blockIds[3]}"] .fact-check-strip').scrollIntoView({block:'center'});new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))`);
+    await writeFile(path.join(directory, 'fact-unlocated-quote.png'), (await window.webContents.capturePage()).toPNG());
     const loaded = await evaluate('window.learnflowDesktop.load()'); assert.equal(loaded.factCheck.enabled, true);
-    console.log('FACT_CHECK_SMOKE_OK', JSON.stringify({ calls, omittedSolutions, realKeyCalls: 0, screenshot: path.join(directory, 'fact-selected-correction.png') }));
+    console.log('FACT_CHECK_SMOKE_OK', JSON.stringify({ calls, omittedSolutions, realKeyCalls: 0, checks: ['markdown-quote-mapped-to-original', 'unlocated-third-finding-kept-uncertain', 'unlocated-cannot-be-selected', 'partial-review-persisted-and-reloaded'], screenshot: path.join(directory, 'fact-unlocated-quote.png') }));
   } finally { backend.closeAllConnections(); await new Promise(resolve => backend.close(resolve)); }
 };

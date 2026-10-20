@@ -3,11 +3,12 @@ import assert from 'node:assert/strict';
 import { mkdtemp, rm, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { createFactCheckService, validFactJudgment, normalizeFactJudgment, normalizeFactEvidence, factJudgmentProblems, factReviewInstructionFor } from '../course-fact-check.mjs';
+import { createFactCheckService, validFactJudgment, normalizeFactJudgment, normalizeFactQuotes, normalizeFactEvidence, factJudgmentProblems, factReviewInstructionFor } from '../course-fact-check.mjs';
 import { factContent, sameFactContent, validFactCheck } from '../public/fact-check.js';
 import { createSqliteStore } from '../desktop/sqlite-store.mjs';
 import { createFactCheckSettings } from '../desktop/fact-check-settings.mjs';
 import { validState } from '../desktop/local-store.mjs';
+import { withGenerationSignal, isGenerationCancelled } from '../generation-cancellation.mjs';
 
 const quote = '标准大气压下，水的沸点为100°C。';
 const original = () => ({ text: '水的沸点为90°C。[S1E1]', grounding: { version: 1, citations: [{ excerptId: 'S1E1', url: 'https://docs.example.org/water', title: '沸点说明', publisher: 'docs.example.org', retrievedAt: 1000, quote, claim: '水的沸点为90°C。' }] } });
@@ -27,13 +28,23 @@ async function setup(t, { judgments = [clean()], correction = corrected(), type 
   } };
   const checker = createFactCheckService({ learning: store, getGenerator: () => generator, getGeneratorConfig: () => ({ baseUrl: 'https://generate.example.org/v1' }), getReviewerConfig: () => reviewerConfig,
     getReviewer: () => ({ status: () => ({ mode: 'ai', ...reviewerConfig }), generate: async (instruction, input, validate) => {
-      sent.push({ instruction, input }); const value = judgments.shift(); if (value instanceof Error) throw value;
+      sent.push({ instruction, input }); const value = await judgments.shift(); if (value instanceof Error) throw value;
       if (!validate(value)) throw new Error('invalid review'); return value;
     } }) });
   return { store, checker, generator, directory, blockId: outline.blocks[0].id, sent, generated, stages,
     run: content => checker.process('p1', outline.blocks[0].id, content, { notify: stage => stages.push(stage) }), changeReviewer: config => { reviewerConfig = { ...reviewerConfig, ...config }; } };
 }
 
+test('cancelling an independent review discards the draft and report instead of saving a failed review', async t => {
+  let finish; const judgment = new Promise(resolve => { finish = resolve; });
+  const f = await setup(t, { judgments: [judgment] }), controller = new AbortController();
+  const work = withGenerationSignal(controller.signal, () => f.run(original()));
+  const rejected = assert.rejects(work, isGenerationCancelled); controller.abort(); await rejected;
+  assert.equal(f.checker.isBusy('p1'), false); assert.equal(f.store.getLesson('p1').blockCourse.blocks[0].content, null);
+  assert.equal(f.store.getLesson('p1').factChecks.length, 0); assert.equal(f.generated.length, 0);
+  finish(clean()); await new Promise(resolve => setImmediate(resolve));
+  assert.equal(f.store.getLesson('p1').factChecks.length, 0);
+});
 test('one supported error leads to exactly one correction and one independent recheck, preserving source provenance', async t => {
   const f = await setup(t, { judgments: [error(), clean()] }), value = await f.run(original());
   assert.equal(value.record.status, 'corrected'); assert.equal(validFactCheck(value.record), true);
@@ -80,7 +91,7 @@ test('real-model regression: omitted inapplicable solutions preserve non-quiz fi
   assert.deepEqual(normalizeFactJudgment(noQuestions, 'reading'), clean());
 });
 
-test('normalization never fills missing quiz solutions, findings, explicit invalid arrays or invented quotations', async t => {
+test('normalization never fills missing quiz solutions, findings or invalid arrays, nor trusts invented quotations', async t => {
   const quiz = { questions: [{ prompt: '哪项成立？', options: ['甲', '乙', '丙', '丁'], answer: 0, explanation: '按条件判断。' }] };
   const missing = { summary: '未发现问题。', issues: [] };
   const f = await setup(t, { type: 'quiz', judgments: [missing] });
@@ -97,7 +108,7 @@ test('normalization never fills missing quiz solutions, findings, explicit inval
     else judgment.issues[0].evidence[0].quote = '资料中不存在的内容';
     const f = await setup(t, { judgments: [judgment] });
     const result = await f.run(original());
-    if (field === 'quote') { assert.equal(result.record.status, 'failed'); assert.match(result.record.error, /quote/); }
+    if (field === 'quote') { assert.equal(result.record.status, 'uncertain'); assert.equal(result.record.error, ''); assert.equal(result.record.issues[0].unlocated, true); assert.deepEqual(result.record.issues[0].evidence, []); }
     else { assert.equal(result.record.status, 'uncertain'); assert.equal(result.record.issues[0].certainty, 'uncertain'); assert.deepEqual(result.record.issues[0].evidence, []); assert.match(result.record.issues[0].reason, /引用待核实/); }
     assert.equal(result.content.text, original().text); assert.equal(f.sent.length, 1); assert.equal(f.generated.length, 0);
   }
@@ -111,6 +122,79 @@ test('fact-check prompts specify only the applicable solution schema and errors 
   const problems = factJudgmentProblems(judgment, 'reading', original(), [{ id: 'R1', quote }]);
   assert.match(problems.join(' '), /issues\[0\]\.quote/);
   assert.ok(!problems.join(' ').includes(judgment.issues[0].quote));
+});
+
+test('Markdown-only quote differences resolve to exact source text without an additional review call', async t => {
+  const content = { ...original(), text: '**水的沸点**为90°C。[S1E1]' };
+  const f = await setup(t, { judgments: [error(), clean()] });
+  const result = await f.run(content);
+  assert.equal(result.record.status, 'corrected');
+  assert.equal(result.record.issues[0].quote, '**水的沸点**为90°C。');
+  assert.equal(result.record.beforeContent.text, content.text);
+  assert.equal(f.sent.length, 2); assert.equal(f.generated.length, 1);
+});
+
+test('one unlocatable quote preserves every finding as a partial review, never clear or automatic rewriting', async t => {
+  const judgment = error();
+  judgment.issues.push({ ...structuredClone(judgment.issues[0]), kind: 'scope', quote: '已知条件需要核对。', evidence: [] });
+  judgment.issues.push({ ...structuredClone(judgment.issues[0]), quote: '模型重新概括的疑点，不是正文原句。' });
+  const snapshot = structuredClone(judgment), content = { ...original(), text: original().text + '\n\n**已知条件**需要核对。' };
+  const f = await setup(t, { judgments: [judgment, clean()] });
+  const result = await f.run(content);
+  assert.equal(result.record.status, 'uncertain'); assert.equal(result.record.error, '');
+  assert.equal(result.record.issues.length, 3);
+  assert.equal(result.record.issues[0].certainty, 'error');
+  assert.equal(result.record.issues[1].quote, '**已知条件**需要核对。');
+  const unresolved = result.record.issues[2];
+  assert.equal(unresolved.unlocated, true); assert.equal(unresolved.certainty, 'uncertain');
+  assert.equal(unresolved.quote, judgment.issues[2].quote); assert.deepEqual(unresolved.evidence, []);
+  assert.match(unresolved.reason, /原句待定位/); assert.match(result.record.summary, /原句未能定位/);
+  assert.deepEqual(result.content, content); assert.deepEqual(judgment, snapshot);
+  assert.equal(f.sent.length, 1); assert.equal(f.generated.length, 0);
+  assert.ok(validFactCheck(result.record));
+  f.store.saveFactCheckedBlock('p1', f.blockId, result.content, result.record, null);
+  const backup = f.store.exportState(); assert.ok(validState(backup)); f.store.replaceState(backup);
+  assert.equal(f.store.getLesson('p1').factChecks[0].issues[2].unlocated, true);
+  const retry = await f.run(content);
+  assert.equal(retry.cached, false, 'an explicit retry must not reuse unlocated findings');
+  assert.equal(f.sent.length, 2); assert.equal(f.generated.length, 0);
+});
+
+test('quote normalization tolerates only presentation, never changes numbers, negation, code, ellipses or teaching scope', () => {
+  const normalize = (body, quote) => {
+    const raw = error(); raw.issues[0].quote = quote;
+    const snapshot = structuredClone(raw), result = normalizeFactQuotes(raw, 'reading', { text: body });
+    assert.deepEqual(raw, snapshot);
+    assert.deepEqual(normalizeFactQuotes(result, 'reading', { text: body }), result, 'normalization is idempotent');
+    return result;
+  };
+  for (const [body, quote] of [['**定义**与 *边界*。', '定义与 边界。'], ['使用 `git config` 核对。', '使用 git config 核对。'], ['先核对\n条件，再生成。', '先核对 条件，再生成。']]) {
+    const result = normalize(body, quote);
+    assert.equal(result.issues[0].quote, body); assert.equal(result.issues[0].unlocated, undefined);
+  }
+  for (const [body, quote] of [['最多3次。', '最多5次。'], ['并不是事实保证。', '并是事实保证。'], ['`x != y`', 'x = y'], ['`print("a  b")`', 'print("a b")'], ['原文甲。\n\n原文乙。', '原文甲。…原文乙。'], ['只有目标正文。', '来自其他模块或资料的句子。']]) {
+    const result = normalize(body, quote);
+    assert.equal(result.issues[0].quote, quote); assert.equal(result.issues[0].unlocated, true);
+    assert.equal(result.issues[0].certainty, 'uncertain'); assert.deepEqual(result.issues[0].evidence, []);
+    assert.equal(validFactJudgment(result, 'reading', { text: body }, []), true);
+  }
+  const fabricatedFlag = error(); fabricatedFlag.issues[0].unlocated = true;
+  assert.equal(normalizeFactQuotes(fabricatedFlag, 'reading', original()).issues[0].unlocated, undefined, 'the location flag is computed locally, not trusted from the model');
+  const invalid = error(); invalid.issues[0].quote = '';
+  assert.equal(validFactJudgment(normalizeFactQuotes(invalid, 'reading', original()), 'reading', original(), []), false);
+});
+
+test('quiz quote matching stays within individual supplied fields and keeps independent answers mandatory', async t => {
+  const content = { questions: [{ prompt: '选择正确条件。', options: ['**条件甲**适用。', '条件乙', '条件丙', '条件丁'], answer: 0, explanation: '按题目条件逐一核对。' }] };
+  const judgment = { ...error(), solutions: [{ questionIndex: 0, answer: 0, ambiguous: false, reason: '按条件判断。' }] };
+  judgment.issues[0].quote = '条件甲适用。'; judgment.issues[0].evidence = [];
+  judgment.issues.push({ ...structuredClone(judgment.issues[0]), quote: '条件甲适用。\n条件乙' });
+  const f = await setup(t, { type: 'quiz', judgments: [judgment] }), result = await f.run(content);
+  assert.equal(result.record.status, 'uncertain'); assert.equal(result.record.error, '');
+  assert.equal(result.record.issues[0].quote, '**条件甲**适用。');
+  assert.equal(result.record.issues[1].unlocated, true, 'adjacent answer fields cannot supply a stitched quote');
+  assert.equal(f.sent.length, 1); assert.equal(f.generated.length, 0);
+  assert.equal(f.sent[0].input.target.questions[0].answer, undefined);
 });
 
 test('evidence ID aliases resolve only to the exact supplied source, retaining valid findings without an extra call', async t => {

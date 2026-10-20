@@ -79,6 +79,18 @@ export function createSpeechStore(directory, secrets) {
       if (!validLessonId(lessonId) || !validAudioId(key)) throw new Error('语音课程关联标识无效。');
       if (db.prepare('SELECT 1 FROM speech_cache WHERE cache_key = ?').get(key)) db.prepare('INSERT OR IGNORE INTO speech_usage VALUES (?, ?)').run(lessonId, key);
     }),
+    discardGenerated: keys => enqueue(async () => {
+      requireCache();
+      if (!Array.isArray(keys) || !keys.every(validAudioId)) throw new Error('语音缓存标识无效。');
+      for (const key of keys) {
+        const row = db.prepare('SELECT asset_id FROM speech_cache WHERE cache_key = ?').get(key);
+        db.prepare('DELETE FROM speech_usage WHERE cache_key = ?').run(key);
+        db.prepare('DELETE FROM speech_cache WHERE cache_key = ?').run(key);
+        if (row && !db.prepare('SELECT 1 FROM speech_cache WHERE asset_id = ?').get(row.asset_id)) {
+          try { await unlink(file(row.asset_id)); } catch (error) { if (error.code !== 'ENOENT') throw error; }
+        }
+      }
+    }),
     deleteLessons: lessonIds => enqueue(async () => {
       requireCache();
       if (!Array.isArray(lessonIds) || !lessonIds.every(validLessonId)) throw new Error('语音课程关联标识无效。');

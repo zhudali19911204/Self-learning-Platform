@@ -1,3 +1,4 @@
+import { generationAwait, generationSignal, checkGenerationCancellation } from './generation-cancellation.mjs';
 // Provider adapters are server-only. No API key or upstream error body is exposed.
 const presets = {
   ollama: { label: 'Ollama', protocol: 'ollama', baseUrl: 'http://127.0.0.1:11434', json: true },
@@ -59,6 +60,7 @@ export function createLLM(overrides = {}) {
   const request = overrides.fetchImpl ?? fetch;
   const status = () => ({ mode: config.error ? 'error' : config.model ? 'ai' : 'demo', provider: config.provider, providerLabel: config.label, model: config.model || null, timeoutMs: config.timeoutMs, configurationError: config.error });
   async function generate(instruction, data, validate, { test = false } = {}) {
+    checkGenerationCancellation();
     if (config.error) fail(config.error, 503);
     if (!config.model) fail('尚未配置 LLM。请在 .env 中填写国产云端或本地模型配置，或先体验示例课程。', 503);
     const messages = [
@@ -83,9 +85,9 @@ export function createLLM(overrides = {}) {
     if (config.apiKey) headers.Authorization = `Bearer ${config.apiKey}`;
     let result;
     try {
-      const response = await request(config.baseUrl + (config.protocol === 'ollama' ? '/api/chat' : '/chat/completions'), {
-        method: 'POST', headers, redirect: 'error', signal: AbortSignal.timeout(config.timeoutMs), body: JSON.stringify(payload)
-      });
+      const response = await generationAwait(request(config.baseUrl + (config.protocol === 'ollama' ? '/api/chat' : '/chat/completions'), {
+        method: 'POST', headers, redirect: 'error', signal: generationSignal(config.timeoutMs), body: JSON.stringify(payload)
+      }));
       if (!response.ok) {
         // Do not echo provider responses: they can contain credentials or user data.
         response.body?.cancel().catch(() => {});
@@ -96,13 +98,15 @@ export function createLLM(overrides = {}) {
         if ([400, 422].includes(response.status)) fail('模型不接受当前参数。请检查 JSON 模式与输出上限；自定义接口若不支持关闭思考参数，请在高级设置中将“模型思考”改为“服务默认”。');
         fail(`模型服务暂时不可用（HTTP ${response.status}），请稍后重试。`);
       }
-      result = await response.json();
+      result = await generationAwait(response.json());
     } catch (e) {
+      checkGenerationCancellation();
       if (e.status) throw e;
       if (e.name === 'TimeoutError' || e.name === 'AbortError') fail('模型生成超时。请稍后重试，或增大 LLM_TIMEOUT_MS。', 504);
       if (e instanceof SyntaxError) fail('模型服务未返回有效的 JSON 响应，请检查接口地址。');
       fail(transportFailure(e));
     }
+    checkGenerationCancellation();
     const reason = config.protocol === 'ollama' ? result?.done_reason : result?.choices?.[0]?.finish_reason;
     const content = config.protocol === 'ollama' ? result?.message?.content : result?.choices?.[0]?.message?.content;
     const message = config.protocol === 'ollama' ? result?.message : result?.choices?.[0]?.message;

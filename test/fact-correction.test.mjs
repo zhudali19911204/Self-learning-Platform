@@ -66,6 +66,24 @@ test('missing consent, empty or duplicate selections, wrong reports and stale co
   await assert.rejects(f.run(), /变化/); assert.equal(f.calls.length, 0);
 });
 
+test('unlocated concerns cannot be selected for correction and remain visible when another concern is fixed', async t => {
+  const issues = [issue('2 + 2 = 5。'), issue('模型概括的描述，不是当前正文原句。')];
+  const f = await setup(t, { issues });
+  assert.equal(f.record.issues[1].unlocated, true);
+  await assert.rejects(f.run([1]), /尚未定位/); assert.equal(f.calls.length, 0);
+  await assert.rejects(f.run([0, 1]), /尚未定位/); assert.equal(f.calls.length, 0);
+  const result = await f.run([0]);
+  assert.equal(f.calls.length, 1); assert.equal(result.factChecks.at(-1).status, 'edited');
+  assert.equal(result.factChecks.at(-1).issues.length, 1);
+  assert.equal(result.factChecks.at(-1).issues[0].unlocated, true);
+  assert.equal(result.factChecks.at(-1).issues[0].quote, issues[1].quote);
+  assert.ok(validState(f.store.exportState()));
+  const invalid = structuredClone(result.factChecks.at(-1)); invalid.issues[0].certainty = 'error';
+  assert.equal(validFactCheck(invalid), false);
+  invalid.issues[0].certainty = 'uncertain'; invalid.issues[0].unlocated = 'true';
+  assert.equal(validFactCheck(invalid), false);
+});
+
 test('overlapping selected quotes merge into one replacement without rewriting surrounding prose', async t => {
   const original = { text: '前文。错误计算2 + 2 = 5。后文。' };
   const f = await setup(t, { original, issues: [issue('错误计算2 + 2 = 5。'), issue('2 + 2 = 5。')], response: input => {

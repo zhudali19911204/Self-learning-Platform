@@ -9,6 +9,13 @@ export function sourcesFixture() {
   });
   const llm = { status: () => ({ mode: 'ai', model: 'source-smoke-model', providerLabel: '隔离测试', timeoutMs: 1000 }), generate: async (_instruction, input, validate) => {
     counts.generations++;
+    if (input.block.type === 'practice') {
+      const prose = [input.intro, input.currentExcerpt, ...(input.previous || []).map(p => p.excerpt), ...(input.teachingContext?.sources || []).flatMap(s => s.spans.map(p => p.text))].filter(Boolean).join('\n');
+      if (/\[S\d+(?:E\d+)?\]/.test(prose)) throw new Error('Historical citation IDs leaked into practice input');
+      const id = input.officialDocuments?.[0]?.excerpts[0].id;
+      const result = { text: '## 教学示例任务\n\n提交身份与远程认证不同。' + (id ? `[${id}]` : '') + '\n\n' + (input.revisionRequest ? '先分步核对用户名，再核对邮箱；写出判断依据。' : '请独立核对用户名与邮箱，写出它们与远程认证的区别。') };
+      if (!validate(result)) throw new Error('Smoke practice output rejected'); return result;
+    }
     if (input.block.type === 'quiz') {
       if (!_instruction.includes('不重新联网搜索')) throw new Error('Quiz scope instruction missing');
       const id = input.officialDocuments?.[0]?.excerpts[0].id;

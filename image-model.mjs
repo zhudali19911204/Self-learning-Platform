@@ -1,3 +1,4 @@
+import { generationAwait, generationSignal, checkGenerationCancellation } from './generation-cancellation.mjs';
 export const imageDefaults = { enabled: false, protocol: 'compatible', model: '', baseUrl: '', size: '1024x1024', responseFormat: 'auto', timeoutMs: 180000, localOnly: true, downloadHosts: '' };
 const nativeModels = ['wan2.7-image-pro', 'wan2.7-image', 'qwen-image-3.0-pro', 'qwen-image-3.0'];
 // Official, exact image output domains (not all OSS buckets or *.aliyuncs.com).
@@ -157,8 +158,10 @@ export function createImageModel(config, fetchImpl = fetch) {
   }
   const guard = async (task, downloadOnly = false) => {
     check();
-    try { return await task(AbortSignal.timeout(config.timeoutMs)); }
+    checkGenerationCancellation();
+    try { const result = await generationAwait(task(generationSignal(config.timeoutMs))); checkGenerationCancellation(); return result; }
     catch (error) {
+      checkGenerationCancellation();
       if (['AbortError', 'TimeoutError'].includes(error.name)) fail(downloadOnly ? '图片下载超时，未重新生成。可手动仅重试下载。' : '图片请求超时。服务可能仍在生成，请先查看服务记录，再决定是否重试，避免重复计费。');
       if (error instanceof TypeError || error.code) fail('无法连接图片服务。请检查地址、网络和服务是否启动；未自动重试。');
       throw error;

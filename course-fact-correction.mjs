@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { factCheckVersion, factContent, sameFactContent, validFactCheck } from './public/fact-check.js';
 import { validBlockContent } from './public/blocks.js';
+import { generationAwait, checkGenerationCancellation } from './generation-cancellation.mjs';
 
 const markers = /\[S\d+(?:E\d+)?\]/g;
 const questionText = q => [q.prompt, ...q.options, q.explanation].join('\n');
@@ -91,6 +92,7 @@ export function createFactCorrectionService({ learning, getGenerator }) {
       const generator = getGenerator();
       if (generator.status().mode !== 'ai') throw new Error('请先配置课程生成模型，再修正文案。');
       const original = factContent(block.content), issues = issueIndexes.map(i => record.issues[i]);
+      if (issues.some(i => i.unlocated)) throw new Error('所选疑点的原句尚未定位，不能直接修正，请核对正文或重新核查。');
       const targets = correctionTargets(block.type, original, issues);
       const indexes = new Set(issueIndexes);
       const input = { block: { type: block.type, title: block.title, objective: block.objective }, original,
@@ -101,9 +103,10 @@ export function createFactCorrectionService({ learning, getGenerator }) {
       busy.add(key);
       try {
         notify('fact_correcting');
-        const result = await generator.generate(instruction + format, input, value => { applyReplacements(block.type, original, targets, value); return true; });
+        const result = await generationAwait(generator.generate(instruction + format, input, value => { checkGenerationCancellation(); applyReplacements(block.type, original, targets, value); return true; }));
+        checkGenerationCancellation();
         const content = applyReplacements(block.type, original, targets, result);
-        const remaining = record.issues.filter((i, n) => !indexes.has(n) && body(block.type, content).includes(i.quote));
+        const remaining = record.issues.filter((i, n) => !indexes.has(n) && (i.unlocated || body(block.type, content).includes(i.quote)));
         const edited = { ...record, id: randomUUID(), status: 'edited', created: Date.now(), ruleVersion: factCheckVersion,
           sourceRecordId: recordId, selectedIssueIndexes: [...issueIndexes], editor: { provider: generator.status().provider || '', model: generator.status().model || '' },
           inputFingerprint: createHash('sha256').update(JSON.stringify({ content, recordId, issueIndexes })).digest('hex'),

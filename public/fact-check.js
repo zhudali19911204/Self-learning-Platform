@@ -23,5 +23,6 @@ export function validFactCheck(record) {
     && (record.status !== 'edited' || (id(record.sourceRecordId) && Array.isArray(record.selectedIssueIndexes) && record.selectedIssueIndexes.length > 0 && record.selectedIssueIndexes.length <= 24 && new Set(record.selectedIssueIndexes).size === record.selectedIssueIndexes.length && record.selectedIssueIndexes.every(i => Number.isInteger(i) && i >= 0 && i < 24) && text(record.editor?.provider, 200, true) && text(record.editor?.model, 200)))
     && Array.isArray(record.sources) && record.sources.length <= 24 && record.sources.every(source) && new Set(record.sources.map(s => s.id)).size === record.sources.length
     && Array.isArray(record.issues) && record.issues.length <= 24 && record.issues.every(i => i && ['error', 'uncertain'].includes(i.certainty) && ['fact', 'scope', 'source', 'quiz'].includes(i.kind)
-      && text(i.quote, 600) && text(i.reason, 1000) && text(i.suggestion, 1000) && Array.isArray(i.evidence) && i.evidence.length <= 6 && i.evidence.every(e => record.sources.some(s => s.id === e.id && text(e.quote, 1200) && s.quote.includes(e.quote))));
+      && text(i.quote, 600) && text(i.reason, 1000) && text(i.suggestion, 1000) && Array.isArray(i.evidence) && i.evidence.length <= 6 && i.evidence.every(e => record.sources.some(s => s.id === e.id && text(e.quote, 1200) && s.quote.includes(e.quote)))
+      && (i.unlocated === undefined || (i.unlocated === true && i.certainty === 'uncertain' && i.evidence.length === 0)));
 }

@@ -1,4 +1,5 @@
 import { imageMime, MAX_IMAGE_BYTES } from './image-model.mjs';
+import { generationAwait, generationSignal, checkGenerationCancellation } from './generation-cancellation.mjs';
 
 const API = 'https://commons.wikimedia.org/w/api.php';
 const mediaHosts = new Set(['upload.wikimedia.org', 'thumb.wikimedia.org']);
@@ -32,11 +33,12 @@ async function bounded(response, max) {
 
 export function createCommonsImages(fetchImpl = fetch) {
   async function request(params) {
+    checkGenerationCancellation();
     const url = new URL(API);
     for (const [key, value] of Object.entries({ action: 'query', format: 'json', formatversion: '2', ...params })) url.searchParams.set(key, value);
-    const response = await fetchImpl(url.href, { method: 'GET', redirect: 'error', credentials: 'omit', headers: { Accept: 'application/json' }, signal: AbortSignal.timeout(15000) });
+    const response = await generationAwait(fetchImpl(url.href, { method: 'GET', redirect: 'error', credentials: 'omit', headers: { Accept: 'application/json' }, signal: generationSignal(15000) }));
     let data;
-    try { data = JSON.parse((await bounded(response, 1024 * 1024)).toString('utf8')); } catch (error) { if (error instanceof SyntaxError) fail('图库未返回有效数据。'); throw error; }
+    try { data = JSON.parse((await generationAwait(bounded(response, 1024 * 1024))).toString('utf8')); } catch (error) { if (error instanceof SyntaxError) fail('图库未返回有效数据。'); throw error; }
     if (data?.error || !data?.query || (data.query.pages !== undefined && !Array.isArray(data.query.pages))) fail('图库未返回有效图片列表。');
     return data.query.pages || [];
   }
@@ -48,8 +50,9 @@ export function createCommonsImages(fetchImpl = fetch) {
     return { pageId: page.pageid, title: clean(page.title.slice(5), 240), author: meta(info, 'Artist', 300) || '作者未注明，请查看原始页面', license, licenseUrl: /^https:\/\//.test(info?.extmetadata?.LicenseUrl?.value || '') ? String(info.extmetadata.LicenseUrl.value).slice(0, 1000) : '', pageUrl: `https://commons.wikimedia.org/wiki/${encodeURIComponent(page.title).replace(/%3A/i, ':')}`, media };
   }
   async function image(url, max = MAX_IMAGE_BYTES) {
-    const response = await fetchImpl(commonsMediaUrl(url), { method: 'GET', redirect: 'error', credentials: 'omit', signal: AbortSignal.timeout(20000) });
-    const bytes = await bounded(response, max), mime = imageMime(bytes);
+    checkGenerationCancellation();
+    const response = await generationAwait(fetchImpl(commonsMediaUrl(url), { method: 'GET', redirect: 'error', credentials: 'omit', signal: generationSignal(20000) }));
+    const bytes = await generationAwait(bounded(response, max)), mime = imageMime(bytes);
     if (!supported.has(mime)) fail('图库图片格式不支持。');
     return { bytes, mime };
   }
@@ -64,7 +67,7 @@ export function createCommonsImages(fetchImpl = fetch) {
           return { ...entry, preview: `data:${mime};base64,${bytes.toString('base64')}`, media: undefined };
         } catch { return null; /* Skip unavailable, unsupported or oversized thumbnails. */ }
       }));
-      return results.filter(Boolean).slice(0, 6);
+      checkGenerationCancellation(); return results.filter(Boolean).slice(0, 6);
     },
     async download(pageId, expectedLicense) {
       if (!Number.isSafeInteger(pageId) || pageId < 1 || typeof expectedLicense !== 'string' || !expectedLicense.trim()) fail('请选择有效的图库图片。');

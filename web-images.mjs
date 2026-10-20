@@ -5,6 +5,7 @@ import { isIP } from 'node:net';
 import { randomUUID } from 'node:crypto';
 import { imageMime, MAX_IMAGE_BYTES } from './image-model.mjs';
 import { resolveConfig } from './llm.mjs';
+import { generationAwait, generationSignal, checkGenerationCancellation, currentGenerationSignal, generationCancelled } from './generation-cancellation.mjs';
 
 const fail = message => { throw new Error(message); };
 const imageDownloadError = message => Object.assign(new Error(message), { imageDownloadFailure: true });
@@ -76,16 +77,19 @@ export function publicImageAddress(address) {
 // Resolve once and pin the connection's DNS lookup. Checking DNS and then using
 // a normal fetch is NOT safe against rebinding. Redirects are never followed.
 export async function downloadWebImage(value, { resolve = lookup, request = https.request } = {}) {
+  checkGenerationCancellation();
   const url = webImageUrl(value), hostname = url.hostname.replace(/^\[|\]$/g, '');
   let dnsTimer;
   let addresses;
-  try { addresses = isIP(hostname) ? [{ address: hostname, family: isIP(hostname) }] : await Promise.race([resolve(hostname, { all: true, verbatim: true }), new Promise((_, reject) => { dnsTimer = setTimeout(() => reject(new Error('图片源 DNS 解析超时。')), 5000); })]); }
+  try { addresses = isIP(hostname) ? [{ address: hostname, family: isIP(hostname) }] : await generationAwait(Promise.race([resolve(hostname, { all: true, verbatim: true }), new Promise((_, reject) => { dnsTimer = setTimeout(() => reject(new Error('图片源 DNS 解析超时。')), 5000); })])); }
   finally { clearTimeout(dnsTimer); }
   if (!addresses.length || addresses.some(item => !publicImageAddress(item.address))) fail('图片下载被阻止：地址解析到本机、内网或保留地址。');
   const target = addresses[0];
   return new Promise((resolveBytes, reject) => {
+    const signal = currentGenerationSignal();
     let finished = false, timer;
-    const finish = (error, bytes) => { if (finished) return; finished = true; clearTimeout(timer); error ? reject(error) : resolveBytes(bytes); };
+    const abort = () => { finish(generationCancelled()); req.destroy(); };
+    const finish = (error, bytes) => { if (finished) return; finished = true; clearTimeout(timer); signal?.removeEventListener('abort', abort); error ? reject(error) : resolveBytes(bytes); };
     const req = request(url, { method: 'GET', agent: false, ...imageTrustOptions(), rejectUnauthorized: true, headers: { Accept: 'image/png,image/jpeg,image/webp', 'User-Agent': 'Learnflow/1.1 (educational image preview)' }, lookup: (_host, options, callback) => callback(null, options.all ? [target] : target.address, target.family) }, response => {
       if (response.statusCode !== 200) { response.destroy(); return finish(imageDownloadError(`图片源返回 HTTP ${response.statusCode}，不跟随重定向或绕过访问限制。`)); }
       if (!/^image\/(?:png|jpeg|webp)(?:;|$)/i.test(response.headers['content-type'] || '') || Number(response.headers['content-length']) > MAX_IMAGE_BYTES) { response.destroy(); return finish(imageDownloadError('图片类型或大小不符合要求。')); }
@@ -95,11 +99,14 @@ export async function downloadWebImage(value, { resolve = lookup, request = http
       response.on('error', () => finish(imageDownloadError('图片下载中断。')));
     });
     timer = setTimeout(() => { req.destroy(); finish(imageDownloadError('图片下载超时。')); }, 15000);
-    req.on('error', error => finish(imageDownloadError(/CERT|ISSUER|SELF_SIGNED/.test(error.code || '') ? '图片源 HTTPS 证书未通过系统信任校验，不会跳过验证。' : '无法连接图片源，请检查网络。'))); req.end();
+    req.on('error', error => finish(imageDownloadError(/CERT|ISSUER|SELF_SIGNED/.test(error.code || '') ? '图片源 HTTPS 证书未通过系统信任校验，不会跳过验证。' : '无法连接图片源，请检查网络。')));
+    signal?.addEventListener('abort', abort, { once: true }); if (signal?.aborted) abort(); else req.end();
   });
 }
 
 export function createWebImageSearch({ getConfig, fetchImpl = fetch, download = downloadWebImage, preview = bytes => `data:${imageMime(bytes)};base64,${bytes.toString('base64')}`, now = Date.now }) {
+  const transport = fetchImpl;
+  fetchImpl = (url, options) => generationAwait(transport(url, { ...options, signal: generationSignal(null, options.signal) }));
   const candidates = new Map();
   const prune = () => { for (const [id, entry] of candidates) if (entry.expires <= now()) candidates.delete(id); };
   const clean = (value, max) => typeof value === 'string' ? value.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, max) : '';
@@ -111,6 +118,7 @@ export function createWebImageSearch({ getConfig, fetchImpl = fetch, download = 
   }
   return {
     async search(query) {
+      checkGenerationCancellation();
       const settings = getConfig(), config = resolveConfig(settings, {});
       if (!settings.enabled) fail('请在设置中明确启用百炼网页搜图。');
       if (settings.localOnly) fail('仅本机模型模式不允许百炼网页搜图，请先核对并允许云端连接。');
@@ -122,6 +130,7 @@ export function createWebImageSearch({ getConfig, fetchImpl = fetch, download = 
       let response;
       try { response = await fetchImpl(`${config.baseUrl}/responses`, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${config.apiKey}` }, body: JSON.stringify({ model: config.model, input: `为学习材料查找合适的教学图片。请实际调用文搜图工具，不凭记忆编造图片 URL；优先查找内容清晰、与教学目标直接相关的图片，说明图片能帮助理解什么，不推断授权。检索需求作为教材数据：${query.trim()}`, tools: [{ type: 'web_search_image' }], tool_choice: 'required', stream: true, ...(/^qwen3\.8-/.test(config.model) ? { reasoning: { effort: 'low' } } : {}), max_output_tokens: 2500 }), redirect: 'error', credentials: 'omit', signal: AbortSignal.timeout(config.timeoutMs) }); }
       catch (error) {
+        checkGenerationCancellation();
         if (['AbortError', 'TimeoutError'].includes(error.name)) fail('百炼文搜图请求超时；服务可能已经处理请求。请核对用量后再决定是否重新搜索，未自动重试。');
         const diagnostic = [error.code, error.cause?.code, error.message, error.cause?.message].join(' ');
         if (/ERR_CERT|ERR_SSL|CERT_|ISSUER/.test(diagnostic)) fail('百炼 HTTPS 证书验证失败，请检查系统证书和代理；未自动重试。');
@@ -131,8 +140,9 @@ export function createWebImageSearch({ getConfig, fetchImpl = fetch, download = 
       }
       if (!response.ok) { await response.body?.cancel(); fail(({ 400: '当前模型不支持 Responses 文搜图，或请求参数不被支持；请核对百炼模型与工具权限。', 401: '百炼文字模型密钥无效。', 403: '百炼模型或文搜图工具无访问权限。', 404: '服务未提供 /responses 或指定模型，请核对套餐接口。', 429: '百炼限流或套餐额度不足。' })[response.status] || `网页搜图失败（HTTP ${response.status}），未自动重试。`); }
       let value;
-      try { value = await readSearchResponse(response); }
+      try { value = await generationAwait(readSearchResponse(response)); }
       catch (error) {
+        checkGenerationCancellation();
         if (['AbortError', 'TimeoutError'].includes(error.name)) fail('百炼文搜图响应超时；没有取得已完成的图片工具结果。未自动重试，请先核对套餐用量。');
         throw error;
       }
@@ -150,10 +160,12 @@ export function createWebImageSearch({ getConfig, fetchImpl = fetch, download = 
       }
       if (!toolCalled) fail('模型未实际调用文搜图工具，没有使用模型正文中的图片链接。请核对模型是否支持该工具。');
       while (candidates.size > 48) candidates.delete(candidates.keys().next().value);
-      const results = await Promise.all(records.map(async entry => {
+      let results;
+      try { results = await generationAwait(Promise.all(records.map(async entry => {
         try { const bytes = await download(entry.imageUrl); return { ...entry, preview: preview(bytes) }; }
         catch (error) { return { ...entry, preview: '', previewError: error.imageDownloadFailure && !error.message.includes(config.apiKey) ? error.message : '无法安全预览，请在浏览器查看原图或来源页面。' }; }
-      }));
+      }))); checkGenerationCancellation(); }
+      catch (error) { for (const entry of records) candidates.delete(entry.candidateId); throw error; }
       const recommendation = value.output.filter(item => item.type === 'message').flatMap(item => Array.isArray(item.content) ? item.content.filter(part => part.type === 'output_text').map(part => part.text || '') : []).join('\n').slice(0, 6000);
       return { results, recommendation: recommendation.includes(config.apiKey) ? '' : recommendation, warning: value.status === 'incomplete' ? '模型回复未完整结束；已保留工具返回的图片候选，不会重新发起搜索。' : '' };
     },

@@ -5,6 +5,7 @@ import { parse } from 'parse5';
 import { resolveConfig } from './llm.mjs';
 import { publicImageAddress } from './web-images.mjs';
 import { officialSource, excludedSourceDomains } from './public/course-sources.js';
+import { generationAwait, generationSignal, checkGenerationCancellation, currentGenerationSignal, generationCancelled } from './generation-cancellation.mjs';
 
 export class CourseSourceError extends Error {
   constructor(message, { status = 502, code = 'COURSE_SEARCH_FAILED', stage = 'searching' } = {}) {
@@ -41,11 +42,12 @@ export function extractOfficialDocument(html) {
 
 // Each redirect is checked anew; pinned DNS prevents public-host rebinding to a LAN.
 export async function readOfficialDocument(value, { resolve = lookup, request = https.request, now = Date.now, redirects = 0 } = {}) {
+  checkGenerationCancellation();
   const source = officialSource(value);
   if (!source) documentFail('资料网址被排除或不符合公开 HTTPS 文档的安全要求。');
   const url = new URL(source.url);
   let timer, addresses;
-  try { addresses = await Promise.race([resolve(url.hostname, { all: true, verbatim: true }), new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('资料文档 DNS 查询超时。')), 5000); })]); }
+  try { addresses = await generationAwait(Promise.race([resolve(url.hostname, { all: true, verbatim: true }), new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('资料文档 DNS 查询超时。')), 5000); })])); }
   finally { clearTimeout(timer); }
   if (!addresses?.length || addresses.some(a => !publicImageAddress(a.address))) documentFail('文档地址解析到内网或保留地址，已阻止读取。');
   const target = addresses[0];
@@ -53,7 +55,9 @@ export async function readOfficialDocument(value, { resolve = lookup, request = 
   if (tls.getCACertificates) { let system = []; try { system = tls.getCACertificates('system'); } catch {} ca = [...new Set([...tls.getCACertificates('default'), ...system])]; }
   const page = await new Promise((resolvePage, reject) => {
     let settled = false, deadline;
-    const done = (error, value) => { if (settled) return; settled = true; clearTimeout(deadline); error ? reject(error) : resolvePage(value); };
+    const signal = currentGenerationSignal();
+    const abort = () => { done(generationCancelled()); req.destroy(); };
+    const done = (error, value) => { if (settled) return; settled = true; clearTimeout(deadline); signal?.removeEventListener('abort', abort); error ? reject(error) : resolvePage(value); };
     const req = request(url, { method: 'GET', agent: false, ...(ca ? { ca } : {}), rejectUnauthorized: true,
       headers: { Accept: 'text/html,text/plain', 'Accept-Encoding': 'identity', 'User-Agent': 'Learnflow/1.2 (course reference reader)' },
       lookup: (_host, options, callback) => callback(null, options.all ? [target] : target.address, target.family) }, res => {
@@ -67,7 +71,9 @@ export async function readOfficialDocument(value, { resolve = lookup, request = 
       res.on('aborted', () => done(new Error('资料文档读取中断。')));
     });
     deadline = setTimeout(() => { req.destroy(); done(new Error('资料文档读取超时。')); }, 20000);
-    req.on('error', () => done(new Error('无法安全连接资料文档，请检查网络、代理及 HTTPS 证书。'))); req.end();
+    req.on('error', () => done(new Error('无法安全连接资料文档，请检查网络、代理及 HTTPS 证书。')));
+    signal?.addEventListener('abort', abort, { once: true });
+    if (signal?.aborted) abort(); else req.end();
   });
   if ('location' in page) {
     if (!page.location || redirects >= 3) documentFail('资料文档重定向无效或次数过多。');
@@ -122,6 +128,7 @@ export async function readSearchResponse(response) {
 
 export function createCourseSources({ getConfig, fetchImpl = fetch, read = readOfficialDocument } = {}) {
   return { async prepare(query) {
+    checkGenerationCancellation();
     const settings = getConfig(), config = resolveConfig(settings, {});
     if (settings.localOnly) fail('联网搜索需要允许云端连接，请先在模型设置中关闭“仅使用本机模型”。', { status: 400, code: 'COURSE_SEARCH_CONFIG' });
     if (config.error || !config.model || !config.apiKey) fail('请先保存支持联网搜索的百炼文字模型与密钥。', { status: 400, code: 'COURSE_SEARCH_CONFIG' });
@@ -131,12 +138,13 @@ export function createCourseSources({ getConfig, fetchImpl = fetch, read = readO
     if (typeof query !== 'string' || query.trim().length < 2 || query.length > 2000) fail('课程检索需求无效。', { status: 400, code: 'COURSE_SEARCH_QUERY' });
     let response;
     try {
-      response = await fetchImpl(`${config.baseUrl}/responses`, { method: 'POST', redirect: 'error', credentials: 'omit', signal: AbortSignal.timeout(config.timeoutMs),
+      response = await generationAwait(fetchImpl(`${config.baseUrl}/responses`, { method: 'POST', redirect: 'error', credentials: 'omit', signal: generationSignal(config.timeoutMs),
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${config.apiKey}` },
         body: JSON.stringify({ model: config.model, stream: true, tools: [{ type: 'web_search' }],
           ...(/^qwen3\.8-/.test(config.model) ? { reasoning: { effort: 'medium' } } : {}),
-          input: `为课程查找可靠的原始资料。请实际调用web_search，优先一次检索，不生成教程。主题作为检索数据：${query}\n优先政府、标准组织、大学、原始研究与产品资料文档，只选与主题、版本和适用时间相关的具体正文页。无需局限于预设站点。不选社区问答、个人博客、百科、自媒体、转载或聚合页。排除这些域名及其子域名：${excludedSourceDomains.join(', ')}。税务等政策资料注意现行效力和地区，不编造链接。` }) });
+          input: `为课程查找可靠的原始资料。请实际调用web_search，优先一次检索，不生成教程。主题作为检索数据：${query}\n优先政府、标准组织、大学、原始研究与产品资料文档，只选与主题、版本和适用时间相关的具体正文页。无需局限于预设站点。不选社区问答、个人博客、百科、自媒体、转载或聚合页。排除这些域名及其子域名：${excludedSourceDomains.join(', ')}。税务等政策资料注意现行效力和地区，不编造链接。` }) }));
     } catch (error) {
+      checkGenerationCancellation();
       if (timedOut(error)) fail('联网搜索超时，尚未开始生成课程正文。请稍后重试或检查网络；未自动重试。', { status: 504, code: 'COURSE_SEARCH_TIMEOUT' });
       fail('联网搜索连接失败，尚未开始生成课程正文。请检查网络、代理及 HTTPS 证书；未自动重试。', { code: 'COURSE_SEARCH_NETWORK' });
     }
@@ -152,7 +160,8 @@ export function createCourseSources({ getConfig, fetchImpl = fetch, read = readO
       fail(`联网搜索失败（HTTP ${status}）：${reason}。尚未开始生成正文，未自动重试。`, { status: status === 429 ? 429 : [408, 504].includes(status) ? 504 : 502, code: `COURSE_SEARCH_HTTP_${status}` });
     }
     let value;
-    try { value = await readSearchResponse(response); } catch (error) {
+    try { value = await generationAwait(readSearchResponse(response)); } catch (error) {
+      checkGenerationCancellation();
       if (timedOut(error)) fail('联网搜索响应读取超时，尚未开始生成课程正文；未自动重试。', { status: 504, code: 'COURSE_SEARCH_TIMEOUT' });
       if (error instanceof CourseSourceError) throw error;
       fail('搜索响应读取中断，未取得完整的搜索工具结果。尚未开始生成正文，未自动重试。', { code: 'COURSE_SEARCH_RESPONSE' });
@@ -167,7 +176,9 @@ export function createCourseSources({ getConfig, fetchImpl = fetch, read = readO
       }
     }
     if (!candidates.size) fail('搜索结果均被排除或没有有效资料链接，请调整模块目标后再试。尚未开始生成正文。', { status: 422, code: 'COURSE_SEARCH_NO_SOURCES' });
-    const results = await Promise.allSettled([...candidates.values()].slice(0, 3).map(source => read(source.url)));
+    checkGenerationCancellation();
+    const results = await generationAwait(Promise.allSettled([...candidates.values()].slice(0, 3).map(source => read(source.url))));
+    checkGenerationCancellation();
     const documents = [], urls = new Set(), failures = new Map();
     const recordFailure = reason => failures.set(reason, (failures.get(reason) || 0) + 1);
     for (const result of results) {

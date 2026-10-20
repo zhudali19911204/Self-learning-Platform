@@ -251,7 +251,9 @@ export async function createSqliteStore(directory) {
     const quizRecord = db.prepare('SELECT value FROM meta WHERE key = ?').get(`quizRecords:${lessonId}`);
     const sourceSearch = fromJSON(db.prepare('SELECT value FROM meta WHERE key = ?').get(`sourceSearch:${lessonId}`)?.value || '{"enabled":false,"revision":0}');
     const factChecks = fromJSON(db.prepare('SELECT value FROM meta WHERE key = ?').get(`factChecks:${lessonId}`)?.value || '[]');
-    return { lesson: row.content_json ? fromJSON(row.content_json) : null, blockCourse, reflection, annotations, chats, sourceSearch, factChecks, ...(quizRecord ? { quizRecord: fromJSON(quizRecord.value) } : {}) };
+    const grade = db.prepare('SELECT * FROM progress WHERE lesson_id = ?').get(lessonId);
+    const progress = grade ? { completed: !!grade.completed, attempts: grade.attempts, lastScore: grade.last_score, bestScore: grade.best_score, lastAnswers: fromJSON(grade.last_answers_json), ...(grade.updated === null ? {} : { updated: grade.updated }) } : null;
+    return { lesson: row.content_json ? fromJSON(row.content_json) : null, blockCourse, reflection, annotations, chats, sourceSearch, factChecks, progress, ...(quizRecord ? { quizRecord: fromJSON(quizRecord.value) } : {}) };
   }
   const metaSet = (key, value) => db.prepare('INSERT INTO meta VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value').run(key, JSON.stringify(value));
   const metaRows = prefix => db.prepare('SELECT value FROM meta WHERE key GLOB ?').all(`${prefix}:*`).map(r => fromJSON(r.value));
@@ -456,6 +458,16 @@ export async function createSqliteStore(directory) {
         return block;
       });
     },
+    removePendingQuiz(lessonId, blockId) {
+      requireLesson(lessonId);
+      if (!id(blockId)) throw new Error('内容块不存在。');
+      const block = db.prepare('SELECT type,title,position,content_json FROM lesson_blocks WHERE lesson_id = ? AND id = ?').get(lessonId, blockId);
+      if (!block || block.type !== 'quiz' || !block.title.startsWith('补充练习 · 第') || block.content_json !== null) throw new Error('只能移除本次尚未生成的补充练习。');
+      transaction(db, () => {
+        db.prepare('DELETE FROM lesson_blocks WHERE lesson_id = ? AND id = ? AND content_json IS NULL').run(lessonId, blockId);
+        db.prepare('UPDATE lesson_blocks SET position = position - 1 WHERE lesson_id = ? AND position > ?').run(lessonId, block.position);
+      });
+    },
     saveBlock(lessonId, blockId, content) {
       requireLesson(lessonId);
       if (!id(blockId)) throw new Error('内容块不存在。');
@@ -467,7 +479,7 @@ export async function createSqliteStore(directory) {
         const before = block.type === 'quiz' ? quizQuestions(getLesson(lessonId)) : [], tracked = !!db.prepare('SELECT 1 FROM meta WHERE key = ?').get(`quizRecords:${lessonId}`);
         db.prepare('UPDATE lesson_blocks SET content_json = ? WHERE lesson_id = ? AND id = ? AND content_json IS NULL').run(JSON.stringify(content), lessonId, blockId);
         if (block.type === 'quiz') {
-          if (tracked) trackQuizChange(lessonId,before,quizQuestions(getLesson(lessonId)));
+          if (tracked || before.length) trackQuizChange(lessonId,before,quizQuestions(getLesson(lessonId)));
           else db.prepare("UPDATE progress SET completed = 0, last_score = 0, last_answers_json = '[]' WHERE lesson_id = ?").run(lessonId);
         }
       });
@@ -495,11 +507,12 @@ export async function createSqliteStore(directory) {
           metaSet(`factChecks:${lessonId}`, kept);
         }
         if (block.type === 'quiz') {
-          if (block.content || db.prepare('SELECT 1 FROM meta WHERE key = ?').get(`quizRecords:${lessonId}`)) trackQuizChange(lessonId, beforeQuestions, quizQuestions(getLesson(lessonId)));
+          if (block.content || beforeQuestions.length || db.prepare('SELECT 1 FROM meta WHERE key = ?').get(`quizRecords:${lessonId}`)) trackQuizChange(lessonId, beforeQuestions, quizQuestions(getLesson(lessonId)));
           else db.prepare("UPDATE progress SET completed = 0, last_score = 0, last_answers_json = '[]' WHERE lesson_id = ?").run(lessonId);
         }
         if (block.content && !sameFactContent(block.content, next)) metaSet(`revisionNotices:${lessonId}`, { updated: Date.now(), jobId: record?.id || 'fact-restore' });
-        return { content: next, factChecks: getLesson(lessonId).factChecks, quizRecord: getLesson(lessonId).quizRecord || null };
+        const saved = getLesson(lessonId);
+        return { content: next, factChecks: saved.factChecks, quizRecord: saved.quizRecord || null, progress: saved.progress };
       });
     },
     restoreFactCheck(lessonId, blockId, recordId) {

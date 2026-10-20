@@ -1,6 +1,6 @@
 {
   "name": "learnflow",
-  "version": "1.2.8",
+  "version": "1.2.9",
   "main": "desktop/main.cjs",
   "private": true,
   "type": "module",
@@ -32,6 +32,7 @@
       "desktop/**",
       "public/**",
       "server.mjs",
+      "generation-cancellation.mjs",
       "llm.mjs",
       "image-model.mjs",
       "commons-images.mjs",
@@ -46,6 +47,7 @@
       "course-claim-matching.mjs",
       "course-inline-citations.mjs",
       "course-quiz-sources.mjs",
+      "course-citation-context.mjs",
       "test-support/audio.mjs",
       "package.json"
     ],

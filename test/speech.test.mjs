@@ -7,6 +7,7 @@ import { speechDefaults, speechTurns, speechRequest, listeningText } from '../pu
 import { normalizeSpeechSettings, createSpeechModel, audioMime, normalizeAudio, MAX_AUDIO_BYTES } from '../speech-model.mjs';
 import { createSpeechStore } from '../desktop/speech-store.mjs';
 import { createSpeechService, speechCacheKey } from '../desktop/speech-service.mjs';
+import { withGenerationSignal, isGenerationCancelled } from '../generation-cancellation.mjs';
 import { wavFixture } from '../test-support/audio.mjs';
 const wav = wavFixture(), cfg = (patch = {}) => ({ ...speechDefaults, enabled: true, baseUrl: 'http://127.0.0.1:8999/api/v1', localOnly: true, apiKey: '', ...patch });
 const secrets = { encrypt: async value => Buffer.from(value).toString('base64'), decrypt: async value => Buffer.from(value, 'base64').toString() };
@@ -141,6 +142,25 @@ test('a damaged audio cache disables synthesis without preventing desktop initia
   assert.equal(await readFile(target, 'utf8'), 'damaged-audio-index');
   assert.throws(() => store.getConfig(), /缓存无法读取/);
   await assert.rejects(store.lookup('a'.repeat(64)), /缓存无法读取/);
+});
+test('cancelling multi-turn speech rolls back this run only, including cached partial turns and pending downloads', async t => {
+  const env = await createStore(t); await env.store.saveSettings({ ...cfg(), keyAction: 'clear' });
+  const value = { text: transcript, assignments: {}, confirmed: true, mode: 'generate' };
+  // An older cached turn must survive cancellation of two additional turns.
+  const initial = createSpeechService(env.store, async () => new Response(wav));
+  await initial.generate({ ...value, text: transcript.split('\n')[0] });
+  let calls = 0, entered; const waiting = new Promise(resolve => { entered = resolve; });
+  const service = createSpeechService(env.store, async () => {
+    if (++calls === 1) return new Response(wav);
+    entered(); return new Promise(() => {});
+  }), controller = new AbortController();
+  const work = withGenerationSignal(controller.signal, () => service.generate(value));
+  const rejected = assert.rejects(work, isGenerationCancelled); await waiting; controller.abort(); await rejected;
+  assert.equal(service.isBusy(), false); assert.equal(calls, 2);
+  const result = await service.prepare(value);
+  assert.equal(result.cachedCount, 1); assert.equal(result.newCount, 2); assert.equal(result.pendingCount, 0);
+  assert.ok(result.turns[0].id); assert.equal(result.turns[1].id, null);
+  assert.equal((await env.store.readAsset(result.turns[0].id)).bytes.length, wav.length, 'shared audio bytes used by old cache are retained');
 });
 test('local previews require no requests; explicit synthesis caches per role/text/config and replays without new requests', async t => {
   const env = await createStore(t); await env.store.saveSettings({ ...cfg(), keyAction: 'clear' });

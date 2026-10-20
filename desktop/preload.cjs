@@ -1,7 +1,7 @@
 const { contextBridge, ipcRenderer } = require('electron');
 async function invoke(channel, ...args) {
   const result = await ipcRenderer.invoke(channel, ...args);
-  if (!result.ok) throw new Error(result.error);
+  if (!result.ok) { const error = new Error(result.error); if (result.code === 'GENERATION_CANCELLED') { error.code = result.code; error.name = 'AbortError'; } throw error; }
   return result.value;
 }
 contextBridge.exposeInMainWorld('learnflowDesktop', Object.freeze({
@@ -16,6 +16,7 @@ contextBridge.exposeInMainWorld('learnflowDesktop', Object.freeze({
   saveLesson: (id, value) => invoke('learnflow:save-lesson', id, value),
   saveOutline: (id, value) => invoke('learnflow:save-outline', id, value),
   appendBlock: (id, value) => invoke('learnflow:append-block', id, value),
+  removePendingQuiz: (id, blockId) => invoke('learnflow:remove-pending-quiz', id, blockId),
   saveBlock: (id, blockId, value) => invoke('learnflow:save-block', id, blockId, value),
   reviseBlock: (id, blockId, value, expectedText) => invoke('learnflow:revise-block', id, blockId, value, expectedText),
   restoreBlock: (id, blockId, expectedText) => invoke('learnflow:restore-block', id, blockId, expectedText),
@@ -35,28 +36,29 @@ contextBridge.exposeInMainWorld('learnflowDesktop', Object.freeze({
   correctFactIssues: (value, progressId) => invoke('learnflow:correct-fact-issues', value, progressId),
   testQualityConnection: () => invoke('learnflow:test-quality-connection'),
   inspectQuality: (scope, id) => invoke('learnflow:inspect-quality', scope, id),
-  evaluateQuality: (scope, id, fingerprint) => invoke('learnflow:evaluate-quality', scope, id, fingerprint),
+  evaluateQuality: (scope, id, fingerprint, progressId) => invoke('learnflow:evaluate-quality', scope, id, fingerprint, progressId),
   saveImageSettings: value => invoke('learnflow:save-image-settings', value),
   saveSpeechSettings: value => invoke('learnflow:save-speech-settings', value),
   checkSpeechConnection: () => invoke('learnflow:check-speech-connection'),
   prepareSpeech: value => invoke('learnflow:prepare-speech', value),
-  generateSpeech: value => invoke('learnflow:generate-speech', value),
+  generateSpeech: (value, progressId) => invoke('learnflow:generate-speech', value, progressId),
   checkImageConnection: () => invoke('learnflow:check-image-connection'),
-  suggestIllustration: (id, blockId) => invoke('learnflow:suggest-illustration', id, blockId),
+  suggestIllustration: (id, blockId, progressId) => invoke('learnflow:suggest-illustration', id, blockId, progressId),
   searchCommonsImages: query => invoke('learnflow:search-commons-images', query),
-  autoSearchCommonsImages: (id, blockId) => invoke('learnflow:auto-search-commons-images', id, blockId),
+  autoSearchCommonsImages: (id, blockId, progressId) => invoke('learnflow:auto-search-commons-images', id, blockId, progressId),
   useCommonsImage: value => invoke('learnflow:use-commons-image', value),
   openCommonsSource: url => invoke('learnflow:open-commons-source', url),
   saveWebSearchSettings: value => invoke('learnflow:save-web-search-settings', value),
   searchWebImages: query => invoke('learnflow:search-web-images', query),
-  autoSearchWebImages: (id, blockId) => invoke('learnflow:auto-search-web-images', id, blockId),
+  autoSearchWebImages: (id, blockId, progressId) => invoke('learnflow:auto-search-web-images', id, blockId, progressId),
   useWebImage: value => invoke('learnflow:use-web-image', value),
   openImageSource: url => invoke('learnflow:open-image-source', url),
-  generateIllustration: value => invoke('learnflow:generate-illustration', value),
+  generateIllustration: (value, progressId) => invoke('learnflow:generate-illustration', value, progressId),
   getPendingIllustration: (id, blockId) => invoke('learnflow:get-pending-illustration', id, blockId),
-  retryIllustrationDownload: value => invoke('learnflow:retry-illustration-download', value),
+  retryIllustrationDownload: (value, progressId) => invoke('learnflow:retry-illustration-download', value, progressId),
   discardIllustrationDownload: (id, blockId, pendingId) => invoke('learnflow:discard-illustration-download', id, blockId, pendingId),
   request: (endpoint, data, progressId) => invoke('learnflow:request', endpoint, data, progressId),
+  cancelGeneration: id => invoke('learnflow:cancel-generation', id),
   onGenerationProgress: listener => {
     if (typeof listener !== 'function') return () => {};
     const receive = (_event, value) => {

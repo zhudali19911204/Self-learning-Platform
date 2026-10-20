@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import { speechRequest } from '../public/speech.js';
 import { createSpeechModel } from '../speech-model.mjs';
+import { checkGenerationCancellation, currentGenerationSignal, generationCancelled } from '../generation-cancellation.mjs';
 const digest = value => createHash('sha256').update(JSON.stringify(value)).digest('hex');
 export const speechCacheKey = (config, turn) => digest([config.baseUrl, config.model, turn.voice, turn.text, config.language, config.rate, 'wav', 24000]);
 
@@ -31,25 +32,39 @@ export function createSpeechService(store, fetchImpl = fetch) {
       if (busy) throw new Error('正在合成或下载语音，请勿重复提交。');
       if (value?.confirmed !== true || !['generate', 'download-only'].includes(value.mode)) throw new Error('请先预览并明确确认语音生成。');
       busy = true;
+      const createdKeys = [], priorPending = new Map(pending);
       try {
+        checkGenerationCancellation();
         const config = store.getConfig(), plan = await prepare(value), model = createSpeechModel(config, fetchImpl);
         if (value.mode === 'generate' && plan.pendingCount) throw new Error('已有生成结果待下载，请先仅重试下载；不会重新计费合成。');
         for (const turn of plan.turns) {
+          checkGenerationCancellation();
           if (turn.id || (value.mode === 'download-only' && !turn.pending)) continue;
           if (digest(store.getConfig()) !== digest(config)) throw new Error('语音配置已更改，已停止后续请求，请重新预览。');
           const wait = pending.get(turn.key);
           try {
             const bytes = wait ? await model.download(wait.url) : await model.synthesize(turn.text, turn.voice, url => {
+              checkGenerationCancellation();
               prune(); while (pending.size >= 32) pending.delete(pending.keys().next().value);
               pending.set(turn.key, { url, expires: Date.now() + 30 * 60 * 1000 });
             });
-            await store.put(turn.key, bytes); pending.delete(turn.key);
+            checkGenerationCancellation(); createdKeys.push(turn.key);
+            await store.put(turn.key, bytes); checkGenerationCancellation(); pending.delete(turn.key);
             if (value.lessonId && store.linkLesson) await store.linkLesson(value.lessonId, turn.key);
           } catch (error) {
+            checkGenerationCancellation();
             return { ...await prepare(value), error: error.code ? '本地音频保存失败，请检查磁盘空间与目录权限。已保存片段保留，不自动重新生成。' : error.message };
           }
         }
-        return prepare(value);
+        const result = await prepare(value); checkGenerationCancellation(); return result;
+      } catch (error) {
+        if (currentGenerationSignal()?.aborted) {
+          for (const key of pending.keys()) if (!priorPending.has(key)) pending.delete(key);
+          for (const [key, item] of priorPending) if (!pending.has(key)) pending.set(key, item);
+          if (createdKeys.length) await store.discardGenerated(createdKeys);
+          throw generationCancelled();
+        }
+        throw error;
       } finally { busy = false; }
     },
     isBusy: () => busy || activePreparations > 0

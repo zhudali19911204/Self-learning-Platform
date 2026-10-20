@@ -1,4 +1,5 @@
 import { speechDefaults, validSpeechVoice } from './public/speech.js';
+import { generationAwait, generationSignal, checkGenerationCancellation } from './generation-cancellation.mjs';
 import { BAILIAN_IMAGE_DOWNLOAD_HOSTS } from './image-model.mjs';
 const loopback = host => ['localhost', '127.0.0.1', '[::1]'].includes(host);
 const official = host => ['dashscope.aliyuncs.com', 'dashscope-intl.aliyuncs.com'].includes(host) || /^[a-z0-9-]+\.(?:cn-beijing|ap-southeast-1)\.maas\.aliyuncs\.com$/.test(host);
@@ -95,8 +96,10 @@ export function createSpeechModel(config, fetchImpl = fetch) {
   const base = new URL(config.baseUrl);
   const guard = async (task, downloading = false) => {
     if (!config.enabled) fail('请先启用并保存语音模型。');
-    try { return await task(AbortSignal.timeout(config.timeoutMs)); }
+    checkGenerationCancellation();
+    try { const result = await generationAwait(task(generationSignal(config.timeoutMs))); checkGenerationCancellation(); return result; }
     catch (error) {
+      checkGenerationCancellation();
       if (['AbortError', 'TimeoutError'].includes(error.name)) fail(downloading ? '音频下载超时，可仅重试下载，未重新合成。' : '语音生成超时，可能已计费；请先查服务记录，未自动重试。');
       if (error instanceof TypeError || error.code) fail('无法连接语音服务，请检查地址和网络；未自动重试。');
       throw error;

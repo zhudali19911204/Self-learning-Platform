@@ -1,6 +1,8 @@
 import test from 'node:test';
 import { createGenerationProgress } from '../public/generation-progress.js';
+import { generationCancelled, isGenerationCancelled } from '../public/task-cancellation.js';
 import { factCheckLabels, sameFactContent } from '../public/fact-check.js';
+import { masteredQuizQuestions, quizRecordAfterChange, quizQuestionKey, quizBatchLimit, quizQuestionLimit } from '../public/quiz-progress.js';
 import assert from 'node:assert/strict';
 import vm from 'node:vm';
 import { readFile } from 'node:fs/promises';
@@ -716,7 +718,7 @@ function realSettingsHarness(bridge) {
   }
   document.addEventListener = (name, listener) => { const group = listeners.get(name) || []; group.push(listener); listeners.set(name, group); };
   dom.window.learnflowDesktop = bridge; dom.window.scrollTo = () => {};
-  const context = vm.createContext({ createGenerationProgress, factCheckLabels, sameFactContent, officialSource, validSourceSearch, courseReferences, teachingContextNotice, qualityRubric, qualityLabels, qualityModelId, revisionTypes, revisionStatuses, revisionCheckLabels, revisionContent, revisionText, revisionDiff,
+  const context = vm.createContext({ generationCancelled, isGenerationCancelled, masteredQuizQuestions, quizRecordAfterChange, quizQuestionKey, quizBatchLimit, quizQuestionLimit, createGenerationProgress, factCheckLabels, sameFactContent, officialSource, validSourceSearch, courseReferences, teachingContextNotice, qualityRubric, qualityLabels, qualityModelId, revisionTypes, revisionStatuses, revisionCheckLabels, revisionContent, revisionText, revisionDiff,
     demoPlan, demoLessons, lessonFromBlocks, validOutline, validBlockContent, validBlockSpec, blockGenerationContext, revisedContent, restoredContent, assistedBlockTypes, Marked, DOMPurify, createMarkdownRenderer, validQuestionnaire, validClarification, learningBriefFrom, validIllustration, validImageProposal, speechDefaults, speechVoices, listeningText, speechTurns, speechRequest, validAudioId, validKnowledgeSource, validKnowledgeDraft, localKnowledgeDraft, knowledgeTags, knowledgeConditions, validAnnotations, personalNotesForSource, personalNotesMarkdown, knowledgeCatalog, knowledgeDomain, knowledgeDomainColors, knowledgeTopic, retrieveKnowledge, validKnowledgeOrganization, courseKnowledgeTree, knowledgeTree, knowledgeGraph, filterKnowledgeGraph, createGraphMotion, stepGraphMotion, structuredClone, crypto: webcrypto, AbortSignal,
     document, window: dom.window, FormData: dom.window.FormData, setTimeout: () => 1, clearTimeout() {}
   });
@@ -733,7 +735,7 @@ function harness(saved, fetchImpl, desktopBridge) {
     if (!nodes.has(selector)) nodes.set(selector, { innerHTML: '', textContent: '', open: false, attributes: {}, setAttribute(name, value) { this.attributes[name] = value; }, classList: { add() {}, remove() {} }, scrollIntoView() {}, focus() {}, showModal() { this.open = true; }, close() { this.open = false; } });
     return nodes.get(selector);
   };
-  const context = vm.createContext({ createGenerationProgress, factCheckLabels, sameFactContent, officialSource, validSourceSearch, courseReferences, teachingContextNotice, qualityRubric, qualityLabels, qualityModelId, revisionTypes, revisionStatuses, revisionCheckLabels, revisionContent, revisionText, revisionDiff,
+  const context = vm.createContext({ generationCancelled, isGenerationCancelled, masteredQuizQuestions, quizRecordAfterChange, quizQuestionKey, quizBatchLimit, quizQuestionLimit, createGenerationProgress, factCheckLabels, sameFactContent, officialSource, validSourceSearch, courseReferences, teachingContextNotice, qualityRubric, qualityLabels, qualityModelId, revisionTypes, revisionStatuses, revisionCheckLabels, revisionContent, revisionText, revisionDiff,
     demoPlan, demoLessons, lessonFromBlocks, validOutline, validBlockContent, validBlockSpec, blockGenerationContext, revisedContent, restoredContent, assistedBlockTypes, Marked, DOMPurify, createMarkdownRenderer, validQuestionnaire, validClarification, learningBriefFrom, validIllustration, validImageProposal, speechDefaults, speechVoices, listeningText, speechTurns, speechRequest, validAudioId, validKnowledgeSource, validKnowledgeDraft, localKnowledgeDraft, knowledgeTags, knowledgeConditions, validAnnotations, personalNotesForSource, personalNotesMarkdown, knowledgeCatalog, knowledgeDomain, knowledgeDomainColors, knowledgeTopic, retrieveKnowledge, validKnowledgeOrganization, courseKnowledgeTree, knowledgeTree, knowledgeGraph, filterKnowledgeGraph, createGraphMotion, stepGraphMotion, structuredClone, crypto: webcrypto, AbortSignal,
     document: { querySelector: node, addEventListener(name, listener) { const group = listeners.get(name) || []; group.push(listener); listeners.set(name, group); } },
     localStorage: { get length() { return storage.size; }, key: index => [...storage.keys()][index] ?? null, getItem: key => storage.get(key) ?? null, setItem: (key, value) => storage.set(key, value), removeItem: key => storage.delete(key) },
@@ -782,8 +784,113 @@ test('learning loop: incorrect answers, retry, completion, Wiki creation, edit a
   await app.submit('quiz-form', { q0: '0', q1: '0' }, 'p1');
   assert.equal(app.run('state.progress.p1.completed'), true, 'review mistakes do not delete prior mastery');
   assert.equal(app.run('state.progress.p1.bestScore'), 100);
-  assert.equal(app.run('state.progress.p1.lastScore'), 0);
+  assert.equal(app.run('state.progress.p1.lastScore'), 100, 'passed questions cannot be resubmitted as wrong answers');
 });
+test('quiz mastery skips passed questions and missing pending answers cannot silently become option A', async () => {
+  const app = harness();
+  app.run("activeLesson='p1'; page='study'; lessonTab='quiz'; render()");
+  await app.submit('quiz-form', { q0: '1', q1: '0' }, 'p1');
+  let dom = new JSDOM(app.node('#app').innerHTML);
+  assert.equal(dom.window.document.querySelectorAll('.quiz-mastered').length, 1);
+  assert.equal(dom.window.document.querySelector('[name=q0]'), null);
+  assert.ok(dom.window.document.querySelector('[name=q1]'));
+  assert.match(dom.window.document.querySelector('.quiz-mastered').textContent, /正确答案/); dom.window.close();
+  await app.submit('quiz-form', {}, 'p1');
+  assert.equal(app.run('state.progress.p1.attempts'), 1);
+  await app.submit('quiz-form', { q1: '1', q0: '0' }, 'p1');
+  assert.equal(app.run('state.progress.p1.lastScore'), 100);
+  assert.deepEqual(Array.from(app.run('state.progress.p1.lastAnswers')), [1, 1], 'passed answers are synthesized, never replaced by form values');
+  dom = new JSDOM(app.node('#app').innerHTML);
+  assert.equal(dom.window.document.querySelector('#quiz-form input'), null);
+  assert.equal(dom.window.document.querySelector('#quiz-form button[type=submit]'), null); dom.window.close();
+});
+
+test('additional quiz batches preserve passes across submission and reload; failed additions retry the same pending block', async () => {
+  const requests = []; let fail = false;
+  const app = harness(null, async (url, options) => {
+    if (url === '/api/status') return { ok: true, json: async () => ({ mode: 'ai' }) };
+    const input = JSON.parse(options.body); requests.push(input);
+    const questions = Array.from({ length: input.questionCount }, (_, i) => ({ prompt: `新增第${requests.length}组第${i + 1}题？`, options: ['正确', '错误甲', '错误乙', '错误丙'], answer: 0, explanation: '依据已讲内容判断。' }));
+    return { ok: !fail, json: async () => fail ? { error: '新增题目测试失败' } : { questions } };
+  });
+  await Promise.resolve();
+  const questions = [0, 1].map((answer, i) => ({ prompt: `原题${i + 1}？`, options: ['甲', '乙', '丙', '丁'], answer, explanation: '原题解析。' }));
+  app.run(`state.plans[0].source='ai'; state.lessons={}; state.blockCourses={p1:{intro:'导语',blocks:[{id:'r1',type:'reading',title:'讲解',objective:'理解',content:{text:'实际已讲正文。'}},{id:'q1',type:'quiz',title:'初始练习',objective:'判断',content:{questions:${JSON.stringify(questions)}}}]}}; status={mode:'ai'}; activeLesson='p1'; page='study'; lessonTab='quiz'; render()`);
+  await app.submit('quiz-form', { q0: '0', q1: '0' }, 'p1');
+  await app.submit('more-quiz-form', { count: '3' }, 'p1');
+  assert.equal(requests.length, 1); assert.equal(requests[0].questionCount, 3); assert.equal(requests[0].existingQuestions.length, 2);
+  assert.equal(app.run('contentFor("p1").questions.length'), 5);
+  assert.equal(app.run('state.blockCourses.p1.blocks[1].content.questions[0].prompt'), questions[0].prompt);
+  let dom = new JSDOM(app.node('#app').innerHTML);
+  assert.equal(dom.window.document.querySelectorAll('.quiz-mastered').length, 1);
+  assert.equal(dom.window.document.querySelector('[name=q0]'), null); assert.ok(dom.window.document.querySelector('[name=q4]')); dom.window.close();
+  await app.submit('quiz-form', { q1: '1', q2: '0', q3: '0', q4: '0' }, 'p1');
+  assert.equal(app.run('state.progress.p1.lastScore'), 100);
+  assert.equal(app.run('state.quizRecords.p1.currentFingerprint === state.quizRecords.p1.progressFingerprint'), true);
+  const restored = harness(app.storage.get('learnflow.v1'));
+  restored.run("activeLesson='p1'; page='study'; lessonTab='quiz'; render()");
+  dom = new JSDOM(restored.node('#app').innerHTML);
+  assert.equal(dom.window.document.querySelectorAll('.quiz-mastered').length, 5); dom.window.close();
+  const before = app.run('JSON.stringify(contentFor("p1").questions)'), oldProgress = app.run('JSON.stringify(state.progress.p1)');
+  fail = true; await app.submit('more-quiz-form', { count: '2' }, 'p1');
+  assert.equal(requests.length, 2); assert.equal(app.run('JSON.stringify(contentFor("p1").questions)'), before);
+  assert.equal(app.run('JSON.stringify(state.progress.p1)'), oldProgress);
+  const blocks = app.run('state.blockCourses.p1.blocks.length');
+  assert.match(app.node('#app').innerHTML, /原题和成绩已保留/);
+  fail = false; await app.submit('more-quiz-form', { count: '2' }, 'p1');
+  assert.equal(requests.length, 3); assert.equal(app.run('state.blockCourses.p1.blocks.length'), blocks, 'retry reuses the failed pending batch');
+  assert.equal(app.run('contentFor("p1").questions.length'), 7);
+  dom = new JSDOM(app.node('#app').innerHTML);
+  assert.equal(dom.window.document.querySelectorAll('.quiz-mastered').length, 5);
+  assert.ok(dom.window.document.querySelector('[name=q5]')); assert.ok(dom.window.document.querySelector('[name=q6]')); dom.window.close();
+});
+
+test('cancelling a new web quiz batch removes its placeholder and preserves old questions and scores', async () => {
+  let signal, requests = 0;
+  const app = harness(null, async (url, options) => {
+    if (url === '/api/status') return { ok: true, json: async () => ({ mode: 'ai' }) };
+    requests++; signal = options.signal;
+    return new Promise((_, reject) => signal.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError')), { once: true }));
+  });
+  await Promise.resolve();
+  app.run("state.blockCourses={p1:{intro:'导语',blocks:[{id:'r1',type:'reading',title:'讲解',objective:'理解',content:{text:'已讲材料。'}},{id:'q1',type:'quiz',title:'原题',objective:'判断',content:{questions:[{prompt:'原题？',options:['甲','乙','丙','丁'],answer:0,explanation:'原解析。'}]}}]}}; state.progress.p1={attempts:1,completed:true,lastScore:100,bestScore:100,lastAnswers:[0]}; status={mode:'ai'}; activeLesson='p1'; page='study'; lessonTab='quiz'; render()");
+  const before = app.run('JSON.stringify(state.blockCourses.p1)'), scores = app.run('JSON.stringify(state.progress.p1)');
+  const work = app.run("appendQuizQuestions('p1',2)"), rejected = assert.rejects(work, isGenerationCancelled);
+  for (let n = 0; !signal && n < 15; n++) await Promise.resolve();
+  assert.equal(requests, 1);
+  const taskId = app.node('#generation-progress').innerHTML.match(/data-action="cancel-generation-task" data-id="([^"]+)"/)[1];
+  await app.run(`generationProgress.cancel('${taskId}')`); await rejected;
+  assert.equal(signal.aborted, true); assert.equal(app.run('JSON.stringify(state.blockCourses.p1)'), before);
+  assert.equal(app.run('JSON.stringify(state.progress.p1)'), scores);
+  assert.equal(app.run('quizAdditionBusy.has("p1") || courseGenerationBusy.has("p1")'), false);
+  assert.equal(JSON.parse(app.storage.get('learnflow.v1')).blockCourses.p1.blocks.length, 2);
+});
+test('failed desktop grading never marks unsaved answers as passed', async t => {
+  const app = realSettingsHarness({ load: async () => ({ status: { mode: 'demo' } }), saveProgress: async () => { throw new Error('练习成绩保存失败'); } });
+  t.after(() => app.close()); await app.ready();
+  app.run("activeLesson='p1'; page='study'; lessonTab='quiz'; render()");
+  for (const name of ['q0', 'q1']) app.document.querySelector(`input[name=${name}][value="1"]`).checked = true;
+  await app.fire('submit', app.document.querySelector('#quiz-form'));
+  assert.equal(app.run('state.progress.p1'), undefined);
+  assert.equal(app.document.querySelector('.quiz-mastered'), null);
+  assert.match(app.document.querySelector('#toast').textContent, /成绩保存失败/);
+});
+
+test('concurrent additional-quiz submissions create at most one pending batch and one generation request', async () => {
+  let release, requests = 0;
+  const app = harness(null, async (url) => {
+    if (url === '/api/status') return { ok: true, json: async () => ({ mode: 'ai' }) };
+    requests++; return new Promise(resolve => { release = () => resolve({ ok: true, json: async () => ({ questions: [{ prompt: '新增情境题？', options: ['甲', '乙', '丙', '丁'], answer: 0, explanation: '按已讲条件判断。' }] }) }); });
+  });
+  await Promise.resolve();
+  app.run("state.blockCourses={p1:{intro:'导语',blocks:[{id:'r1',type:'reading',title:'讲解',objective:'理解',content:{text:'已讲材料。'}},{id:'q1',type:'quiz',title:'原题',objective:'判断',content:{questions:[{prompt:'原题？',options:['甲','乙','丙','丁'],answer:0,explanation:'原解析。'}]}}]}}; status={mode:'ai'}; activeLesson='p1'; page='study'; lessonTab='quiz'; render()");
+  const pending = app.run("appendQuizQuestions('p1',1)");
+  await assert.rejects(app.run("appendQuizQuestions('p1',1)"), /正在生成/);
+  for (let i = 0; !release && i < 10; i++) await Promise.resolve();
+  assert.equal(typeof release, 'function'); release(); await pending;
+  assert.equal(requests, 1); assert.equal(app.run('state.blockCourses.p1.blocks.length'), 3);
+});
+
 test('study card drafting is scoped, editable and does not save when desktop persistence fails', async () => {
   let writes = 0;
   const app = harness(null, null, { load: async () => ({ status: { mode: 'demo' } }), saveNote: async () => { writes++; throw new Error('磁盘写入失败'); } });
@@ -1217,6 +1324,28 @@ test('selecting fact concerns requires confirmation, preserves choices on failur
   assert.equal(app.run('state.blockCourses.p1.blocks[0].content.text'), original.text); assert.equal(corrections, 2);
 });
 
+test('unlocated fact concerns remain visible without direct-correction checkboxes or false pass labels', async t => {
+  const content = { text: '第一处有疑点。' };
+  const issues = [{ kind: 'fact', certainty: 'uncertain', quote: content.text, reason: '需要核实。', suggestion: '核对条件。', evidence: [] },
+    { kind: 'fact', certainty: 'uncertain', quote: '模型重新概括的描述。', unlocated: true, reason: '原句待定位。', suggestion: '核对原文。', evidence: [] }];
+  const record = { id: 'unlocated-review', blockId: 'r1', status: 'uncertain', content, issues, sources: [], summary: '有待核实项。' };
+  const app = realSettingsHarness({ load: async () => ({ status: { mode: 'ai' } }), checkBlockFacts: async () => {}, correctFactIssues: async () => { throw new Error('Must not correct while rendering'); } });
+  t.after(() => app.close()); await app.ready();
+  app.run(`state.plans[0].source='ai'; state.lessons={}; state.blockCourses={p1:{intro:'导语',blocks:[{id:'r1',type:'reading',title:'讲解',objective:'理解',content:${JSON.stringify(content)}}]}}; state.factChecks={p1:[${JSON.stringify(record)}]}; activeLesson='p1'; page='study'; render()`);
+  const doc = app.document;
+  assert.ok(doc.querySelector('.fact-check-strip.is-uncertain'));
+  assert.match(doc.querySelector('.fact-check-strip summary').textContent, /有 2 处待核实/);
+  assert.equal(doc.querySelectorAll('[data-fact-selection]').length, 1);
+  assert.equal(doc.querySelector('[data-fact-selection]').dataset.issue, '0');
+  assert.match(doc.querySelectorAll('.fact-check-details article')[1].textContent, /原句待定位.*以下为模型描述/);
+  assert.match(doc.querySelectorAll('.fact-check-details article')[1].textContent, /模型重新概括的描述/);
+  app.run('state.factChecks.p1[0].issues.shift(); render()');
+  assert.equal(doc.querySelector('[data-fact-selection]'), null);
+  assert.equal(doc.querySelector('[data-action="correct-fact-issues"]'), null);
+  assert.ok(doc.querySelector('[data-action="check-block-facts"]'));
+  assert.ok(doc.querySelector('.fact-check-strip.is-uncertain'));
+});
+
 test('course quality switch preserves state on save failure and locks during generation and preference saves', async t => {
   let finish, saves = 0;
   const app = realSettingsHarness({ load: async () => ({ status: { mode: 'ai' }, qualityStatus: { mode: 'ai' }, factCheck: { enabled: false } }),
@@ -1543,6 +1672,18 @@ test('practice exposes speech, image suggestions and task revision with failure-
   for (const action of ['request-illustration', 'request-revision']) assert.match(html, new RegExp(`data-action="${action}"[^>]*data-block="practice-1"`));
   assert.doesNotMatch(html, /data-action="open-speech"/);
   assert.match(html, /换个任务/);
+  const practiceDom = new JSDOM(html);
+  const practiceDoc = practiceDom.window.document;
+  const taskRevision = practiceDoc.querySelector('.revision-actions > [data-action="request-revision"]');
+  assert.ok(taskRevision, 'task revision is visible beside the tools dropdown');
+  assert.equal(taskRevision.textContent.trim(), '换个任务');
+  assert.equal(taskRevision.className, 'btn secondary');
+  assert.equal(taskRevision.nextElementSibling.className, 'more-learning-tools');
+  assert.equal(practiceDoc.querySelectorAll('[data-action="request-revision"]').length, 1, 'do not duplicate the action in the dropdown');
+  assert.equal(practiceDoc.querySelector('.more-learning-tools [data-action="request-revision"]'), null);
+  assert.ok(practiceDoc.querySelector('.more-learning-tools [data-action="create-note"]'));
+  assert.ok(practiceDoc.querySelector('.more-learning-tools [data-action="request-illustration"]'));
+  practiceDom.window.close();
   for (const type of ['summary', 'quiz']) assert.doesNotMatch(app.run(`blockPart({id:'x',type:'${type}',title:'模块',objective:'目标',content:${type === 'quiz' ? '{questions:[]}' : "{text:'正文'}"}},2,'p1')`), /data-action="(?:open-speech|request-illustration|request-revision)"/);
   assert.doesNotMatch(app.run("blockPart({id:'x',type:'practice',title:'未生成任务',objective:'目标',content:null},2,'p1')"), /换个任务|AI 朗读|AI 配图建议/);
   await app.run("action('open-speech',{dataset:{id:'p1',block:'practice-1'}})");

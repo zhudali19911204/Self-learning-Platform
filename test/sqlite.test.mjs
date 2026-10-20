@@ -17,6 +17,25 @@ async function temporary(t) {
   return directory;
 }
 
+test('cancellation cleanup removes only a pending supplemental quiz and preserves content, order and scores', async t => {
+  const directory = await temporary(t), store = await createSqliteStore(directory);
+  try {
+    const outline = store.saveOutline('p1', { intro: '原导语', blocks: [{ type: 'reading', title: '讲解', objective: '理解' }, { type: 'quiz', title: '原题', objective: '检验' }] });
+    const questions = [{ prompt: '原题？', options: ['甲', '乙', '丙', '丁'], answer: 0, explanation: '依据条件判断。' }];
+    store.saveBlock('p1', outline.blocks[1].id, { questions });
+    const pending = store.appendBlock('p1', { type: 'quiz', title: '补充练习 · 第 2 组', objective: '检验' });
+    const later = store.appendBlock('p1', { type: 'summary', title: '后续总结', objective: '回顾' });
+    const scores = store.getLesson('p1').progress;
+    assert.throws(() => store.removePendingQuiz('p1', outline.blocks[0].id), /只能移除/);
+    assert.throws(() => store.removePendingQuiz('p1', outline.blocks[1].id), /只能移除/);
+    assert.throws(() => store.removePendingQuiz('p2', pending.id), /只能移除/);
+    store.removePendingQuiz('p1', pending.id);
+    const next = store.appendBlock('p1', { type: 'practice', title: '新任务', objective: '应用' }), detail = store.getLesson('p1');
+    assert.deepEqual(detail.blockCourse.blocks.map(b => b.id), [outline.blocks[0].id, outline.blocks[1].id, later.id, next.id]);
+    assert.deepEqual(detail.blockCourse.blocks[1].content.questions, questions); assert.deepEqual(detail.progress, scores);
+    assert.equal(detail.blockCourse.intro, '原导语');
+  } finally { store.close(); }
+});
 const legacy = () => ({
   version: 1, plans: [structuredClone(demoPlan)], active: demoPlan.id,
   lessons: { p1: { ...structuredClone(demoLessons.p1), intro: '保留我的课程正文' } },
