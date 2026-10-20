@@ -19,7 +19,7 @@ export function sourcesFixture() {
     if (input.block.type === 'quiz') {
       if (!_instruction.includes('不重新联网搜索')) throw new Error('Quiz scope instruction missing');
       const id = input.officialDocuments?.[0]?.excerpts[0].id;
-      const result = { questions: ['提交身份是否就是远程登录？', '应如何核对提交身份？'].map((prompt, index) => ({ prompt,
+      const result = { questions: ['提交身份是否就是远程登录？', '应如何核对提交身份？', '提交邮箱能否代替远程认证？', '哪个字段记录提交作者？'].map((prompt, index) => ({ prompt,
         options: ['身份与认证应区分', '只看密码', '删除配置即可', '无需核对'], answer: 0,
         explanation: '提交身份与远程认证不同。' + (id && index === 0 ? `[${id}]` : '') })) };
       if (!validate(result)) throw new Error('Smoke quiz output rejected'); return result;

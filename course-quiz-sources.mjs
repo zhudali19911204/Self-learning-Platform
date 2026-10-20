@@ -36,7 +36,7 @@ export function quizMaterials(requested, savedCourse = null) {
       document.excerpts.push({ id: `${document.id}E${document.excerpts.length + 1}`, text: citation.quote });
     }
   }
-  return { context: cleanGenerationCitationContext(context), documents: documents.length ? documents : null };
+  return { context: cleanGenerationCitationContext(context, savedCourse), documents: documents.length ? documents : null };
 }
 
 export const quizSourceGuidance = `本次是随堂练习，不重新联网搜索。只考实际提供的前序讲解和案例中已讲过的知识；不能因为参考资料包含额外信息而考未讲的细节。前文旧引用标记已在本次输入中隐藏，不要凭记忆沿用旧资料编号。若有 officialDocuments，它们是本课已保存的资料片段，不是本次新搜索或重新读取的网页，不保证现行有效；只能使用其中本次分配的 excerpt ID。网页资料仅为练习提供可选支持，不强行要求每道解析都有引用；只为实际使用资料的句段附标记，基于已讲内容的理解、应用和归纳题可以不附引用。全部题目都只依据已讲内容时，也可以完全不附外部引用，不声称已获资料验证；不得用无关片段凑数。若已讲内容不足，应缩小出题范围，确实无法出题时返回sourceInsufficient，不得编造答案。若没有 officialDocuments，就仅根据 teachingContext 的已讲正文设计理解与应用题，不输出资料引用标记、citations、参考文献或来源链接，也不声称联网查证。`;

@@ -361,9 +361,10 @@ test('returns actionable errors for unavailable models and invalid JSON', async 
 });
 test('lesson generation validates that each answer refers to a real option', async t => {
   const input = { goal: '学习 Python', title: '第一课', objective: '学会 print', level: '零基础' };
-  const app = await serve(t, { model: 'test', fetchImpl: mock(demoLessons.p1) });
+  const generated=structuredClone(demoLessons.p1); generated.questions.push(...generated.questions.map(q=>({...q,prompt:q.prompt+'（变化情境）'})));
+  const app = await serve(t, { model: 'test', fetchImpl: mock(generated) });
   assert.equal((await app.post('/api/lesson', input)).status, 200);
-  const broken = structuredClone(demoLessons.p1); broken.questions[0].answer = 4;
+  const broken = structuredClone(generated); broken.questions[0].answer = 4;
   const invalid = await serve(t, { model: 'test', fetchImpl: mock(broken) });
   assert.equal((await invalid.post('/api/lesson', input)).status, 502);
 });
@@ -465,6 +466,7 @@ test('AI lesson Q&A, Wiki cards and grounded answers request Markdown within unc
 
 test('compatible service works over HTTP for connection, plan, lesson, Wiki and grounded Q&A', async t => {
   const captured = [];
+  const generated=structuredClone(demoLessons.p1); generated.questions.push(...generated.questions.map(q=>({...q,prompt:q.prompt+'（变化情境）'})));
   const upstream = http.createServer(async (req, res) => {
     const chunks = [];
     for await (const chunk of req) chunks.push(chunk);
@@ -474,7 +476,7 @@ test('compatible service works over HTTP for connection, plan, lesson, Wiki and 
     const value = data.task === 'connection-test' ? { ok: true }
       : data.notes ? { answer: 'print 显示信息。', citations: ['n1'] }
       : data.lesson ? { summary: '输出', content: 'print 显示信息。' }
-      : data.objective ? demoLessons.p1 : demoPlan;
+      : data.objective ? generated : demoPlan;
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ choices: [{ message: { content: JSON.stringify(value) }, finish_reason: 'stop' }] }));
   });

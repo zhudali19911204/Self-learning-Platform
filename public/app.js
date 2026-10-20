@@ -16,7 +16,7 @@ import { teachingContextNotice } from './teaching-context.js';
 import { officialSource, validSourceSearch, courseReferences } from './course-sources.js';
 import { createGenerationProgress } from './generation-progress.js';
 import { factCheckLabels, sameFactContent } from './fact-check.js';
-import { masteredQuizQuestions, quizRecordAfterChange, quizQuestionKey, quizBatchLimit, quizQuestionLimit } from './quiz-progress.js';
+import { masteredQuizQuestions, quizRecordAfterChange, quizQuestionKey, quizInitialCount, quizBatchLimit, quizQuestionLimit } from './quiz-progress.js';
 import { generationCancelled, isGenerationCancelled } from './task-cancellation.js';
 
 const renderMarkdown = createMarkdownRenderer(Marked, DOMPurify);
@@ -706,7 +706,7 @@ function blockPart(block, index, lessonId, teaching = false) {
   const toggle = canCollapse ? `<button type="button" class="block-collapse-toggle" data-action="toggle-block-collapse" ${attrs} aria-controls="${escape(bodyId)}" aria-expanded="${!collapsed}">${collapsed ? '展开' : '收起'}</button>` : '';
   const body = block.content && block.type !== 'quiz' ? `<div class="block-text markdown-content annotatable" data-annotation-source="block:${escape(block.id)}">${renderMarkdown(block.content.text, { grounding: block.content.grounding, desktop: !!desktop })}</div>${figure}` : '';
   const bodyMarkup = canCollapse ? `<div id="${escape(bodyId)}" class="block-collapsible-body" ${collapsed ? 'hidden' : ''}>${body}</div>` : body;
-  const contextNotice = !block.content ? teachingContextNotice(state.blockCourses?.[lessonId] || {blocks:[block]},block.id) : '';
+  const contextNotice = !block.content ? [block.type === 'quiz' && !block.title.startsWith('补充练习 · 第') ? `首次固定生成${quizInitialCount}题；完成后可按需追加。` : '', teachingContextNotice(state.blockCourses?.[lessonId] || {blocks:[block]},block.id)].filter(Boolean).join(' ') : '';
   return `<section class="${teaching ? `teaching-part teaching-${block.type}` : 'reading-section content-block'}" data-block-id="${escape(block.id)}"><div class="teaching-part-heading"><span class="pill purple">${String(index + 1).padStart(2, '0')} · ${labels[block.type]}</span>${actions}</div><div class="block-title-row"><h2 class="block-title">${escape(block.title)}</h2>${toggle}</div><p class="block-objective">${escape(block.objective)}</p>${factCheckStrip(block, lessonId)}${block.content ? block.type === 'quiz' ? `<p>已生成 ${block.content.questions.length} 道练习题。${button('去练习', 'quiz', 'secondary')}</p>` : bodyMarkup : `<div class="block-pending"><span>此模块尚未生成，可以按需展开。</span>${contextNotice ? `<p class="field-hint generation-scope-notice">${escape(contextNotice)}</p>` : ''}${button('生成这一块', 'generate-block', 'secondary', attrs, 'spark')}</div>`}</section>`;
 }
 function teachingSequence(course, lessonId) {
@@ -1051,10 +1051,19 @@ function decorateRevisionNotices() {
   }
 }
 const qualityDate = timestamp => new Date(timestamp).toLocaleString('zh-CN', { year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit' });
+function qualityUnverifiedNotice(report, units = []) {
+  const items = report?.unverifiedIssues || [];
+  if (!items.length) return '';
+  return `<section class="notice quality-unverified-notice"><p>有 ${items.length} 条辅助意见的引用未在正文定位，已标为“未核实”，不作为已确认错误。</p><p class="field-hint">维度评分保留模型原评估，未因这些意见自动调分；评分不等于事实核验。</p><details><summary>查看未核实说明（${items.length}）</summary><ol>${items.map(item => `<li><strong>未核实 · ${escape(units.find(unit => unit.id === item.unitId)?.title || '历史模块')}</strong><p>模型给出的引用（未定位，非已核实原文）：${escape(item.quote)}</p><p>模型意见：${escape(item.reason)}</p><p>模型建议：${escape(item.suggestion)}</p></li>`).join('')}</ol></details></section>`;
+}
 function renderQualityDialog() {
   if (!qualityView) return;
   const v = qualityView, report = v.reports.find(r => r.id === v.selectedReportId), stale = report && report.fingerprint !== v.fingerprint;
-  const reportMarkup = report ? `<section class="quality-report"><div class="quality-score"><strong>${report.score}<small>/100</small></strong><div>${pill(qualityLabels[report.status], report.status === 'reviewed' ? 'success' : 'purple')}<p>${report.partial ? '部分内容评分' : report.scope === 'route' ? '路线规划评分' : '本课内容评分'} · 参考分，不代表事实正确率</p></div></div>${stale ? '<p class="notice">这是旧内容版本的评分。课程已变化，请重新评分当前版本。</p>' : ''}<h3>评分说明</h3><p>${escape(report.summary)}</p><p class="field-hint">评分模型：${escape(report.reviewer.model)} · ${qualityDate(report.created)}<br>未经人工校准；评分不代表事实已核实。</p><div class="quality-dimensions">${report.dimensions.map(d => `<details><summary>${escape(qualityRubric.find(r => r.id === d.id)?.label || d.id)}<strong>${d.rating}/4</strong></summary><p>${escape(d.reason)}</p></details>`).join('')}</div></section>` : '<p class="notice">尚无课程评分。点击“开始评分”获取总分、各维度得分与评分说明；不会修改课程。</p>';
+  const reportMarkup = report ? `<section class="quality-report">
+    <div class="quality-score"><strong>${report.score}<small>/100</small></strong><div>${pill(qualityLabels[report.status], report.status === 'reviewed' ? 'success' : 'purple')}<p>${report.partial ? '部分内容评分' : report.scope === 'route' ? '路线规划评分' : '本课内容评分'} · 参考分，不代表事实正确率</p></div></div>
+    ${stale ? '<p class="notice">这是旧内容版本的评分。课程已变化，请重新评分当前版本。</p>' : ''}
+    ${qualityUnverifiedNotice(report, v.units)}
+    <h3>评分说明</h3><p>${escape(report.summary)}</p><p class="field-hint">评分模型：${escape(report.reviewer.model)} · ${qualityDate(report.created)}<br>未经人工校准；评分不代表事实已核实。</p><div class="quality-dimensions">${report.dimensions.map(d => `<details><summary>${escape(qualityRubric.find(r => r.id === d.id)?.label || d.id)}<strong>${d.rating}/4</strong></summary><p>${escape(d.reason)}</p></details>`).join('')}</div></section>` : '<p class="notice">尚无课程评分。点击“开始评分”获取总分、各维度得分与评分说明；不会修改课程。</p>';
   $('#quality-dialog').innerHTML = `<div class="dialog-heading"><div><div class="eyebrow">COURSE SCORE</div><h2 id="quality-title">课程评分</h2></div><button type="button" class="icon-button" data-action="close-quality" aria-label="关闭课程评分">${icon('close')}</button></div><h3>${escape(v.title)}</h3><p>${escape(v.objective)}</p><p class="field-hint">${v.scope === 'route' ? `路线共 ${v.rules.total} 节课，仅评价规划。` : `已生成 ${v.rules.ready}/${v.rules.total} 个模块。${v.rules.partial ? '仅对已生成内容评分。' : ''}`}</p>
   <div class="quality-review-actions">${button(qualityBusy ? '正在评分…' : report ? '重新评分（可能计费）' : '开始评分（可能计费）', 'evaluate-quality', 'primary', qualityBusy || qualityStatus.mode !== 'ai' || !v.rules.ready ? 'disabled' : '', 'check')}${qualityStatus.mode !== 'ai' ? button('配置评分模型', 'quality-settings', 'secondary', qualityBusy ? 'disabled' : '', 'settings') : ''}</div><p class="field-hint">使用已配置的独立核查模型评分，可能计费。仅发送学习需求、大纲和已生成正文，不发送笔记、答疑或成绩；失败不自动重试，课程原文不变。</p><p id="quality-error" class="inline-error" role="alert">${escape(v.error)}</p>
   ${v.reports.length ? `<label for="quality-report-select">评分历史（保留最近 10 份）</label><select id="quality-report-select">${v.reports.map(r => `<option value="${r.id}" ${r.id === v.selectedReportId ? 'selected' : ''}>${qualityDate(r.created)} · ${r.score} 分 · ${r.fingerprint === v.fingerprint ? '当前内容' : '历史版本'}${r.partial ? ' · 部分评分' : ''}</option>`).join('')}</select>` : ''}${reportMarkup}`;

@@ -13,7 +13,7 @@ const request = c => ({ goal: '理解判断方法', level: '零基础', title: '
 async function serve(t, c) {
   const sent = []; let output, searches = 0;
   const server = createApp({ getCourseBlockCourse: () => c, getLLM: () => ({ generate: async (instruction, input, validate) => {
-    sent.push({ instruction, input }); const value = output || { questions: Array.from({ length: input.questionCount || 2 }, (_, i) => question(10 + i)) };
+    sent.push({ instruction, input }); const value = output || { questions: Array.from({ length: input.questionCount }, (_, i) => question(10 + i)) };
     assert.ok(validate(value)); return structuredClone(value);
   } }), courseSources: { prepare: async () => { searches++; throw new Error('Appended quizzes must not search'); } } });
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
@@ -32,6 +32,31 @@ test('users can request exactly 1 to 5 additional questions without replacing ol
   assert.equal(f.searches(), 0); assert.equal(f.sent.length, 3); assert.deepEqual(c, before);
   assert.equal(validGeneratedBlock('quiz', { questions: [question(1)] }), false, 'initial generation keeps its existing default');
   assert.equal(validGeneratedBlock('quiz', { questions: [question(1)] }, { questionCount: 1 }), true);
+});
+test('initial quizzes are always four, overriding old five-question objectives without rewriting saved courses', async t => {
+  const c = course(); c.blocks[2].objective = '完成5道选择题，检验指向性判断。';
+  const before = structuredClone(c), f = await serve(t,c), input = request(c); input.block.objective = c.blocks[2].objective;
+  const response = await f.post(input); assert.equal(response.status,200); assert.equal((await response.json()).questions.length,4);
+  assert.equal(f.sent[0].input.questionCount,4); assert.equal(f.sent[0].input.quizMode,'initial');
+  assert.equal(f.sent[0].input.block.objective,c.blocks[2].objective);
+  assert.match(f.sent[0].instruction,/即使旧大纲、目标或前文要求其他题数/);
+  for (const count of [1,2,3,5]) {
+    const questions = Array.from({length:count},(_,i)=>question(20+i));
+    assert.equal(validGeneratedBlock('quiz',{questions}),false);
+    f.output({questions}); const rejected=await f.post(input);
+    assert.equal(rejected.status,422); assert.match((await rejected.json()).error,new RegExp(`首次生成固定4题，模型返回${count}题`));
+  }
+  assert.equal(f.searches(),0); assert.equal(f.sent.length,5); assert.deepEqual(c,before);
+});
+test('malformed option counts and answer fields identify the exact question without deleting options or retrying', async t => {
+  const c=course(),before=structuredClone(c),f=await serve(t,c),input=request(c);
+  const output={questions:Array.from({length:4},(_,i)=>question(30+i))}; output.questions[0].options.push('不能擅自删除的第五选项');
+  f.output(output); let response=await f.post(input);
+  assert.equal(response.status,422); assert.match((await response.json()).error,/第1题须有4个选项，实际返回5个/);
+  assert.equal(output.questions[0].options.length,5); assert.equal(f.sent.length,1);
+  output.questions[0].options.pop(); output.questions[2].answer='A'; f.output(output); response=await f.post(input);
+  assert.equal(response.status,422); assert.match((await response.json()).error,/第3题的answer必须为0–3的整数/);
+  assert.equal(f.sent.length,2); assert.equal(f.searches(),0); assert.deepEqual(c,before);
 });
 
 test('invalid counts, non-quiz counts and the 100-question cap are rejected before calling the model', async t => {

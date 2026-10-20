@@ -33,5 +33,6 @@ export function validQualityReport(report) {
     && dimensionsValid
     && Array.isArray(report.dimensions) && report.dimensions.length >= 1 && report.dimensions.length <= 7 && new Set(report.dimensions.map(d => d.id)).size === report.dimensions.length
     && report.dimensions.every(d => qualityRubric.some(r => r.id === d.id) && Number.isInteger(d.rating) && d.rating >= 0 && d.rating <= 4 && str(d.reason, 1000))
-    && Array.isArray(report.issues) && report.issues.length <= 100 && report.issues.every(issueValid);
+    && Array.isArray(report.issues) && report.issues.length <= 100 && report.issues.every(issueValid)
+    && (report.unverifiedIssues === undefined || (Array.isArray(report.unverifiedIssues) && report.unverifiedIssues.length <= 60 && report.unverifiedIssues.every(i => issueValid(i) && i.origin === 'ai')));
 }

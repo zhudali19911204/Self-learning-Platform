@@ -57,14 +57,15 @@ test('new generation rules reject unmatched readings and duplicate outcomes with
   assert.equal(validGeneratedOutline({...upgraded,blocks:[upgraded.blocks[2],...upgraded.blocks.slice(0,2)]}),false);
   const q={prompt:'何时使用？',options:['A','B','C','D'],answer:0,explanation:'A的条件成立。'};
   assert.equal(validBlockContent('quiz',{questions:[q]}),true);assert.equal(validGeneratedBlock('quiz',{questions:[q]}),false);
-  const next={questions:[q,{...q,prompt:'条件改变后？'}]};assert.equal(validGeneratedBlock('quiz',next),true);assert.equal(validGeneratedBlock('quiz',{questions:[q,{...q,prompt:'重复选项',options:['A','A','C','D']}]}),false);
+  const next={questions:[q,{...q,prompt:'条件改变后？'},{...q,prompt:'如何识别边界？'},{...q,prompt:'哪个条件不可省略？'}]};assert.equal(validGeneratedBlock('quiz',next),true);assert.equal(validGeneratedBlock('quiz',{questions:next.questions.map((item,i)=>i===1?{...item,options:['A','A','C','D']}:item)}),false);
 });
 
 test('generation API sends validated evidence and teaching rules; output failures never trigger hidden retries',async t=>{
   const q={prompt:'判断方法？',options:['方法A','方法B','方法C','方法D'],answer:0,explanation:'根据材料条件选择A。'};
-  const app=await serve(t,{questions:[q,{...q,prompt:'变化情境如何判断？'}]});const request=initialRequest(course(),'q1');assert.equal((await app.post('/api/lesson-block',request)).status,200);
+  const app=await serve(t,{questions:[q,{...q,prompt:'变化情境如何判断？'},{...q,prompt:'如何识别边界？'},{...q,prompt:'哪个条件不可省略？'}]});const request=initialRequest(course(),'q1');assert.equal((await app.post('/api/lesson-block',request)).status,200);
   const payload=app.sent[0],input=JSON.parse(payload.messages[1].content);assert.deepEqual(input.teachingContext,request.teachingContext);assert.match(payload.messages[0].content,/题干给齐必要条件/);assert.match(payload.messages[0].content,/JSON 正文字符串内部可以使用/);assert.match(payload.messages[0].content,/完整代码/);assert.match(payload.messages[0].content,/整课总学习时间/);
-  const bad=await serve(t,{questions:[q]});assert.equal((await bad.post('/api/lesson-block',request)).status,502);assert.equal(bad.sent.length,1);
+  assert.equal(input.questionCount,4);assert.equal(input.quizMode,'initial');
+  const bad=await serve(t,{questions:[q]});const rejected=await bad.post('/api/lesson-block',request);assert.equal(rejected.status,422);assert.match((await rejected.json()).error,/首次生成固定4题，模型返回1题/);assert.equal(bad.sent.length,1);
   assert.equal(coursePromptVersion,'course-generation-v2');assert.equal(Object.keys(blockTypeGuidance).length,5);
 });
 

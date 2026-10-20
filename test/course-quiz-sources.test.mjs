@@ -15,8 +15,8 @@ const course = () => ({ intro: '已讲内容为练习范围。', blocks: [
 ] });
 const request = c => ({ goal: '编写提示词模板', level: '零基础', title: '提示词', objective: '设计结构清晰的提示词', lessonId: 'lesson1',
   block: { type: 'quiz', title: c.blocks[2].title, objective: c.blocks[2].objective }, ...blockGenerationContext(c, 'q1') });
-const questions = ids => ({ questions: ['如何明确任务？', '如何确定输出形式？'].map((prompt, i) => ({ prompt, options: ['明确条件和输出', '忽略条件', '不写目标', '只写无关内容'], answer: 0,
-  explanation: ['先明确任务和条件。', '再确定输出形式。'][i] + (ids ? `[${ids[i]}]` : '') })) });
+const questions = ids => ({ questions: ['如何明确任务？', '如何确定输出形式？', '如何判断条件完整？', '哪种写法符合要求？'].map((prompt, i) => ({ prompt, options: ['明确条件和输出', '忽略条件', '不写目标', '只写无关内容'], answer: 0,
+  explanation: ['先明确任务和条件。', '再确定输出形式。', '依据已讲材料先核对条件。', '依据已讲材料明确所需输出。'][i] + (ids?.[i] ? `[${ids[i]}]` : '') })) });
 
 test('saved evidence is deduplicated and renumbered across modules while old inline IDs are hidden only in the input', () => {
   const c = course(), before = JSON.stringify(c), value = quizMaterials(request(c), c);
@@ -78,7 +78,7 @@ test('quiz generation reuses server-owned references with either search switch v
   for (const enabled of [true, false]) {
     const response = await f.post({ ...request(c), sourceSearch: { enabled, revision: 1 }, officialDocuments: [{ url: 'https://fabricated.example/evil' }] });
     assert.equal(response.status, 200); const value = await response.json();
-    assert.ok(validGrounding(value.grounding)); assert.equal(value.questions.length, 2);
+    assert.ok(validGrounding(value.grounding)); assert.equal(value.questions.length, 4);
     assert.equal(value.grounding.citations[0].url, c.blocks[0].content.grounding.citations[0].url);
     assert.equal(value.grounding.citations[1].quote, 'Specify the output format.');
     assert.equal(f.searches(), 0);

@@ -37,7 +37,7 @@ exports.run = async (window, directory, fixture) => {
   await wait("document.querySelector('[data-action=quiz]')");
   assert.deepEqual(fixture.counts, { searches: 1, reads: 1, generations: 3 }, 'quiz must reuse saved evidence, never search again');
   const withQuiz = await evaluate(`window.learnflowDesktop.getLesson(${JSON.stringify(lessonId)})`);
-  assert.equal(withQuiz.blockCourse.blocks[2].content.questions.length, 2);
+  assert.equal(withQuiz.blockCourse.blocks[2].content.questions.length, 4);
   assert.equal(withQuiz.blockCourse.blocks[2].content.grounding.citations.length, 1, 'teaching-only explanations do not receive fabricated references');
   assert.ok(!withQuiz.blockCourse.blocks[2].content.questions[1].explanation.includes('[S'));
   assert.equal(withQuiz.blockCourse.blocks[2].content.grounding.citations[0].url, detail.blockCourse.blocks[0].content.grounding.citations[0].url);
@@ -59,7 +59,7 @@ exports.run = async (window, directory, fixture) => {
   await evaluate(`document.querySelector('[data-action=generate-block][data-block="${plain.blocks[1].id}"]').click()`);
   await wait("document.querySelector('[data-action=quiz]')");
   const noSources = await evaluate(`window.learnflowDesktop.getLesson(${JSON.stringify(plainId)})`);
-  assert.equal(noSources.blockCourse.blocks[1].content.questions.length, 2);
+  assert.equal(noSources.blockCourse.blocks[1].content.questions.length, 4);
   assert.equal(noSources.blockCourse.blocks[1].content.grounding, undefined);
   assert.deepEqual(fixture.counts, { searches: 1, reads: 1, generations: 4 });
   const practiceId = plan.lessons[2].id;

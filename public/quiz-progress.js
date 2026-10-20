@@ -1,3 +1,4 @@
+export const quizInitialCount = 4;
 export const quizBatchLimit = 5;
 export const quizQuestionLimit = 100;
 // Full content identity prevents an edited answer or explanation inheriting a

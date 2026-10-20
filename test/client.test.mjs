@@ -2,7 +2,7 @@ import test from 'node:test';
 import { createGenerationProgress } from '../public/generation-progress.js';
 import { generationCancelled, isGenerationCancelled } from '../public/task-cancellation.js';
 import { factCheckLabels, sameFactContent } from '../public/fact-check.js';
-import { masteredQuizQuestions, quizRecordAfterChange, quizQuestionKey, quizBatchLimit, quizQuestionLimit } from '../public/quiz-progress.js';
+import { masteredQuizQuestions, quizRecordAfterChange, quizQuestionKey, quizInitialCount, quizBatchLimit, quizQuestionLimit } from '../public/quiz-progress.js';
 import assert from 'node:assert/strict';
 import vm from 'node:vm';
 import { readFile } from 'node:fs/promises';
@@ -264,6 +264,25 @@ test('independent reviewer saves only its role and preserves generator drafts; r
   assert.equal(app.run('qualitySettings.model'), 'reviewer-b'); assert.equal(reviews, 0);
 });
 
+test('course scores clearly label unlocated opinions, collapse details and escape model text without restoring revision tools', async t => {
+  const report={id:'score-current',scope:'lesson',targetId:'p1',fingerprint:'current',created:Date.now(),reviewer:{model:'reviewer-b'},partial:false,score:100,status:'reviewed',summary:'评分不代表事实已经核验。',dimensions:qualityRubric.map(r=>({id:r.id,rating:4,reason:'模型维度评估。'})),issues:[],
+    unverifiedIssues:[{unitId:'section-0',severity:'critical',kind:'fact',origin:'ai',quote:'<img src=x onerror=alert(1)>',reason:'<script>not executable</script>',suggestion:'核对原文后判断。'}]};
+  const old={...report,id:'score-old',unverifiedIssues:undefined};
+  const view={scope:'lesson',targetId:'p1',title:'测试课程',objective:'解释方法',fingerprint:'current',rules:{ready:1,total:1,partial:false,issues:[]},units:[{id:'section-0',title:'讲解',pending:false}],reports:[report,old],currentReportId:report.id};
+  let calls=0;
+  const app=realSettingsHarness({load:async()=>({status:{mode:'ai'},qualityStatus:{mode:'ai'}}),inspectQuality:async()=>view,evaluateQuality:async()=>{calls++;throw new Error('Opening must not evaluate');}});
+  t.after(()=>app.close());await app.ready();const before=app.run('JSON.stringify(state.lessons)');
+  await app.run("openQuality('lesson','p1')");
+  const dialog=app.document.querySelector('#quality-dialog'),notice=dialog.querySelector('.quality-unverified-notice');
+  assert.match(dialog.textContent,/100/);assert.match(notice.textContent,/有 1 条辅助意见/);assert.match(notice.textContent,/不作为已确认错误/);
+  assert.equal(dialog.querySelector('.quality-score').nextElementSibling,notice,'the unverified boundary appears directly beneath the score');
+  assert.match(notice.textContent,/保留模型原评估/);assert.equal(notice.querySelector('details').open,false);
+  assert.equal(notice.querySelector('img,script'),null);assert.match(notice.textContent,/<script>not executable<\/script>/);
+  assert.equal(dialog.querySelector('[data-action=quality-locate],.quality-legacy-tools,[name=revision-issue]'),null);
+  app.run("qualityView.selectedReportId='score-old';renderQualityDialog()");
+  assert.equal(app.document.querySelector('.quality-unverified-notice'),null);
+  assert.equal(calls,0);assert.equal(app.run('JSON.stringify(state.lessons)'),before);
+});
 test('opening quality reports never evaluates automatically, and failures preserve existing reports and course data', async t => {
   const report = { id: 'review-old', scope: 'lesson', targetId: 'p1', fingerprint: 'old-content', created: Date.now(), reviewer: { model: 'reviewer-b' }, generator: { model: 'generator-a' }, rubricVersion: 'course-quality-v1', partial: true, score: 75, status: 'needs_revision', summary: '旧内容的审查建议。', dimensions: qualityRubric.map(r => ({ id: r.id, rating: 3, reason: '需要更多可验证的例子。' })), issues: [{ unitId: 'section-0', severity: 'minor', origin: 'ai', quote: '<script>not executable</script>', reason: '解释应更具体。', suggestion: '补充例子。' }] };
   const view = { scope: 'lesson', targetId: 'p1', title: '测试课程', objective: '验证学习目标', fingerprint: 'current-content', rules: { ready: 1, total: 2, partial: true, issues: [] }, units: [{ id: 'section-0', title: '讲解', objective: '目标', pending: false }], reports: [report], currentReportId: null };
@@ -718,7 +737,7 @@ function realSettingsHarness(bridge) {
   }
   document.addEventListener = (name, listener) => { const group = listeners.get(name) || []; group.push(listener); listeners.set(name, group); };
   dom.window.learnflowDesktop = bridge; dom.window.scrollTo = () => {};
-  const context = vm.createContext({ generationCancelled, isGenerationCancelled, masteredQuizQuestions, quizRecordAfterChange, quizQuestionKey, quizBatchLimit, quizQuestionLimit, createGenerationProgress, factCheckLabels, sameFactContent, officialSource, validSourceSearch, courseReferences, teachingContextNotice, qualityRubric, qualityLabels, qualityModelId, revisionTypes, revisionStatuses, revisionCheckLabels, revisionContent, revisionText, revisionDiff,
+  const context = vm.createContext({ generationCancelled, isGenerationCancelled, masteredQuizQuestions, quizRecordAfterChange, quizQuestionKey, quizInitialCount, quizBatchLimit, quizQuestionLimit, createGenerationProgress, factCheckLabels, sameFactContent, officialSource, validSourceSearch, courseReferences, teachingContextNotice, qualityRubric, qualityLabels, qualityModelId, revisionTypes, revisionStatuses, revisionCheckLabels, revisionContent, revisionText, revisionDiff,
     demoPlan, demoLessons, lessonFromBlocks, validOutline, validBlockContent, validBlockSpec, blockGenerationContext, revisedContent, restoredContent, assistedBlockTypes, Marked, DOMPurify, createMarkdownRenderer, validQuestionnaire, validClarification, learningBriefFrom, validIllustration, validImageProposal, speechDefaults, speechVoices, listeningText, speechTurns, speechRequest, validAudioId, validKnowledgeSource, validKnowledgeDraft, localKnowledgeDraft, knowledgeTags, knowledgeConditions, validAnnotations, personalNotesForSource, personalNotesMarkdown, knowledgeCatalog, knowledgeDomain, knowledgeDomainColors, knowledgeTopic, retrieveKnowledge, validKnowledgeOrganization, courseKnowledgeTree, knowledgeTree, knowledgeGraph, filterKnowledgeGraph, createGraphMotion, stepGraphMotion, structuredClone, crypto: webcrypto, AbortSignal,
     document, window: dom.window, FormData: dom.window.FormData, setTimeout: () => 1, clearTimeout() {}
   });
@@ -735,7 +754,7 @@ function harness(saved, fetchImpl, desktopBridge) {
     if (!nodes.has(selector)) nodes.set(selector, { innerHTML: '', textContent: '', open: false, attributes: {}, setAttribute(name, value) { this.attributes[name] = value; }, classList: { add() {}, remove() {} }, scrollIntoView() {}, focus() {}, showModal() { this.open = true; }, close() { this.open = false; } });
     return nodes.get(selector);
   };
-  const context = vm.createContext({ generationCancelled, isGenerationCancelled, masteredQuizQuestions, quizRecordAfterChange, quizQuestionKey, quizBatchLimit, quizQuestionLimit, createGenerationProgress, factCheckLabels, sameFactContent, officialSource, validSourceSearch, courseReferences, teachingContextNotice, qualityRubric, qualityLabels, qualityModelId, revisionTypes, revisionStatuses, revisionCheckLabels, revisionContent, revisionText, revisionDiff,
+  const context = vm.createContext({ generationCancelled, isGenerationCancelled, masteredQuizQuestions, quizRecordAfterChange, quizQuestionKey, quizInitialCount, quizBatchLimit, quizQuestionLimit, createGenerationProgress, factCheckLabels, sameFactContent, officialSource, validSourceSearch, courseReferences, teachingContextNotice, qualityRubric, qualityLabels, qualityModelId, revisionTypes, revisionStatuses, revisionCheckLabels, revisionContent, revisionText, revisionDiff,
     demoPlan, demoLessons, lessonFromBlocks, validOutline, validBlockContent, validBlockSpec, blockGenerationContext, revisedContent, restoredContent, assistedBlockTypes, Marked, DOMPurify, createMarkdownRenderer, validQuestionnaire, validClarification, learningBriefFrom, validIllustration, validImageProposal, speechDefaults, speechVoices, listeningText, speechTurns, speechRequest, validAudioId, validKnowledgeSource, validKnowledgeDraft, localKnowledgeDraft, knowledgeTags, knowledgeConditions, validAnnotations, personalNotesForSource, personalNotesMarkdown, knowledgeCatalog, knowledgeDomain, knowledgeDomainColors, knowledgeTopic, retrieveKnowledge, validKnowledgeOrganization, courseKnowledgeTree, knowledgeTree, knowledgeGraph, filterKnowledgeGraph, createGraphMotion, stepGraphMotion, structuredClone, crypto: webcrypto, AbortSignal,
     document: { querySelector: node, addEventListener(name, listener) { const group = listeners.get(name) || []; group.push(listener); listeners.set(name, group); } },
     localStorage: { get length() { return storage.size; }, key: index => [...storage.keys()][index] ?? null, getItem: key => storage.get(key) ?? null, setItem: (key, value) => storage.set(key, value), removeItem: key => storage.delete(key) },
@@ -805,6 +824,15 @@ test('quiz mastery skips passed questions and missing pending answers cannot sil
   assert.equal(dom.window.document.querySelector('#quiz-form button[type=submit]'), null); dom.window.close();
 });
 
+test('pending first quizzes display the fixed four-question rule without rewriting old objectives or saved quizzes', () => {
+  const app=harness();
+  app.run("state.blockCourses={p1:{intro:'导语',blocks:[{id:'r1',type:'reading',title:'讲解',objective:'理解',content:{text:'已讲内容。'}},{id:'q1',type:'quiz',title:'练习',objective:'完成5道选择题，检验判断。',content:null}]}}; activeLesson='p1';page='study';lessonTab='read';render()");
+  assert.match(app.node('#app').innerHTML,/首次固定生成4题/);
+  assert.equal(app.run('state.blockCourses.p1.blocks[1].objective'),'完成5道选择题，检验判断。');
+  app.run("state.blockCourses.p1.blocks[1].content={questions:[{prompt:'原有题目？',options:['甲','乙','丙','丁'],answer:0,explanation:'已有解析。'}]};render()");
+  assert.doesNotMatch(app.node('#app').innerHTML,/首次固定生成4题/);
+  assert.equal(app.run('state.blockCourses.p1.blocks[1].content.questions.length'),1);
+});
 test('additional quiz batches preserve passes across submission and reload; failed additions retry the same pending block', async () => {
   const requests = []; let fail = false;
   const app = harness(null, async (url, options) => {

@@ -15,7 +15,7 @@ exports.run = async (window, directory) => {
     await evaluate(`window.learnflowDesktop.saveSettings(${JSON.stringify({ provider: 'ollama', model: 'quality-smoke-generator', baseUrl: '', localOnly: true, jsonMode: 'auto', timeoutMs: 30000, maxTokens: 8192, keyAction: 'clear', apiKey: '' })})`);
     original = await evaluate('window.learnflowDesktop.load()');
   }
-  const requests = []; let checks = 0, invalidQuote = false;
+  const requests = []; let checks = 0, invalidQuote = false, invalidRating = false;
   const model = http.createServer(async (req, res) => {
     try {
       assert.equal(req.method, 'POST'); assert.equal(req.url, '/v1/chat/completions');
@@ -31,7 +31,7 @@ exports.run = async (window, directory) => {
         assert.ok(!JSON.stringify(input).includes('"explanation":'));
         assert.ok(!input.chats && !input.progress && !input.annotations);
         const unit = input.units.find(u => !u.pending && u.text);
-        result = { summary: '独立模型已审查当前材料；关键事实仍需外部核验。', dimensions: input.rubric.map(r => ({ id: r.id, rating: 4, reason: '已结合本课目标核对解释和操作步骤。' })),
+        result = { summary: '独立模型已审查当前材料；关键事实仍需外部核验。', dimensions: input.rubric.map(r => ({ id: r.id, rating: invalidRating ? 5 : 4, reason: '已结合本课目标核对解释和操作步骤。' })),
           issues: [{ unitId: unit.id, severity: 'minor', kind: 'clarity', quote: invalidQuote ? '不存在于课程的伪造引文' : unit.text.slice(0, 100), reason: '可以说明验证结果的含义。', suggestion: '补充命令成功时的预期输出。' }],
           solutions: input.units.flatMap(u => (u.questions || []).map((q, questionIndex) => ({ unitId: u.id, questionIndex, answer: 1, ambiguous: false, reason: '测试独立作答与保存答案的分歧处理。' }))) };
       }
@@ -93,23 +93,38 @@ exports.run = async (window, directory) => {
     await writeFile(path.join(directory, '..', 'quality-smoke.png'), (await window.webContents.capturePage()).toPNG());
     invalidQuote = true;
     await evaluate("document.querySelector('[data-action=evaluate-quality]').click()");
-    await wait("document.querySelector('#quality-error')?.textContent.includes('格式不符合要求') && !document.querySelector('[data-action=evaluate-quality]').disabled");
+    await wait("document.querySelector('.quality-unverified-notice') && !document.querySelector('[data-action=evaluate-quality]').disabled");
     assert.equal(requests.length, 2);
-    assert.equal((await evaluate(`window.learnflowDesktop.inspectQuality('lesson',${JSON.stringify(lessonId)})`)).reports[0].id, inspected.reports[0].id);
+    const warned = await evaluate(`window.learnflowDesktop.inspectQuality('lesson',${JSON.stringify(lessonId)})`);
+    assert.equal(warned.reports.length,2); assert.notEqual(warned.reports[0].id,inspected.reports[0].id);
+    assert.equal(warned.reports[0].score,100);assert.equal(warned.reports[0].unverifiedIssues.length,1);
+    assert.equal(warned.reports[0].issues.some(i=>i.quote==='不存在于课程的伪造引文'),false);
+    assert.equal(await evaluate("document.querySelector('.quality-unverified-notice details').open"),false);
+    assert.equal(await evaluate("document.querySelector('#quality-error').textContent"),'');
+    assert.deepEqual(await evaluate(`window.learnflowDesktop.getLesson(${JSON.stringify(lessonId)})`),before);
+    await evaluate('new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))');
+    await writeFile(path.join(directory,'..','quality-unverified-smoke.png'),(await window.webContents.capturePage()).toPNG());
+    invalidRating = true;
+    await evaluate("document.querySelector('[data-action=evaluate-quality]').click()");
+    await wait("document.querySelector('#quality-error')?.textContent.includes('rating必须是0–4的整数') && !document.querySelector('[data-action=evaluate-quality]').disabled");
+    assert.equal(requests.length,3);
+    assert.equal((await evaluate(`window.learnflowDesktop.inspectQuality('lesson',${JSON.stringify(lessonId)})`)).reports[0].id,warned.reports[0].id);
     await reload();
     await evaluate(`document.querySelector('[data-page=routes]').click();document.querySelector('[data-action=open-lesson][data-id="${lessonId}"]').click()`);
     await wait("document.querySelector('[data-action=open-quality][data-scope=lesson]')");
     await evaluate("document.querySelector('[data-action=open-quality][data-scope=lesson]').click()");
     await wait("document.querySelector('#quality-dialog').open && document.querySelector('.quality-report')");
-    assert.equal(requests.length, 2); assert.equal(checks, 1);
+    assert.equal(requests.length, 3); assert.equal(checks, 1);
+    assert.equal(await evaluate("document.querySelector('.quality-unverified-notice details').open"),false);
+    assert.equal((await evaluate(`window.learnflowDesktop.inspectQuality('lesson',${JSON.stringify(lessonId)})`)).reports[0].unverifiedIssues.length,1);
     await evaluate("document.querySelector('[data-action=close-quality]').click()");
     await evaluate(`window.learnflowDesktop.reviseBlock(${JSON.stringify(lessonId)},${JSON.stringify(outline.blocks[0].id)},{text:'在 Windows PowerShell 中先检查当前目录，再运行 git --version。'},${JSON.stringify(reading.text)})`);
     await evaluate("document.querySelector('[data-action=open-quality][data-scope=lesson]').click()");
     await wait("document.querySelector('#quality-dialog').textContent.includes('旧内容版本')");
     assert.equal((await evaluate(`window.learnflowDesktop.inspectQuality('lesson',${JSON.stringify(lessonId)})`)).currentReportId, null);
-    assert.equal(requests.length, 2);
+    assert.equal(requests.length, 3);
     await evaluate("document.querySelector('[data-action=close-quality]').click()");
-    console.log('QUALITY_SMOKE', JSON.stringify({ passed: true, checks: ['independent-form-ipc-and-os-encryption', 'both-model-role-exclusions', 'save-load-open-no-evaluation', 'connection-test-no-course', 'partial-review-and-blind-quiz-solutions', 'failed-evidence-no-retry-no-overwrite', 'score-only-no-revision-or-issue-actions', 'reload-report-persistence', 'stale-report-warning'], screenshot: path.join(directory, '..', 'quality-smoke.png') }));
+    console.log('QUALITY_SMOKE', JSON.stringify({ passed: true, checks: ['independent-form-ipc-and-os-encryption', 'both-model-role-exclusions', 'save-load-open-no-evaluation', 'connection-test-no-course', 'partial-review-and-blind-quiz-solutions', 'unlocated-evidence-keeps-score-with-warning', 'invalid-rating-no-retry-no-overwrite', 'score-only-no-revision-or-issue-actions', 'reload-unverified-opinions-persistence', 'stale-report-warning'], screenshot: path.join(directory, '..', 'quality-smoke.png') }));
   } finally {
     model.closeAllConnections(); await new Promise(resolve => model.close(resolve));
     await evaluate(`window.learnflowDesktop.saveQualitySettings(${JSON.stringify(reset)})`);

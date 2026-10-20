@@ -1,10 +1,33 @@
 import { Lexer } from 'marked';
 const reject = message => { throw Object.assign(new Error(message), { status: 422 }); };
+const hasCitationMarker = source => /\[S\d+(?:E\d+)?\]/.test(source);
+const layoutWhitespace = value => value !== undefined && /\s/u.test(value);
+
+// Marked may expand tabs, omit trailing spaces, or synthesize a final newline
+// in list tokens. Align coordinates, not content: every non-whitespace UTF-16
+// unit must still match exactly and in order. Virtual whitespace has no source
+// position, and can never be used to replace a citation character.
+function alignedPositions(source, positions, tokenSource) {
+  if (source === tokenSource) return positions;
+  const aligned = Array(tokenSource.length).fill(null);
+  let cursor = 0;
+  for (let i = 0; i < tokenSource.length; i++) {
+    if (layoutWhitespace(tokenSource[i])) continue;
+    while (cursor < source.length && layoutWhitespace(source[cursor])) cursor++;
+    if (source[cursor] !== tokenSource[i]) reject('教学前文引用预处理无法安全完成，原正文未改动，未发起模型调用。');
+    aligned[i] = positions[cursor++];
+  }
+  while (cursor < source.length && layoutWhitespace(source[cursor])) cursor++;
+  if (cursor !== source.length) reject('教学前文引用预处理无法安全完成，原正文未改动，未发起模型调用。');
+  return aligned;
+}
 
 // IDs belong to one generation's documents. Mask historical prose markers in
 // the input copy while preserving offsets, Markdown literals and stored text.
 export function withoutPriorCitationMarkers(source) {
-  if (typeof source !== 'string') return source;
+  // A plain excerpt is allowed to end mid-Markdown. With no historical IDs
+  // there is nothing to mask and no reason to parse or normalize that excerpt.
+  if (typeof source !== 'string' || !hasCitationMarker(source)) return source;
   const units = [];
   for (let i = 0; i < source.length; i++) {
     const raw = source[i] === '\r' && source[i + 1] === '\n' ? source.slice(i, ++i + 1) : source[i];
@@ -12,10 +35,16 @@ export function withoutPriorCitationMarkers(source) {
   }
   source = units.map(u => u.value).join('');
   const output = source.split('');
+  const rootTokens = Lexer.lex(source, { gfm: true });
   const inline = (raw, positions) => {
+    const lexer = new Lexer({ gfm: true });
+    // Reference-style links need the complete document's definition table too.
+    lexer.tokens.links = rootTokens.links;
+    const tokens = lexer.inlineTokens(raw);
+    positions = alignedPositions(raw, positions, tokens.map(token => token.raw).join(''));
     let offset = 0;
     const htmlTags = [];
-    for (const token of Lexer.lexInline(raw, { gfm: true })) {
+    for (const token of tokens) {
       const text = token.raw;
       if (token.type === 'html') {
         const tag = /^<(\/?)([a-z][\w:-]*)\b[^>]*>$/i.exec(text);
@@ -25,7 +54,11 @@ export function withoutPriorCitationMarkers(source) {
           else if (!/\/\s*>$/.test(text) && !['area', 'base', 'br', 'col', 'embed', 'hr', 'img', 'input', 'link', 'meta', 'param', 'source', 'track', 'wbr'].includes(name)) htmlTags.push(name);
         }
       } else if (token.type === 'text' && !htmlTags.length) for (const match of text.matchAll(/\[S\d+(?:E\d+)?\]/g)) {
-        for (let i = 0; i < match[0].length; i++) output[positions[offset + match.index + i]] = ' ';
+        for (let i = 0; i < match[0].length; i++) {
+          const position = positions[offset + match.index + i];
+          if (!Number.isInteger(position) || source[position] !== match[0][i]) reject('教学前文引用位置校验失败，原正文未改动，未发起模型调用。');
+          output[position] = ' ';
+        }
       }
       else if (!htmlTags.length && ['strong', 'em', 'del'].includes(token.type) && token.tokens) {
         const inside = text.indexOf(token.text);
@@ -43,7 +76,7 @@ export function withoutPriorCitationMarkers(source) {
     let offset = 0;
     for (let i = 0; i < children.length; i++) {
       const line = lines[i], child = children[i], prefix = line.slice(0, line.length - child.length);
-      const containerPrefix = /^[\s>]*(?:(?:[-+*]|\d+[.)])[ \t]+)?(?:\[[ xX]\][ \t]+)?[\s>]*$/;
+      const containerPrefix = /^[\s>]*(?:(?:[-+*]|\d+[.)])(?:[ \t]+|$))?(?:\[[ xX]\][ \t]+)?[\s>]*$/;
       if (line.endsWith(child) && containerPrefix.test(prefix)) result.push(...positions.slice(offset + prefix.length, offset + line.length));
       else {
         // A tab can become multiple indentation spaces in Marked's child text.
@@ -59,38 +92,54 @@ export function withoutPriorCitationMarkers(source) {
     return lines.slice(children.length).every(line => !line.trim()) && result.length === text.length ? result : null;
   };
   const blocks = (rawSource, positions, tokens = Lexer.lex(rawSource, { gfm: true })) => {
+    const tokenSource = tokens.map(block => block.raw).join('');
+    positions = alignedPositions(rawSource, positions, tokenSource);
     let offset = 0;
     for (const block of tokens) {
       const raw = block.raw, places = positions.slice(offset, offset + raw.length);
-      if (rawSource.slice(offset, offset + raw.length) !== raw) reject('教学前文的 Markdown 片段无法安全处理，请检查正文格式。');
       if (block.type === 'list') {
+        const itemsSource = block.items.map(item => item.raw).join('');
+        const itemPositions = alignedPositions(raw, places, itemsSource);
         let cursor = 0;
         for (const item of block.items) {
-          const start = raw.indexOf(item.raw, cursor);
-          if (start < 0) reject('教学前文的列表片段无法安全处理，请检查正文格式。');
-          const child = childPositions(item.raw, places.slice(start, start + item.raw.length), item.text);
+          const child = childPositions(item.raw, itemPositions.slice(cursor, cursor + item.raw.length), item.text);
           if (child) blocks(item.text, child, item.tokens.filter(token => token.type !== 'checkbox'));
-          cursor = start + item.raw.length;
+          cursor += item.raw.length;
         }
       } else if (block.type === 'blockquote') {
         const child = childPositions(raw, places, block.text);
         if (child) blocks(block.text, child, block.tokens);
-      } else if (!['code', 'html'].includes(block.type)) inline(raw, places);
+      } else if (!['code', 'html', 'def'].includes(block.type)) inline(raw, places);
       offset += raw.length;
     }
-    if (offset !== rawSource.length) reject('教学前文不完整，未发起生成。');
   };
-  blocks(source, Array.from({ length: source.length }, (_, i) => i));
+  blocks(source, Array.from({ length: source.length }, (_, i) => i), rootTokens);
   return units.map((unit, i) => output[i] === source[i] ? unit.raw : output[i]).join('');
 }
 
-export function cleanGenerationCitationContext(context) {
-  return { ...context, intro: withoutPriorCitationMarkers(context.intro),
-    ...(context.currentExcerpt === undefined ? {} : { currentExcerpt: withoutPriorCitationMarkers(context.currentExcerpt) }),
-    ...(context.previous ? { previous: context.previous.map(p => ({ ...p, excerpt: withoutPriorCitationMarkers(p.excerpt) })) } : {}),
-    ...(context.related ? { related: context.related.map(p => ({ ...p, excerpt: withoutPriorCitationMarkers(p.excerpt) })) } : {}),
+export function cleanGenerationCitationContext(context, savedCourse = null) {
+  const cache = new Map(), blocks = savedCourse?.blocks || [];
+  const mask = text => {
+    if (!cache.has(text)) cache.set(text, withoutPriorCitationMarkers(text));
+    return cache.get(text);
+  };
+  // Parse complete, server-owned Markdown before projecting an excerpt. This
+  // preserves literals even when a snippet starts inside a code block, link,
+  // escaped marker or HTML, whose opening syntax is outside the snippet.
+  // Never substitute a changed or ambiguous source for the supplied passage.
+  const excerpt = (text, full, start = 0) => typeof full === 'string' && Number.isInteger(start) && full.slice(start, start + text.length) === text
+    ? mask(full).slice(start, start + text.length) : mask(text);
+  const previous = item => {
+    const candidates = blocks.filter(block => block.type === item.type && block.title === item.title && block.content?.text?.startsWith(item.excerpt));
+    return { ...item, excerpt: excerpt(item.excerpt, candidates.length === 1 ? candidates[0].content.text : undefined) };
+  };
+  const target = blocks.find(block => block.id === context.teachingContext?.targetId);
+  return { ...context, intro: typeof context.intro === 'string' ? excerpt(context.intro, savedCourse?.intro) : mask(context.intro),
+    ...(context.currentExcerpt === undefined ? {} : { currentExcerpt: excerpt(context.currentExcerpt, target?.content?.text) }),
+    ...(context.previous ? { previous: context.previous.map(previous) } : {}),
+    ...(context.related ? { related: context.related.map(previous) } : {}),
     ...(context.teachingContext ? { teachingContext: { ...context.teachingContext, sources: context.teachingContext.sources.map(source => ({ ...source,
-      spans: source.spans.map(span => ({ ...span, text: withoutPriorCitationMarkers(span.text) })) })) } } : {}) };
+      spans: source.spans.map(span => ({ ...span, text: excerpt(span.text, blocks.find(block => block.id === source.id)?.content?.text, span.start) })) })) } } : {}) };
 }
 
 export function generationCitationContextGuidance(documents) {
