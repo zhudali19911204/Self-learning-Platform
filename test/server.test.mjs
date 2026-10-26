@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
+import { readFile } from 'node:fs/promises';
 import { createApp, validPlan, validLesson } from '../server.mjs';
 import { demoPlan, demoLessons } from '../public/demo.js';
 import { validQuestionnaire, learningBriefFrom } from '../public/planning.js';
@@ -198,6 +199,20 @@ test('serves all client assets and demo status; does not expose server files', a
   }
   for (const path of ['/server.mjs', '/.env', '/package.json', '/diagrams.js', '/vendor/package.json', '/node_modules/marked/package.json', '/unknown']) assert.equal((await app.get(path)).status, 404);
 });
+test('company logo is served locally as the original PNG without exposing other files', async t => {
+  const app = await serve(t);
+  const response = await app.get('/benecke-changshun-logo.png');
+  assert.equal(response.status, 200);
+  assert.match(response.headers.get('content-type'), /^image\/png(?:;|$)/);
+  const bytes = Buffer.from(await response.arrayBuffer());
+  assert.deepEqual(bytes, await readFile(new URL('../public/benecke-changshun-logo.png', import.meta.url)));
+  assert.deepEqual([...bytes.subarray(0, 8)], [137, 80, 78, 71, 13, 10, 26, 10]);
+  assert.equal(bytes.readUInt32BE(16), 1069);
+  assert.equal(bytes.readUInt32BE(20), 380);
+  assert.equal((await fetch(app.base + '/benecke-changshun-logo.png', { method: 'HEAD' })).status, 200);
+  assert.equal((await app.get('/brand-assets-20261026/image3.png')).status, 404);
+});
+
 test('stepwise lesson APIs validate outline and individual block output', async t => {
   const outline = { intro: '从概念开始', blocks: [{ type: 'reading', title: '概念', objective: '理解概念' }, { type:'example',title:'变量示例',objective:'通过赋值解释变量变化' }, { type: 'quiz', title: '自测', objective: '检验理解' }] };
   const app = await serve(t, { model: 'test', fetchImpl: mock(outline) });

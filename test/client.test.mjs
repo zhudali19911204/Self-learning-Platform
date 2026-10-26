@@ -29,6 +29,23 @@ import { revisionTypes, revisionStatuses, revisionCheckLabels, revisionContent, 
 const DOMPurify = createDOMPurify(new JSDOM('').window);
 const source = (await readFile(new URL('../public/app.js', import.meta.url), 'utf8')).replace(/^import .* from '\.\/[^']+';$/gm, '');
 
+test('sidebar uses the local company wordmark on every page and keeps its home navigation accessible', () => {
+  const app = harness();
+  for (const page of ['home', 'routes', 'study', 'practice', 'wiki', 'settings']) {
+    app.run(`navigate('${page}')`);
+    const doc = new JSDOM(app.node('#app').innerHTML).window.document;
+    const brand = doc.querySelector('.sidebar .brand');
+    assert.ok(brand.classList.contains('company-brand'));
+    assert.equal(brand.dataset.page, 'home');
+    assert.equal(brand.getAttribute('aria-label'), '贝内克长顺 · 返回首页');
+    assert.equal(brand.querySelector('img').getAttribute('src'), '/benecke-changshun-logo.png');
+    assert.equal(brand.querySelector('img').getAttribute('alt'), '贝内克长顺 BENECKE CHANGSHUN');
+    assert.equal(brand.querySelector('img').getAttribute('width'), '1069');
+    assert.equal(brand.querySelector('img').getAttribute('height'), '380');
+    assert.equal(brand.querySelector('span'), null, 'old application wordmark is not shown beside the company logo');
+  }
+});
+
 test('desktop settings keep four model roles on one expandable page with direct keys and grouped data actions', async () => {
   const app = harness(null, null, { load: async () => ({ settings: { provider: 'ollama', hasApiKey: true }, status: { mode: 'demo' }, imageSettings: { hasApiKey: true }, speechSettings: { hasApiKey: true } }) });
   await Promise.resolve(); app.run("navigate('settings')");
@@ -999,6 +1016,92 @@ test('reading UI exposes section card actions and saves only after reviewing the
   assert.equal(saved[0].topic, '编程/Python');
   assert.deepEqual(saved[0].useWhen, ['需要解释本节概念时']);
   assert.equal(app.run('state.notes.length'), 1);
+});
+
+test('home restores the hero, statistics and two-panel layout without changing learning data or actions', () => {
+  const app = harness();
+  const original = app.run('JSON.stringify(state)');
+  const doc = new JSDOM(app.node('#app').innerHTML).window.document;
+  assert.ok(doc.querySelector('main.page-home'));
+  assert.equal(doc.querySelector('.home-priority'), null);
+  assert.equal(doc.querySelector('.hero').nextElementSibling.className, 'stats');
+  assert.equal(doc.querySelector('.stats').nextElementSibling.className, 'dashboard-columns');
+  assert.equal(doc.querySelector('.dashboard-columns').firstElementChild.className, 'home-continue');
+  assert.equal(doc.querySelector('.dashboard-columns').lastElementChild.className, 'home-knowledge');
+  assert.equal(doc.querySelector('.hero [data-action="routes"]').textContent.trim(), '探索我的学习路线');
+  assert.ok(doc.querySelector('.home-knowledge .seed-illustration'));
+  assert.ok(doc.querySelector('.home-knowledge [data-page="wiki"]'));
+  const resume = doc.querySelector('.home-continue [data-action="open-lesson"]');
+  assert.equal(resume.dataset.id, app.run('nextLesson().id'));
+  assert.equal(resume.textContent.trim(), '进入课程');
+  assert.equal(doc.querySelectorAll('.home-continue [data-action="open-lesson"]').length, 1);
+  assert.equal(doc.querySelector('.home-continue h3').textContent, demoPlan.title);
+  assert.equal(doc.querySelector('.course-icon').textContent, '', 'course icon is not hard-coded to Python');
+  assert.equal(doc.querySelectorAll('.hero .float-card').length, 3, 'existing decorative animation is retained');
+  const progress = doc.querySelector('[role="progressbar"]');
+  assert.equal(progress.getAttribute('aria-valuenow'), '0');
+  assert.equal(progress.getAttribute('aria-valuemax'), String(demoPlan.lessons.length));
+  assert.equal(app.run('JSON.stringify(state)'), original);
+  app.run("state.blockCourses.p1={intro:'导语',blocks:[]}; render()");
+  const started = new JSDOM(app.node('#app').innerHTML).window.document;
+  assert.equal(started.querySelector('.home-continue [data-action="open-lesson"]').textContent.trim(), '继续学习');
+  app.run('state.plans[0].lessons.forEach(l=>state.progress[l.id]={completed:true}); render()');
+  const complete = new JSDOM(app.node('#app').innerHTML).window.document;
+  assert.equal(complete.querySelector('.home-continue [data-action="open-lesson"]').textContent.trim(), '复习课程');
+});
+
+test('legacy and block lessons share a title/tab toolbar while settings, annotations and quiz notices stay outside it', async t => {
+  const app = realSettingsHarness({ load: async () => ({ status:{mode:'demo'} }), inspectQuality:async()=>({}), getLesson:async()=>({}) });
+  t.after(() => app.close()); await app.ready();
+  app.run("activeLesson='p1'; page='study'; lessonTab='read'; render()");
+  const doc = app.document;
+  const assertToolbar = () => {
+    assert.ok(doc.querySelector('main.page-study'));
+    assert.equal(doc.querySelectorAll('.lesson-toolbar').length, 1);
+    assert.equal(doc.querySelector('.lesson-toolbar h1').textContent, demoPlan.lessons[0].title);
+    assert.equal(doc.querySelector('.lesson-toolbar h1').getAttribute('title'), demoPlan.lessons[0].title);
+    assert.deepEqual([...doc.querySelectorAll('.lesson-toolbar [role="tab"]')].map(tab=>tab.dataset.tab), ['read','quiz','chat']);
+    assert.equal(Boolean(doc.querySelector('.knowledge-entry-toolbar')?.closest('.lesson-toolbar')), false);
+    assert.equal(Boolean(doc.querySelector('.quality-entry')?.closest('.lesson-toolbar')), false);
+    assert.equal(Boolean(doc.querySelector('.course-source-controls')?.closest('.lesson-toolbar')), false);
+  };
+  assertToolbar();
+  const oldState = app.run('JSON.stringify(state)');
+  await app.fire('click', doc.querySelector('[data-action="lesson-tab"][data-tab="chat"]'));
+  assert.equal(doc.querySelector('[data-tab="chat"]').getAttribute('aria-selected'), 'true');
+  assert.equal(app.run('JSON.stringify(state)'), oldState);
+  app.run("state.blockCourses.p1={intro:'导语',blocks:[{id:'read-ui',type:'reading',title:'讲解',objective:'理解',content:{text:'讲解正文'}},{id:'task-ui',type:'practice',title:'实践',objective:'应用',content:{text:'实践正文'}}]}; lessonTab='read'; render()");
+  assertToolbar();
+  assert.equal(doc.querySelector('.teaching-reading .revision-actions>[data-action="request-revision"]').textContent, '换个讲法');
+  assert.equal(doc.querySelector('[data-block-id="task-ui"] .revision-actions>[data-action="request-revision"]').textContent, '换个任务');
+  assert.equal(doc.querySelector('.teaching-reading .block-title-row>[data-action="toggle-block-collapse"]').textContent, '收起');
+  app.run("state.quizRecords={p1:{currentFingerprint:'current',progressFingerprint:'previous',history:[]}}; lessonTab='quiz'; render()");
+  assert.equal(doc.querySelector('.quiz-version-notice').closest('.lesson-toolbar'), null);
+  assert.equal(doc.querySelector('[data-tab="quiz"]').getAttribute('aria-selected'), 'true');
+});
+
+test('directory toggle is a separate icon button next to Back and keeps its icons and state through repeated clicks', async t => {
+  const app = realSettingsHarness({load:async()=>({status:{mode:'demo'}})});
+  t.after(()=>app.close()); await app.ready();
+  for (const blockCourse of [false,true]) {
+    app.run(`state.blockCourses=${blockCourse?"{p1:{intro:'导语',blocks:[{id:'r1',type:'reading',title:'讲解',objective:'理解',content:{text:'正文'}}]}}":"{}"}; activeLesson='p1'; page='study'; lessonTab='read'; syllabusCollapsed=false; render()`);
+    const doc = app.document, toggle=doc.querySelector('.study-top [data-action="toggle-syllabus"]');
+    assert.ok(toggle.classList.contains('btn'));
+    assert.equal(toggle.previousElementSibling.dataset.page,'routes');
+    assert.equal(toggle.nextElementSibling.classList.contains('pill'),true);
+    assert.equal(toggle.getAttribute('aria-controls'),'course-syllabus');
+    const original=app.run('JSON.stringify(state)');
+    for (const expanded of [true,false,true,false,true]) {
+      assert.equal(toggle.getAttribute('aria-expanded'),String(expanded));
+      assert.equal(toggle.querySelector('span').textContent,expanded?'收起课程目录':'展开课程目录');
+      assert.equal(toggle.querySelectorAll('svg[aria-hidden="true"]').length,2);
+      assert.ok(toggle.querySelector('.syllabus-toggle-arrow'));
+      assert.equal(doc.querySelector('#course-syllabus').hidden,!expanded);
+      assert.equal(doc.querySelector('.study-layout').classList.contains('syllabus-collapsed'),!expanded);
+      await app.fire('click',toggle);
+    }
+    assert.equal(app.run('JSON.stringify(state)'),original);
+  }
 });
 
 test('reading keeps explanation prominent, can collapse the syllabus, and saves selected-text notes into card drafts', async t => {

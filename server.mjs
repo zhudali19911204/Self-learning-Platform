@@ -22,6 +22,7 @@ import { validKnowledgeOrganization } from './public/knowledge-index.js';
 const publicDir = new URL('./public/', import.meta.url);
 const assets = { '/': ['index.html', 'text/html'], '/app.js': ['app.js', 'text/javascript'], '/demo.js': ['demo.js', 'text/javascript'], '/blocks.js': ['blocks.js', 'text/javascript'], '/planning.js': ['planning.js', 'text/javascript'], '/markdown.js': ['markdown.js', 'text/javascript'], '/vendor/marked.js': ['../node_modules/marked/lib/marked.esm.js', 'text/javascript'], '/vendor/purify.js': ['../node_modules/dompurify/dist/purify.es.mjs', 'text/javascript'], '/styles.css': ['styles.css', 'text/css'], '/favicon.svg': ['favicon.svg', 'image/svg+xml'] };
 const str = (v, max = 20000) => typeof v === 'string' && v.trim().length > 0 && v.length <= max;
+assets['/benecke-changshun-logo.png'] = ['benecke-changshun-logo.png', 'image/png'];
 assets['/illustrations.js'] = ['illustrations.js', 'text/javascript'];
 assets['/speech.js'] = ['speech.js', 'text/javascript'];
 assets['/knowledge-draft.js'] = ['knowledge-draft.js', 'text/javascript'];

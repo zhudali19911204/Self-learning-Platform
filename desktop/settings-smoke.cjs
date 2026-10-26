@@ -43,7 +43,7 @@ exports.run = async (window, directory) => {
     await frames();
     assert.equal(await evaluate('document.documentElement.scrollWidth<=innerWidth+1'), true, 'Small settings window must not scroll horizontally');
     assert.equal(await evaluate("getComputedStyle(document.querySelector('#speech-settings-form .settings-fields')).gridTemplateColumns.split(' ').length"), 1);
-    assert.equal(await evaluate("[...document.querySelectorAll('#speech-settings-form .settings-form-actions .btn')].every(button=>button.getBoundingClientRect().height>=42)"), true);
+    assert.equal(await evaluate("[...document.querySelectorAll('#speech-settings-form .settings-form-actions .btn')].every(button=>button.getBoundingClientRect().height>=(button.classList.contains('primary')?40:32))"), true, 'Settings actions follow the 40px primary / 32px secondary size contract');
     await writeFile(path.join(directory, '..', 'settings-narrow-smoke.png'), (await window.webContents.capturePage()).toPNG());
     console.log('SETTINGS_LAYOUT_SMOKE', JSON.stringify({passed:true,checks:['four-model-summaries','nested-web-search','separate-data-tasks','no-horizontal-overflow','layout-reload','draft-preservation','beforeunload-guard','narrow-window']}));
   } finally {

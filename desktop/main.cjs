@@ -55,7 +55,7 @@ async function start() {
   const { createSpeechModel } = await import(pathToFileURL(path.join(__dirname, '..', 'speech-model.mjs')));
   const { assistedBlockTypes } = await import(pathToFileURL(path.join(__dirname, '..', 'public', 'blocks.js')));
   const { validImageSuggestion, validImageProposal } = await import(pathToFileURL(path.join(__dirname, '..', 'public', 'illustrations.js')));
-  const isolatedTest = smoke && (process.argv.includes('--cancel-only') ? 'cancel-tests' : process.argv.includes('--quiz-only') ? 'quiz-tests' : process.argv.includes('--facts-only') ? 'fact-tests' : process.argv.includes('--sources-only') ? 'source-tests' : process.argv.includes('--quality-only') || process.argv.includes('--revision-only') ? 'score-tests' : process.argv.includes('--sharing-only') ? 'sharing-tests' : '');
+  const isolatedTest = smoke && (process.argv.includes('--ui-only') ? 'ui-tests' : process.argv.includes('--cancel-only') ? 'cancel-tests' : process.argv.includes('--quiz-only') ? 'quiz-tests' : process.argv.includes('--facts-only') ? 'fact-tests' : process.argv.includes('--sources-only') ? 'source-tests' : process.argv.includes('--quality-only') || process.argv.includes('--revision-only') ? 'score-tests' : process.argv.includes('--sharing-only') ? 'sharing-tests' : '');
   const dataDirectory = isolatedTest ? path.join(app.getPath('userData'), isolatedTest, randomBytes(8).toString('hex')) : path.join(app.getPath('userData'), 'data');
   await mkdir(dataDirectory, { recursive: true });
   settingsLayoutStore = createSettingsLayoutStore(dataDirectory);
@@ -528,7 +528,8 @@ async function start() {
   if (!smoke) window.focus();
   if (development) { window.setTitle('知行 Learnflow · 开发测试版'); console.log('DESKTOP_DEV_READY'); }
   if (smoke) {
-    if (process.argv.includes('--cancel-only')) await require('./cancellation-smoke.cjs').run(window,dataDirectory);
+    if (process.argv.includes('--ui-only')) await require('./ui-smoke.cjs').run(window,dataDirectory);
+    else if (process.argv.includes('--cancel-only')) await require('./cancellation-smoke.cjs').run(window,dataDirectory);
     else if (process.argv.includes('--quiz-only')) await require('./quiz-smoke.cjs').run(window,dataDirectory);
     else if (process.argv.includes('--facts-only')) await require('./fact-check-smoke.cjs').run(window,dataDirectory);
     else if (process.argv.includes('--quality-only') || process.argv.includes('--revision-only')) await require('./quality-smoke.cjs').run(window,dataDirectory);
