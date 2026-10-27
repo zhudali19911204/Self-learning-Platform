@@ -18,6 +18,7 @@ import { createGenerationProgress } from './generation-progress.js';
 import { factCheckLabels, sameFactContent } from './fact-check.js';
 import { masteredQuizQuestions, quizRecordAfterChange, quizQuestionKey, quizInitialCount, quizBatchLimit, quizQuestionLimit } from './quiz-progress.js';
 import { generationCancelled, isGenerationCancelled } from './task-cancellation.js';
+import { createStudyPositionTracker, studyPositionFor } from './study-position.js';
 
 const renderMarkdown = createMarkdownRenderer(Marked, DOMPurify);
 
@@ -74,6 +75,7 @@ let graphMotion = null, graphFrame = 0, pendingGraph = null, graphPositions = ne
 let graphPaused = Boolean(window.matchMedia?.('(prefers-reduced-motion: reduce)').matches);
 let graphTagFilter = '', graphStatusFilter = '', graphTypeFilter = 'all', graphRelationFilter = 'all', graphOrphansOnly = false, graphLocalTwoHop = false, graphSpacing = 1;
 let readingReturn = null;
+let pendingStudyPosition=Promise.resolve(), studyPositionError='', lessonOpenTicket=0;
 let syllabusCollapsed = false, annotationDraft = null, pendingAnnotationAnchor = null;
 const collapsedBlocks = new Set();
 const courseGenerationBusy = new Set(), courseSearchMessages = new Map();
@@ -100,6 +102,16 @@ const modelServiceDrafts = new Map();
 const modelFormIds = ['desktop-settings-form', 'quality-settings-form', 'image-settings-form', 'speech-settings-form', 'web-search-settings-form'];
 let modelSettingsSaving = false;
 const settingsLayoutKey = 'learnflow.settings-layout.v1';
+const studyTracker=createStudyPositionTracker({document,window,setTimer:setTimeout,clearTimer:clearTimeout,
+  getContext:()=>{
+    if(page!=='study'||!activeLesson)return null;
+    const route=state.plans.find(route=>route.lessons.some(lesson=>lesson.id===activeLesson));
+    if(!route)return null;
+    const prefix=activeLesson+':';
+    const course=state.blockCourses?.[activeLesson];
+    const lesson=course?(lessonTab==='quiz'?{questions:course.blocks.filter(block=>block.type==='quiz'&&block.content).flatMap(block=>block.content.questions)}:null):contentFor(activeLesson);
+    return {planId:route.id,lessonId:activeLesson,tab:lessonTab,course,lesson,chats:chatFor(activeLesson),syllabusCollapsed,collapsedBlockIds:[...collapsedBlocks].filter(key=>key.startsWith(prefix)).map(key=>key.slice(prefix.length))};
+  },onSave:saveStudyPosition});
 const settingsPanels = { generator: true, reviewer: false, images: false, speech: false };
 const modelConnectionChecks = new Map();
 if (desktop) {
@@ -404,9 +416,26 @@ const syllabusToggleContent = () => `${icon('panel')}<span>${syllabusCollapsed ?
 const syllabusToggle = () => `<button type="button" class="btn secondary syllabus-toggle" data-action="toggle-syllabus" aria-controls="course-syllabus" aria-expanded="${!syllabusCollapsed}">${syllabusToggleContent()}</button>`;
 const date = timestamp => new Date(timestamp).toLocaleDateString('zh-CN', { month: 'short', day: 'numeric' });
 const quickAskButton = (available = true) => available ? `<div class="quick-ask-dock"><button type="button" class="quick-ask-button ${lessonTab === 'chat' ? 'active' : ''}" data-action="quick-ask" aria-label="打开当前课程的 AI 答疑" title="打开当前课程的 AI 答疑">${icon('spark')}<span>AI<br>答疑</span></button>${desktop ? `<button type="button" class="quick-ask-button quick-speech-button" data-action="open-speech" data-id="${escape(activeLesson)}" aria-label="打开当前课程的 AI 朗读" title="朗读选中的文字或当前阅读的内容块">${icon('speaker')}<span>AI<br>朗读</span></button>` : ''}</div>` : '';
-function navigate(target) { page = target; answer = null; render(); window.scrollTo({ top: 0, behavior: 'smooth' }); }
+function saveStudyPosition(planId,position,sync=false) {
+  if(!state.plans.some(route=>route.id===planId&&route.lessons.some(lesson=>lesson.id===position.lessonId)))return;
+  const previous=studyPositionFor(state.plans.find(route=>route.id===planId),state.studyPositions);
+  position={...position,updated:Math.max(Date.now(),(previous?.updated||0)+1)};
+  (state.studyPositions||={})[planId]=position;
+  if(!desktop){save();return;}
+  const failed=error=>{if(!studyPositionError)toast('学习位置保存失败：'+error.message);studyPositionError='上次学习位置暂未保存到本机，请检查数据目录权限。';};
+  if(sync&&desktop.saveStudyPositionSync){try{desktop.saveStudyPositionSync(planId,position);studyPositionError='';}catch(error){failed(error);}return;}
+  if(!desktop.saveStudyPosition)return;
+  pendingStudyPosition=pendingStudyPosition.then(()=>desktop.saveStudyPosition(planId,position)).then(()=>{studyPositionError='';},failed);
+  return pendingStudyPosition;
+}
+function navigate(target,{remember=true,scroll=true}={}) {
+  if(remember){studyTracker.save();studyTracker.cancelRestore();}
+  if(target!=='study')lessonOpenTicket++;
+  page = target; answer = null; render(); if(scroll)window.scrollTo({ top: 0, behavior: 'smooth' });
+}
 function switchLessonTab(target, focusQuestion = false) {
   if (!['read', 'quiz', 'chat'].includes(target)) target = 'read';
+  studyTracker.save();studyTracker.cancelRestore();
   if (page === 'study' && lessonTab === 'read' && target !== 'read') {
     readingReturn = { lessonId: activeLesson, scrollTop: window.scrollY };
   }
@@ -418,8 +447,10 @@ function switchLessonTab(target, focusQuestion = false) {
     $('.study-chat')?.scrollIntoView({ behavior: 'auto', block: 'start' });
     $('#lesson-question')?.focus({ preventScroll: true });
   }
+  studyTracker.schedule();
 }
 function render() {
+  const readingPosition=studyTracker.capture();
   stopGraphMotion(); pendingGraph = null;
   rememberModelDrafts();
   const titles = { home: '学习概览', routes: '我的学习路线', study: '学习工作台', practice: '练习与巩固', wiki: '我的知识库', settings: '设置与数据' };
@@ -443,6 +474,8 @@ function render() {
   paintAnnotations();
   decorateGraphToolbar();
   startGraphMotion(pendingGraph);
+  studyTracker.rendered();
+  if(readingPosition)void studyTracker.restore(readingPosition);
 }
 function annotationTextNodes(root) {
   if (!document.createTreeWalker) return [];
@@ -605,15 +638,15 @@ function courseReferencesFooter(course) {
   return `<details class="course-references" aria-label="参考文档"><summary class="course-references-toggle"><h2>参考文档</h2><span class="course-references-count">${references.length} 篇</span><span class="course-references-toggle-label" aria-hidden="true"></span></summary><p class="field-hint">以下为当前正文实际引用的网页资料。未列出引用的模块可能在关闭联网搜索时生成；引用存在不代表内容已逐条核验。</p><ol>${references.map(ref => `<li><div class="reference-title">${officialSource(ref.url) ? desktop ? `<button type="button" class="text-button" data-action="open-course-source" data-url="${escape(ref.url)}">${escape(ref.title)} ↗</button>` : `<a href="${escape(ref.url)}" target="_blank" rel="noopener noreferrer">${escape(ref.title)} ↗</a>` : escape(ref.title)}</div><p>${escape(ref.publisher)} · 读取于 ${escape(new Date(ref.retrievedAt).toLocaleDateString('zh-CN'))}</p><p class="reference-url">${escape(ref.url)}</p><p>用于：${escape(ref.blocks.join('、'))}</p><details><summary>查看引用依据</summary>${ref.evidence.map(e => `<p class="reference-claim">课程表述：${escape(e.claim)}</p><blockquote>${escape(e.quote)}</blockquote>`).join('')}</details></li>`).join('')}</ol></details>`;
 }
 function home() {
-  const p = plan(), next = nextLesson();
+  const p = plan(), resume=studyPositionFor(p,state.studyPositions), next = p.lessons.find(lesson=>lesson.id===resume?.lessonId)||nextLesson();
   const allCompleted = Object.values(state.progress).filter(v => v.completed).length;
   const attempts = Object.values(state.progress).reduce((n, v) => n + (v.attempts || 0), 0);
   const courseStarted = p.lessons.some(l => state.progress[l.id]?.attempts || state.lessons[l.id] || state.blockCourses?.[l.id]);
-  const continueLabel = completed() === p.lessons.length ? '复习课程' : courseStarted ? '继续学习' : '进入课程';
+  const continueLabel = completed() === p.lessons.length ? '复习课程' : resume||courseStarted ? '继续学习' : '进入课程';
   const continuePanel = `<section class="home-continue" aria-labelledby="home-continue-title"><div class="section-heading"><h2 id="home-continue-title">继续你的学习<span>KEEP GOING</span></h2><button class="text-button" data-page="routes">全部路线 ${icon('arrow')}</button></div>
     <article class="course-card"><div class="course-top"><span class="course-icon">${icon('book')}</span><div>${pill(p.source === 'demo' ? '示例课程' : 'AI 定制', 'purple')} ${pill(p.level)}</div></div>
       <h3>${escape(p.title)}</h3><p>${escape(p.description)}</p><div class="progress-label"><span>已掌握课程</span><strong>${completed()} / ${p.lessons.length} 节</strong></div><div class="progress-bar" role="progressbar" aria-label="当前路线学习进度" aria-valuemin="0" aria-valuemax="${p.lessons.length}" aria-valuenow="${completed()}"><span style="width:${percent()}%"></span></div>
-      <div class="next-up"><span class="next-marker">${icon('book')}</span><div><small>${completed() === p.lessons.length ? '回顾所学' : '接下来学习'}</small><strong>${escape(next.title)}</strong></div><span>${next.minutes} 分钟</span></div>${button(continueLabel, 'open-lesson', 'primary full', `data-id="${escape(next.id)}"`, 'arrow')}</article></section>`;
+      <div class="next-up"><span class="next-marker">${icon('book')}</span><div><small>${resume?'上次学到':completed() === p.lessons.length ? '回顾所学' : '接下来学习'}</small><strong>${escape(next.title)}</strong>${resume?.label?`<span class="resume-location">${escape(resume.label)}</span>`:''}</div><span>${next.minutes} 分钟</span></div>${button(continueLabel, 'open-lesson', 'primary full', `data-id="${escape(next.id)}" data-resume="true"`, 'arrow')}${studyPositionError?`<p class="field-hint" role="status">${escape(studyPositionError)}</p>`:''}</article></section>`;
   const knowledgePanel = `<section class="home-knowledge"><div class="section-heading"><h2>知识在这里生长<span>YOUR SECOND BRAIN</span></h2></div><article class="knowledge-preview">${state.notes.length ? `<div class="knowledge-heading">${icon('brain')}最近收获</div>${state.notes.slice(-3).reverse().map(n => `<button class="note-preview" data-action="open-note" data-id="${n.id}"><span class="note-glyph">${icon('book')}</span><div><strong>${escape(n.title)}</strong><small>${escape(n.tags.slice(0, 2).join(' · '))} · ${date(n.updated)}</small></div>${icon('arrow')}</button>`).join('')}` : `<div class="seed-illustration">${icon('leaf')}<span>+ 第一颗知识种子</span></div><h3>学过的，不再只是路过。</h3><p>学习过程中随时提炼概念与心得，<br>整理成可以反复使用的知识卡片。</p><div class="sample-note"><span>未来的知识卡片</span><strong>核心概念 + 实践经验 + 我的思考</strong><div>${pill('可编辑')} ${pill('可关联')} ${pill('可检索')}</div></div>`}<button class="text-button purple-text" data-page="wiki">打开我的知识库 ${icon('arrow')}</button></article></section>`;
   return `<section class="page-intro"><div><div class="eyebrow">A LITTLE BETTER, EVERY DAY</div><h1>让每一次好奇，都有回响<span class="title-dot">.</span></h1><p>从一个学习目标开始，构建属于你的知识世界。</p></div>${button('开启新的学习', 'planner', 'primary', '', 'plus')}</section>
   <section class="hero" aria-label="你的 AI 学习伙伴"><div class="hero-copy">${pill('你的 AI 学习伙伴', 'hero-pill')}<h2>不止学会，<br>更要成为自己的知识。</h2><p>为你规划路径，陪你练习思考，<br>将每一次收获，连接成你的第二大脑。</p>${button('探索我的学习路线', 'routes', 'dark')}<div class="hero-caption"><span class="mini-dot"></span>目标驱动 <span>·</span> 学练结合 <span>·</span> 知识沉淀</div></div><div class="hero-art" aria-hidden="true"><div class="orbit orbit-one"></div><div class="orbit orbit-two"></div><div class="orb-center">${icon('brain')}<span>我的知识宇宙</span></div><div class="float-card float-top"><span class="float-icon lavender">${icon('route')}</span><div><small>找到你的方向</small><strong>个性化学习路线</strong></div><b>↗</b></div><div class="float-card float-left"><span class="float-icon peach">${icon('bolt')}</span><div><small>在实践中理解</small><strong>让知识发生</strong></div></div><div class="float-card float-bottom"><span class="float-icon green">${icon('book')}</span><div><small>连接每一次收获</small><strong>你的第二大脑</strong></div><span class="check-bubble">✓</span></div><span class="star star-one">✦</span><span class="star star-two">✧</span><span class="orb-dot dot-one"></span><span class="orb-dot dot-two"></span></div></section>
@@ -632,7 +665,7 @@ function routes() {
   <div class="route-layout"><section class="timeline">${p.lessons.map((l, i) => `${i === 0 || l.phase !== p.lessons[i - 1].phase ? `<h3 class="phase">${escape(l.phase)}</h3>` : ''}<article class="lesson-row ${progress(l.id).completed ? 'complete' : ''}"><div class="step-number">${progress(l.id).completed ? icon('check') : String(i + 1).padStart(2, '0')}</div><div class="lesson-row-main"><div class="lesson-title"><h3>${escape(l.title)}</h3>${progress(l.id).completed ? pill('已掌握', 'success') : l.id === nextLesson().id ? pill('推荐下一步', 'purple') : ''}</div><p>${escape(l.objective)}</p><div class="lesson-meta">${icon('clock')}${l.minutes} 分钟<span>·</span>${escape(l.tags.join(' / '))}</div></div>${button(progress(l.id).completed ? '复习' : '进入课程', 'open-lesson', 'secondary', `data-id="${l.id}"`)}</article>`).join('')}</section><aside class="tip-card"><span class="float-icon lavender">${icon('target')}</span><h3>按自己的节奏前进</h3><p>路线是一张地图。你可以先预览任意课程，再根据自己的基础选择起点。</p><hr><strong>掌握比完成更重要</strong><p>每节课通过全部测验后会记录为已掌握。答错时，读一读解析，再试一次。</p>${button('去练习与巩固', 'practice', 'secondary full', '', 'bolt')}</aside></div>`;
 }
 function lessonToolbar(meta, p, record) {
-  return `<header class="lesson-toolbar" aria-label="课程标题与导航"><div class="lesson-heading"><div class="eyebrow">LESSON ${String(p.lessons.indexOf(meta) + 1).padStart(2, '0')}</div><h1 title="${escape(meta.title)}">${escape(meta.title)}</h1></div><div class="tabs" role="tablist" aria-label="课程内容">${[['read', 'book', '学习内容'], ['quiz', 'bolt', `随堂练习${record.completed ? ' ✓' : ''}`], ['chat', 'spark', 'AI 答疑']].map(([tab, symbol, label]) => `<button type="button" role="tab" aria-selected="${lessonTab === tab}" class="${lessonTab === tab ? 'active' : ''}" data-action="lesson-tab" data-tab="${tab}">${icon(symbol)}${label}</button>`).join('')}</div></header>`;
+  return `<header class="lesson-toolbar" aria-label="课程标题与导航"><div class="lesson-heading"><div class="eyebrow">LESSON ${String(p.lessons.indexOf(meta) + 1).padStart(2, '0')}</div><h1 title="${escape(meta.title)}">${escape(meta.title)}</h1></div><div class="tabs" role="tablist" aria-label="课程内容">${[['read', 'book', '学习内容'], ['quiz', 'bolt', `随堂练习${record.completed ? ' ✓' : ''}`]].map(([tab, symbol, label]) => `<button type="button" role="tab" aria-selected="${lessonTab === tab}" class="${lessonTab === tab ? 'active' : ''}" data-action="lesson-tab" data-tab="${tab}">${icon(symbol)}${label}</button>`).join('')}</div></header>`;
 }
 function study() {
   const p = plan(); const meta = p.lessons.find(l => l.id === activeLesson) || nextLesson(); activeLesson = meta.id;
@@ -700,7 +733,24 @@ function factCheckStrip(block, lessonId) {
   const correction = selectable ? `<p class="field-hint">勾选后确认，即可直接更新对应文案。不要求提供参考资料；疑点可能误判，修正后仍需核对。每次确认最多调用一次生成模型，可能计费。</p>${button(`确认修正（${selection.size}）`, 'correct-fact-issues', 'primary', `${attrs} data-record="${escape(record.id)}" ${busy || !selection.size || status.mode !== 'ai' ? 'disabled' : ''}`, '')}` : '';
   return `<details class="fact-check-strip is-${phase}"><summary><span class="fact-check-dot" aria-hidden="true"></span>${escape(label)}<span class="fact-check-view">查看</span></summary><div class="fact-check-details"><p>${escape(record?.summary || '使用另一个模型检查事实、适用条件、来源及答案。')}</p>${record?.error ? `<p class="inline-error">${escape(record.error)}</p>` : ''}${issues}${correction}<p class="inline-error" role="alert">${escape(factCorrectionErrors.get(key) || '')}</p><div class="fact-check-actions">${button(busy ? '处理中…' : record?.status === 'failed' ? '重试核查' : '核查当前版本', 'check-block-facts', 'secondary', `${attrs} ${busy || qualityStatus.mode !== 'ai' ? 'disabled' : ''}`, 'check')}${record?.beforeContent && ['corrected', 'edited'].includes(record.status) ? button('恢复修正前版本', 'restore-fact-check', 'secondary', `${attrs} data-record="${escape(record.id)}" ${busy ? 'disabled' : ''}`, 'back') : ''}</div><p class="field-hint">未发现问题不代表事实已证实。未变化的内容复用核查结果；新核查可能计费。</p></div></details>`;
 }
-function blockPart(block, index, lessonId, teaching = false) {
+// Group automatically appended quizzes for display only. Keep stored batch IDs,
+// questions, citations and review snapshots intact for retry and cancellation.
+function quizColumnLayout(course) {
+  const quizzes = course.blocks.filter(block => block.type === 'quiz');
+  const primary = quizzes.find(block => !block.title.startsWith('补充练习 · 第')) || quizzes[0];
+  const additions = quizzes.filter(block => block !== primary && block.title.startsWith('补充练习 · 第'));
+  const hidden = new Set(additions.map(block => block.id));
+  return { blocks: course.blocks.filter(block => !hidden.has(block.id)), primary, quizGroup: primary ? [primary, ...additions] : [] };
+}
+function quizGroupChecks(group, lessonId) {
+  if (group.length === 1) return factCheckStrip(group[0], lessonId);
+  const records = group.map((block, index) => {
+    const check = factCheckStrip(block, lessonId);
+    return check ? `<div class="quiz-check-batch"><p class="quiz-check-label">${index ? `追加练习 ${index}` : '原有练习'} · ${block.content.questions.length} 题</p>${check}</div>` : '';
+  }).filter(Boolean);
+  return records.length ? `<details class="quiz-check-history"><summary>练习核查记录 · ${records.length} 批</summary>${records.join('')}</details>` : '';
+}
+function blockPart(block, index, lessonId, teaching = false, quizGroup = [block]) {
   const labels = { reading: '知识讲解', example: '配套案例', practice: '动手实践', quiz: '随堂练习', summary: '知识总结' };
   const attrs = `data-id="${escape(lessonId)}" data-block="${escape(block.id)}"`;
   const editable = assistedBlockTypes.includes(block.type) && block.content;
@@ -717,17 +767,23 @@ function blockPart(block, index, lessonId, teaching = false) {
   const body = block.content && block.type !== 'quiz' ? `<div class="block-text markdown-content annotatable" data-annotation-source="block:${escape(block.id)}">${renderMarkdown(block.content.text, { grounding: block.content.grounding, desktop: !!desktop })}</div>${figure}` : '';
   const bodyMarkup = canCollapse ? `<div id="${escape(bodyId)}" class="block-collapsible-body" ${collapsed ? 'hidden' : ''}>${body}</div>` : body;
   const contextNotice = !block.content ? [block.type === 'quiz' && !block.title.startsWith('补充练习 · 第') ? `首次固定生成${quizInitialCount}题；完成后可按需追加。` : '', teachingContextNotice(state.blockCourses?.[lessonId] || {blocks:[block]},block.id)].filter(Boolean).join(' ') : '';
-  return `<section class="${teaching ? `teaching-part teaching-${block.type}` : 'reading-section content-block'}" data-block-id="${escape(block.id)}"><div class="teaching-part-heading"><span class="pill purple">${String(index + 1).padStart(2, '0')} · ${labels[block.type]}</span>${actions}</div><div class="block-title-row"><h2 class="block-title">${escape(block.title)}</h2>${toggle}</div><p class="block-objective">${escape(block.objective)}</p>${factCheckStrip(block, lessonId)}${block.content ? block.type === 'quiz' ? `<p>已生成 ${block.content.questions.length} 道练习题。${button('去练习', 'quiz', 'secondary')}</p>` : bodyMarkup : `<div class="block-pending"><span>此模块尚未生成，可以按需展开。</span>${contextNotice ? `<p class="field-hint generation-scope-notice">${escape(contextNotice)}</p>` : ''}${button('生成这一块', 'generate-block', 'secondary', attrs, 'spark')}</div>`}</section>`;
+  const quizCount = block.type === 'quiz' ? quizGroup.reduce((count, member) => count + (member.content?.questions.length || 0), 0) : 0;
+  const pending = `<div class="block-pending"><span>${quizCount ? '原有练习尚未生成，已追加的题目保留。' : '此模块尚未生成，可以按需展开。'}</span>${contextNotice ? `<p class="field-hint generation-scope-notice">${escape(contextNotice)}</p>` : ''}${button('生成这一块', 'generate-block', 'secondary', attrs, 'spark')}</div>`;
+  const pendingAdditions = block.type === 'quiz' ? quizGroup.filter(member => member !== block && !member.content).length : 0;
+  const quizBody = `${quizCount ? `<p class="quiz-question-count">已生成 ${quizCount} 道练习题。${button('去练习', 'quiz', 'secondary')}</p>` : ''}${block.content ? '' : pending}${pendingAdditions ? `<p class="field-hint quiz-addition-pending">还有 ${pendingAdditions} 次追加尚未完成，可到“随堂练习”继续生成，原题和成绩保留。</p>` : ''}`;
+  return `<section class="${teaching ? `teaching-part teaching-${block.type}` : 'reading-section content-block'}" data-block-id="${escape(block.id)}"><div class="teaching-part-heading"><span class="pill purple">${String(index + 1).padStart(2, '0')} · ${labels[block.type]}</span>${actions}</div><div class="block-title-row"><h2 class="block-title">${escape(block.title)}</h2>${toggle}</div><p class="block-objective">${escape(block.objective)}</p>${block.type === 'quiz' ? quizGroupChecks(quizGroup, lessonId) : factCheckStrip(block, lessonId)}${block.type === 'quiz' ? quizBody : block.content ? bodyMarkup : pending}</section>`;
 }
 function teachingSequence(course, lessonId) {
   const units = [];
-  for (let index = 0; index < course.blocks.length; index++) {
-    const block = course.blocks[index];
-    if (block.type !== 'reading') { units.push(blockPart(block, index, lessonId, block.type === 'example')); continue; }
+  const { blocks, primary, quizGroup } = quizColumnLayout(course);
+  const positions = new Map(course.blocks.map((block, index) => [block.id, index]));
+  for (let index = 0; index < blocks.length; index++) {
+    const block = blocks[index];
+    if (block.type !== 'reading') { units.push(blockPart(block, index, lessonId, block.type === 'example', block === primary ? quizGroup : [block])); continue; }
     const parts = [blockPart(block, index, lessonId, true)];
-    while (course.blocks[index + 1]?.type === 'example') {
+    while (blocks[index + 1]?.type === 'example' && positions.get(blocks[index + 1].id) === positions.get(blocks[index].id) + 1) {
       index++;
-      parts.push(blockPart(course.blocks[index], index, lessonId, true));
+      parts.push(blockPart(blocks[index], index, lessonId, true));
     }
     units.push(`<article class="teaching-unit" aria-label="讲解与配套案例">${parts.join('')}</article>`);
   }
@@ -1270,10 +1326,16 @@ async function submitPlanner(formId, values) {
   } catch (error) { plannerError = error.message; }
   finally { plannerBusy = false; if ($('#planner').open) { renderPlanner(); $('#planner').scrollTop = 0; } }
 }
-async function openLesson(id, tab = 'read') {
+async function openLesson(id, tab = 'read', {resume=false}={}) {
+  studyTracker.save();studyTracker.cancelRestore();
+  const ticket=++lessonOpenTicket,route=state.plans.find(route=>route.lessons.some(lesson=>lesson.id===id));
+  if(!route)throw new Error('课程不存在。');
+  const position=resume?studyPositionFor(route,state.studyPositions):null;
   if (desktop) {
+    await pendingStudyPosition;
     await pendingSave;
     const detail = await desktop.getLesson(id);
+    if(ticket!==lessonOpenTicket)return;
     state.lessons = detail.lesson ? { [id]: detail.lesson } : {};
     state.blockCourses = detail.blockCourse ? { [id]: detail.blockCourse } : {};
     state.reflections = { [id]: detail.reflection };
@@ -1283,7 +1345,17 @@ async function openLesson(id, tab = 'read') {
     (state.sourceSearch ||= {})[id] = detail.sourceSearch || { enabled: false, revision: 0 };
     applyQuizState(id, detail);
   }
-  readingReturn = null; activeLesson = id; lessonTab = ['read', 'quiz', 'chat'].includes(tab) ? tab : 'read'; navigate('study');
+  readingReturn = null; activeLesson = id; lessonTab = position?.tab||(['read', 'quiz', 'chat'].includes(tab) ? tab : 'read');
+  if(position){
+    syllabusCollapsed=position.syllabusCollapsed;
+    for(const key of collapsedBlocks)if(key.startsWith(id+':'))collapsedBlocks.delete(key);
+    const live=new Set((state.blockCourses?.[id]?.blocks||[]).filter(block=>['reading','example','practice','summary'].includes(block.type)).map(block=>block.id));
+    for(const blockId of position.collapsedBlockIds)if(live.has(blockId))collapsedBlocks.add(id+':'+blockId);
+  }
+  navigate('study',{remember:false,scroll:false});
+  if(position)await studyTracker.restore(position);
+  else window.scrollTo({top:0,behavior:'auto'});
+  if(ticket===lessonOpenTicket){studyTracker.save();studyTracker.schedule();}
 }
 function knowledgeSource(id, blockId = '', sectionIndex = '') {
   const meta = lessonById(id), course = state.blockCourses?.[id], lesson = contentFor(id);
@@ -1445,15 +1517,18 @@ async function action(name, element) {
     return;
   }
   if (name === 'toggle-syllabus') {
+    studyTracker.cancelRestore();
     syllabusCollapsed = !syllabusCollapsed;
     const syllabus = $('#course-syllabus'), layout = $('.study-layout');
     if (syllabus) syllabus.hidden = syllabusCollapsed;
     layout?.classList.toggle('syllabus-collapsed', syllabusCollapsed);
     element.setAttribute('aria-expanded', String(!syllabusCollapsed));
     element.innerHTML = syllabusToggleContent();
+    studyTracker.schedule();
     return;
   }
   if (name === 'toggle-block-collapse') {
+    studyTracker.cancelRestore();
     const body = document.getElementById(element.getAttribute('aria-controls'));
     if (!body) return;
     body.hidden = !body.hidden;
@@ -1461,6 +1536,7 @@ async function action(name, element) {
     if (body.hidden) collapsedBlocks.add(key); else collapsedBlocks.delete(key);
     element.setAttribute('aria-expanded', String(!body.hidden));
     element.textContent = body.hidden ? '展开' : '收起';
+    studyTracker.schedule();
     return;
   }
   if (name === 'add-annotation') {
@@ -1513,11 +1589,13 @@ async function action(name, element) {
   }
   if (name === 'open-data' && desktop) return desktop.openDataFolder();
   if (name === 'export-course' && desktop) {
+    studyTracker.save();await pendingStudyPosition;
     await pendingSave;
     if (await desktop.exportCourse(id)) toast('课程包已导出，可以发送给其他 Learnflow 用户。');
     return;
   }
   if (name === 'import-course' && desktop) {
+    studyTracker.save();await pendingStudyPosition;
     await pendingSave;
     const result = await desktop.importCourse();
     if (result) {
@@ -1527,6 +1605,7 @@ async function action(name, element) {
     return;
   }
   if (name === 'import-data' && desktop) {
+    studyTracker.save();await pendingStudyPosition;
     await pendingSave;
     const imported = await desktop.importBackup();
     if (imported) { state = imported; activeNote = null; activeLesson = null; navigate('home'); toast('学习备份已导入。'); }
@@ -1560,8 +1639,9 @@ async function action(name, element) {
   if (['routes', 'practice'].includes(name)) return navigate(name);
   if (name === 'start') return openLesson(nextLesson().id);
   if (name === 'demo') { $('#planner').close(); state.active = demoPlan.id; persist('setActivePlan', demoPlan.id); return navigate('routes'); }
-  if (name === 'switch-plan') { state.active = id; activeLesson = null; persist('setActivePlan', id); return render(); }
+  if (name === 'switch-plan') { studyTracker.save();studyTracker.cancelRestore();state.active = id; activeLesson = null; persist('setActivePlan', id); return render(); }
   if (name === 'delete-plan') {
+    studyTracker.save();await pendingStudyPosition;
     const target = state.plans.find(route => route.id === id);
     if (!target || state.plans.length <= 1) throw new Error('至少保留一条学习路线。');
     if (storageWarning) throw new Error('当前本地存储有错误，请先处理后再删除。');
@@ -1579,6 +1659,7 @@ async function action(name, element) {
     const backupKey = `${deletedBackupPrefix}${Date.now()}-${crypto.randomUUID()}`;
     const next = structuredClone(state);
     next.plans = next.plans.filter(route => route.id !== id);
+    if(next.studyPositions)delete next.studyPositions[id];
     if (next.active === id) next.active = next.plans[0].id;
     for (const lessonId of lessonIds) for (const collection of ['lessons', 'blockCourses', 'progress', 'reflections', 'chats', 'sourceSearch', 'sourceBundles']) if (next[collection]) delete next[collection][lessonId];
     next.notes = next.notes.filter(note => !lessonIds.has(note.lessonId));
@@ -1594,7 +1675,10 @@ async function action(name, element) {
     localStorage.setItem(key, raw); localStorage.removeItem(backupKey);
     state = restored; activeLesson = null; activeNote = null; answer = null; navigate('routes'); toast('已恢复删除前的学习记录。'); return;
   }
-  if (name === 'open-lesson') return openLesson(id);
+  if (name === 'open-lesson') {
+    if(element.dataset.resume==='true'){const saved=studyPositionFor(plan(),state.studyPositions);return openLesson(saved?.lessonId||nextLesson().id,'read',{resume:true});}
+    return openLesson(id);
+  }
   if (name === 'configure-fact-check' && desktop) { navigate('settings'); jumpToSettings('reviewer'); return; }
   if (name === 'toggle-course-fact-check' && desktop) {
     if (factCheckToggleBusy) return;
@@ -1830,7 +1914,7 @@ async function action(name, element) {
     $('#note-edit-switch').setAttribute('aria-pressed', String(mode === 'edit')); return;
   }
   if (name === 'source-lesson') { const p = state.plans.find(p => p.lessons.some(l => l.id === id)); if (p) { state.active = p.id; persist('setActivePlan', p.id); return openLesson(id); } }
-  if (name === 'export-data') { if (desktop) { await pendingSave; if (await desktop.exportBackup()) toast('完整学习备份已导出。'); return; } return download('learnflow-backup.json', JSON.stringify(state, null, 2), 'application/json'); }
+  if (name === 'export-data') { studyTracker.save();await pendingStudyPosition;if (desktop) { await pendingSave; if (await desktop.exportBackup()) toast('完整学习备份已导出。'); return; } return download('learnflow-backup.json', JSON.stringify(state, null, 2), 'application/json'); }
   if (name === 'export-wiki') return download('我的知识库.md', state.notes.map(markdown).join('\n---\n\n'), 'text/markdown;charset=utf-8');
   if (name === 'export-note') { const n = state.notes.find(n => n.id === id); if (desktop) await pendingSave; return download(n.title.replace(/[<>:"/\\|?*]/g, '-') + '.md', desktop ? await desktop.cardMarkdown(id) : markdown(n), 'text/markdown;charset=utf-8'); }
   if (name === 'delete-note') {

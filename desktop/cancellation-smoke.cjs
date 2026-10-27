@@ -92,6 +92,10 @@ exports.run = async (window, directory) => {
     for (let n = 0; held.length < 5 && n < 100; n++) await new Promise(resolve => setTimeout(resolve, 20));
     assert.equal(held.length, 5); await cancel(); await wait("!document.querySelector('#more-quiz-form button').disabled");
     assert.equal((await evaluate(`window.learnflowDesktop.getLesson('${id}')`)).blockCourse.blocks.length, 4);
+    await evaluate("document.querySelector('[data-action=lesson-tab][data-tab=read]').click()");
+    assert.equal(await evaluate("document.querySelectorAll('.quiz-question-count').length"),1);
+    assert.equal(await evaluate("document.querySelector('.quiz-addition-pending')"),null);
+    await evaluate("document.querySelector('[data-action=lesson-tab][data-tab=quiz]').click()");
     await writeFile(path.join(directory, 'cancellation-smoke.png'), (await window.webContents.capturePage()).toPNG());
     console.log('CANCELLATION_SMOKE_OK', JSON.stringify({ localCalls: calls.length, cancelledRequests: closed, directory }));
   } finally { backend.closeAllConnections(); await new Promise(resolve => backend.close(resolve)); }

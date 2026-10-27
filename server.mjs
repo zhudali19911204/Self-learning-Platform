@@ -38,6 +38,7 @@ assets['/generation-progress.js'] = ['generation-progress.js', 'text/javascript'
 assets['/fact-check.js'] = ['fact-check.js', 'text/javascript'];
 assets['/quiz-progress.js'] = ['quiz-progress.js', 'text/javascript'];
 assets['/task-cancellation.js'] = ['task-cancellation.js', 'text/javascript'];
+assets['/study-position.js'] = ['study-position.js', 'text/javascript'];
 const strings = (v, max = 20) => Array.isArray(v) && v.length > 0 && v.length <= max && v.every(x => str(x, 5000));
 const validPlanningInput = data => str(data.goal, 1000) && ['零基础', '有一点基础', '希望进阶'].includes(data.level) && Number.isInteger(data.daily) && data.daily >= 10 && data.daily <= 120 && Number.isInteger(data.days) && data.days >= 7 && data.days <= 90;
 function clarificationAssessmentIssue(value) {

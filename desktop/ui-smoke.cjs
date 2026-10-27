@@ -33,7 +33,8 @@ exports.run = async (window, directory) => {
   window.webContents.reload();
   await new Promise(resolve=>window.webContents.once('did-finish-load',resolve));
   await wait("document.querySelector('.home-continue [data-action=open-lesson]')");
-  const baseline = JSON.stringify((await evaluate('window.learnflowDesktop.load()')).state);
+  const learningData=({studyPositions,...state})=>JSON.stringify(state);
+  const baseline = learningData((await evaluate('window.learnflowDesktop.load()')).state);
   const checks = [];
   for (const width of [1920, 1680, 1360, 1100, 900, 760, 560, 390]) {
     window.setContentSize(width, 900);
@@ -72,7 +73,10 @@ exports.run = async (window, directory) => {
     assert.equal(await evaluate("getComputedStyle(document.querySelector('.lesson-content')).maxWidth"),'1040px','Reopening the directory restores the normal reader limit');
     const study = await evaluate(`(() => { const toolbar=document.querySelector('.lesson-toolbar'), section=document.querySelector('.teaching-reading'); return {overflow:document.documentElement.scrollWidth>innerWidth,bodyFont:getComputedStyle(section.querySelector('.block-text')).fontSize,position:getComputedStyle(toolbar).position,tabs:toolbar.querySelectorAll('[role=tab]').length,controlsOutside:!toolbar.querySelector('.course-source-controls,.quality-entry,.knowledge-entry-toolbar'),switches:[...document.querySelectorAll('.course-source-controls [role=switch]')].map(x=>x.dataset.action),heights:[section.querySelector('.revision-actions>.btn'),section.querySelector('.more-learning-tools>summary'),section.querySelector('.block-collapse-toggle')].map(x=>x.getBoundingClientRect().height)}; })()`);
     assert.equal(study.overflow, false, `study overflow at ${width}`);
-    assert.equal(study.bodyFont, '16px'); assert.equal(study.position,'sticky'); assert.equal(study.tabs,3); assert.equal(study.controlsOutside,true);
+    assert.equal(study.bodyFont, '16px'); assert.equal(study.position,'sticky'); assert.equal(study.tabs,2); assert.equal(study.controlsOutside,true);
+    await evaluate("document.querySelector('[data-action=quick-ask]').click()");
+    assert.equal(await evaluate("!!document.querySelector('.study-chat') && !!document.querySelector('.quick-ask-button.active') && !document.querySelector('.lesson-toolbar [data-tab=chat]')"),true,'Only the floating Q&A entry remains');
+    await evaluate("document.querySelector('[data-action=back-to-reading]').click()"); await frames();
     assert.deepEqual(study.switches,['toggle-course-search','toggle-course-fact-check']);
     assert.deepEqual(study.heights,[32,32,32]);
     await writeFile(path.join(screenshots,`study-${width}.png`),(await window.webContents.capturePage()).toPNG());
@@ -91,7 +95,7 @@ exports.run = async (window, directory) => {
     if (width===1360 || width===390) await writeFile(path.join(screenshots,`settings-${width}.png`),(await window.webContents.capturePage()).toPNG());
     checks.push({width,home,study,sticky,directoryToggle,directoryWidth,collapsedLayout});
   }
-  assert.equal(JSON.stringify((await evaluate('window.learnflowDesktop.load()')).state),baseline,'layout actions must not change persisted learning data');
+  assert.equal(learningData((await evaluate('window.learnflowDesktop.load()')).state),baseline,'layout actions may update a reading position, but must not change lessons, scores or notes');
   await evaluate(`window.learnflowDesktop.setActivePlan(${JSON.stringify(original.active)})`);
   console.log('UI_SMOKE',JSON.stringify({passed:true,realModelCalls:0,checks,screenshots}));
 };

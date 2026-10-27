@@ -55,7 +55,7 @@ async function start() {
   const { createSpeechModel } = await import(pathToFileURL(path.join(__dirname, '..', 'speech-model.mjs')));
   const { assistedBlockTypes } = await import(pathToFileURL(path.join(__dirname, '..', 'public', 'blocks.js')));
   const { validImageSuggestion, validImageProposal } = await import(pathToFileURL(path.join(__dirname, '..', 'public', 'illustrations.js')));
-  const isolatedTest = smoke && (process.argv.includes('--ui-only') ? 'ui-tests' : process.argv.includes('--cancel-only') ? 'cancel-tests' : process.argv.includes('--quiz-only') ? 'quiz-tests' : process.argv.includes('--facts-only') ? 'fact-tests' : process.argv.includes('--sources-only') ? 'source-tests' : process.argv.includes('--quality-only') || process.argv.includes('--revision-only') ? 'score-tests' : process.argv.includes('--sharing-only') ? 'sharing-tests' : '');
+  const isolatedTest = smoke && (process.argv.includes('--resume-only') ? 'resume-tests' : process.argv.includes('--ui-only') ? 'ui-tests' : process.argv.includes('--cancel-only') ? 'cancel-tests' : process.argv.includes('--quiz-only') ? 'quiz-tests' : process.argv.includes('--facts-only') ? 'fact-tests' : process.argv.includes('--sources-only') ? 'source-tests' : process.argv.includes('--quality-only') || process.argv.includes('--revision-only') ? 'score-tests' : process.argv.includes('--sharing-only') ? 'sharing-tests' : '');
   const dataDirectory = isolatedTest ? path.join(app.getPath('userData'), isolatedTest, randomBytes(8).toString('hex')) : path.join(app.getPath('userData'), 'data');
   await mkdir(dataDirectory, { recursive: true });
   settingsLayoutStore = createSettingsLayoutStore(dataDirectory);
@@ -133,6 +133,14 @@ async function start() {
     return { settings: store.getSettings(), settingsLayout: settingsLayoutStore.get(), qualitySettings: qualityStore.getSettings(), factCheck: factCheckSettings.get(), qualityStatus: qualityStatus(), imageSettings: imageStore.getSettings(), speechSettings: speechStore.getSettings(), webSearchSettings: webSearchStore.getSettings(), state, stateError, status: llm.status(), dataDirectory, startPage: process.argv.includes('--settings') ? 'settings' : 'home' };
   });
   handle('learnflow:save-settings-layout', value => settingsLayoutStore.save(value));
+  handle('learnflow:save-study-position', (id,value) => learning.saveStudyPosition(id,value));
+  // Close/reload uses one bounded synchronous metadata write; no network or
+  // model work is allowed here, so the last scroll is not lost on shutdown.
+  ipcMain.on('learnflow:save-study-position-sync',(event,id,value)=>{
+    if (!window || event.sender!==window.webContents || event.senderFrame!==window.webContents.mainFrame || event.senderFrame.url!==base+'/') { event.returnValue={ok:false,error:'不允许的应用请求。'}; return; }
+    try { event.returnValue={ok:true,value:learning.saveStudyPosition(id,value)}; }
+    catch { event.returnValue={ok:false,error:'学习位置保存失败，请检查数据目录权限。'}; }
+  });
   handle('learnflow:set-course-source-search', (id, enabled) => {
     if (courseRequests.has(id) || fullGenerationRequests.has(id)) throw new Error('本课正在生成或核查，请完成后再切换联网搜索。');
     return learning.setSourceSearch(id, enabled);
@@ -528,7 +536,8 @@ async function start() {
   if (!smoke) window.focus();
   if (development) { window.setTitle('知行 Learnflow · 开发测试版'); console.log('DESKTOP_DEV_READY'); }
   if (smoke) {
-    if (process.argv.includes('--ui-only')) await require('./ui-smoke.cjs').run(window,dataDirectory);
+    if (process.argv.includes('--resume-only')) await require('./resume-smoke.cjs').run(window,dataDirectory);
+    else if (process.argv.includes('--ui-only')) await require('./ui-smoke.cjs').run(window,dataDirectory);
     else if (process.argv.includes('--cancel-only')) await require('./cancellation-smoke.cjs').run(window,dataDirectory);
     else if (process.argv.includes('--quiz-only')) await require('./quiz-smoke.cjs').run(window,dataDirectory);
     else if (process.argv.includes('--facts-only')) await require('./fact-check-smoke.cjs').run(window,dataDirectory);

@@ -12,6 +12,7 @@ import { validOutline, validBlockSpec, validBlockContent, revisedContent, restor
 import { referencedImages } from '../public/illustrations.js';
 import { removePlanFromBackups } from './course-backups.mjs';
 import { validAnnotations } from '../public/annotations.js';
+import { validStudyPosition } from '../public/study-position.js';
 import { validQualityReport } from '../public/course-quality.js';
 import { validRevisionJob, validQualityDisposition, revisionContent, revisionSnapshot } from '../public/course-revision.js';
 import { qualitySnapshot, qualityFingerprint } from '../course-quality.mjs';
@@ -87,6 +88,7 @@ function replaceAll(db, state) {
       for (const [position, block] of course.blocks.entries()) blockStatement.run(block.id, lessonId, position, block.type, block.title, block.objective, block.content ? JSON.stringify(block.content) : null);
     }
     db.prepare('INSERT INTO meta VALUES (?, ?)').run('active_plan', state.active);
+    for (const [planId,position] of Object.entries(state.studyPositions||{})) db.prepare('INSERT INTO meta VALUES (?, ?)').run(`studyPositions:${planId}`,JSON.stringify(position));
     db.prepare('INSERT INTO meta VALUES (?, ?)').run('knowledge_generation', randomUUID());
     for (const report of state.qualityReports || []) db.prepare('INSERT INTO meta VALUES (?, ?)').run(`quality:${report.id}`, JSON.stringify(report));
     for (const job of state.qualityJobs || []) db.prepare('INSERT INTO meta VALUES (?, ?)').run(`revision:${job.id}`, JSON.stringify(job));
@@ -113,7 +115,7 @@ function readOverview(db) {
   const notes = db.prepare('SELECT * FROM notes ORDER BY rowid').all().map(noteFromRow);
   const reports = db.prepare("SELECT value FROM meta WHERE key GLOB 'quality:*'").all().map(row => fromJSON(row.value));
   const extras = {};
-  for (const field of ['quizRecords', 'revisionNotices', 'sourceSearch']) {
+  for (const field of ['quizRecords', 'revisionNotices', 'sourceSearch', 'studyPositions']) {
     const rows = db.prepare('SELECT key, value FROM meta WHERE key GLOB ?').all(`${field}:*`);
     if (rows.length) extras[field] = Object.fromEntries(rows.map(r => [r.key.slice(field.length + 1), fromJSON(r.value)]));
   }
@@ -295,6 +297,12 @@ export async function createSqliteStore(directory) {
   function planDeletionPreview(planId) { syncKnowledgeIndex(db, directory); return readPlanDeletionPreview(planId); }
   return {
     filename, overview, getLesson, exportState, planDeletionPreview,
+    saveStudyPosition(planId, position) {
+      if (!id(planId) || !validStudyPosition(position) || db.prepare('SELECT plan_id FROM lessons WHERE id = ?').get(position.lessonId)?.plan_id !== planId) throw new Error('学习位置无效或不属于当前路线。');
+      const previous=fromJSON(db.prepare('SELECT value FROM meta WHERE key = ?').get(`studyPositions:${planId}`)?.value||'null');
+      if (validStudyPosition(previous) && previous.updated>position.updated) return previous;
+      metaSet(`studyPositions:${planId}`,position); return position;
+    },
     setSourceSearch(lessonId, enabled) {
       requireLesson(lessonId);
       if (typeof enabled !== 'boolean') throw new Error('联网搜索开关无效。');
@@ -412,6 +420,7 @@ export async function createSqliteStore(directory) {
         const next = current === planId ? db.prepare('SELECT id FROM plans WHERE id <> ? ORDER BY position LIMIT 1').get(planId)?.id : current;
         db.prepare('DELETE FROM plans WHERE id = ?').run(planId);
         db.prepare('DELETE FROM meta WHERE key = ?').run(`plan_brief:${planId}`);
+        db.prepare('DELETE FROM meta WHERE key = ?').run(`studyPositions:${planId}`);
         for (const row of db.prepare("SELECT key, value FROM meta WHERE key GLOB 'quality:*'").all()) if (fromJSON(row.value).planId === planId) db.prepare('DELETE FROM meta WHERE key = ?').run(row.key);
         for (const prefix of ['revision', 'quality_note']) for (const row of db.prepare('SELECT key, value FROM meta WHERE key GLOB ?').all(`${prefix}:*`)) if (fromJSON(row.value).planId === planId) db.prepare('DELETE FROM meta WHERE key = ?').run(row.key);
         for (const lessonId of lessonIds) for (const field of ['quizRecords', 'revisionNotices', 'sourceSearch', 'sourceBundles', 'factChecks']) db.prepare('DELETE FROM meta WHERE key = ?').run(`${field}:${lessonId}`);

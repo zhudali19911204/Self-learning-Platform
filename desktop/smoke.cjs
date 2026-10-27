@@ -344,8 +344,8 @@ exports.run = async (window, store, directory) => {
     await new Promise(resolve => window.webContents.once('did-finish-load', resolve));
     await wait("document.querySelector('main h1')");
     await evaluate("document.querySelector('[data-page=routes]').click(); document.querySelector('[data-action=open-lesson][data-id=p1]').click()");
-    await wait("document.querySelector('[data-tab=chat]')");
-    await evaluate("document.querySelector('[data-tab=chat]').click(); document.querySelector('#lesson-question').value = '什么是输出？'; document.querySelector('#lesson-ask-form').requestSubmit()");
+    await wait("document.querySelector('[data-action=quick-ask]')");
+    await evaluate("document.querySelector('[data-action=quick-ask]').click(); document.querySelector('#lesson-question').value = '什么是输出？'; document.querySelector('#lesson-ask-form').requestSubmit()");
     await wait("document.querySelector('.chat-message.from-ai')?.textContent.includes('显示给用户') && !document.querySelector('#lesson-ask-form button[type=submit]').disabled");
     await store.flush();
     assert.equal(requests.length, 1);

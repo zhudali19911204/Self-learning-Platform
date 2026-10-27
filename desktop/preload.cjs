@@ -7,6 +7,11 @@ async function invoke(channel, ...args) {
 contextBridge.exposeInMainWorld('learnflowDesktop', Object.freeze({
   load: () => invoke('learnflow:load'),
   saveSettingsLayout: value => invoke('learnflow:save-settings-layout', value),
+  saveStudyPosition: (id,value) => invoke('learnflow:save-study-position',id,value),
+  saveStudyPositionSync: (id,value) => {
+    const result=ipcRenderer.sendSync('learnflow:save-study-position-sync',id,value);
+    if (!result.ok) throw new Error(result.error); return result.value;
+  },
   getLesson: id => invoke('learnflow:get-lesson', id),
   setCourseSourceSearch: (id, enabled) => invoke('learnflow:set-course-source-search', id, enabled),
   openCourseSource: url => invoke('learnflow:open-course-source', url),

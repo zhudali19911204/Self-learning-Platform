@@ -29,6 +29,18 @@ exports.run = async (window, directory) => {
     await evaluate(`window.learnflowDesktop.savePlan(${JSON.stringify(plan)})`);
     const outline = await evaluate(`window.learnflowDesktop.saveOutline('${id}',${JSON.stringify({ intro: '已讲内容', blocks: [{ type: 'reading', title: '核对方法', objective: '核对任务与条件' }, { type: 'quiz', title: '初始四题', objective: '应用判断' }] })})`);
     const questions = Array.from({ length: 4 }, (_, i) => ({ prompt: `原题${i + 1}：选择正确条件。`, options: ['条件甲', '条件乙', '条件丙', '条件丁'], answer: i, explanation: `本题依据条件${i + 1}判断。` }));
+    const checkSingleColumn = async (total, pending=0) => {
+      const before=calls.length;
+      await evaluate("document.querySelector('[data-action=lesson-tab][data-tab=read]').click()");
+      await wait("document.querySelector('.quiz-question-count')");
+      const overview=await evaluate(`(() => {const column=document.querySelector('[data-block-id="${outline.blocks[1].id}"]');return {columns:document.querySelectorAll('.quiz-question-count').length,title:column.querySelector('.block-title').textContent,total:column.querySelector('.quiz-question-count').textContent,pending:column.querySelector('.quiz-addition-pending')?.textContent||'',visibleBlocks:document.querySelectorAll('.block-sequence [data-block-id]').length,checks:column.querySelectorAll('.fact-check-strip').length};})()`);
+      assert.equal(overview.columns,1); assert.equal(overview.title,'初始四题');
+      assert.ok(overview.total.includes(`已生成 ${total} 道练习题`)); assert.equal(overview.visibleBlocks,2);
+      if(pending) assert.ok(overview.pending.includes(`${pending} 次追加尚未完成`)); else assert.equal(overview.pending,'');
+      assert.equal(calls.length,before,'reading the grouped column must not call a model');
+      await evaluate("document.querySelector('[data-action=lesson-tab][data-tab=quiz]').click()");
+      await wait(`document.querySelectorAll('.question').length===${total}`);
+    };
     await evaluate(`window.learnflowDesktop.saveBlock('${id}','${outline.blocks[0].id}',{text:'先核对任务和条件，再判断方法是否适用。'})`);
     await evaluate(`window.learnflowDesktop.saveBlock('${id}','${outline.blocks[1].id}',${JSON.stringify({ questions })})`);
     const open = async () => { await evaluate(`document.querySelector('[data-page=routes]').click();document.querySelector('[data-action=open-lesson][data-id="${id}"]').click()`); await wait("document.querySelector('[data-action=lesson-tab][data-tab=quiz]')"); await evaluate("document.querySelector('[data-action=lesson-tab][data-tab=quiz]').click()"); await wait("document.querySelector('#more-quiz-form')"); };
@@ -41,6 +53,7 @@ exports.run = async (window, directory) => {
     assert.equal(calls.length, 1); assert.equal(calls[0].questionCount, 3); assert.equal(calls[0].existingQuestions.length, 4);
     const appended = await evaluate(`window.learnflowDesktop.getLesson('${id}')`);
     assert.deepEqual(appended.blockCourse.blocks[1].content.questions, questions);
+    await checkSingleColumn(7);
     assert.equal(await evaluate("document.querySelectorAll('.quiz-mastered').length"), 2);
     assert.equal(await evaluate("document.querySelector('#quiz-form [name=q0]')"), null);
     assert.equal(await evaluate("document.querySelector('#quiz-form [name=q2]')"), null);
@@ -53,17 +66,25 @@ exports.run = async (window, directory) => {
     await evaluate("document.querySelector('#more-quiz-count').value='1';document.querySelector('#more-quiz-form').requestSubmit()");
     await wait("document.querySelector('.more-quiz-panel .inline-error').textContent.includes('原题和成绩已保留') && !document.querySelector('#more-quiz-form button').disabled");
     assert.equal(calls.length, 2); assert.equal(await evaluate("document.querySelectorAll('.quiz-mastered').length"), 7);
+    await checkSingleColumn(7,1);
     const failed = await evaluate(`window.learnflowDesktop.getLesson('${id}')`);
     assert.equal(failed.progress.lastScore, 100);
     await evaluate("document.querySelector('#more-quiz-form').requestSubmit()");
     await wait("document.querySelectorAll('.question').length===8 && !document.querySelector('#more-quiz-form button').disabled");
     assert.equal(calls.length, 3); const retried = await evaluate(`window.learnflowDesktop.getLesson('${id}')`);
     assert.equal(retried.blockCourse.blocks.length, failed.blockCourse.blocks.length, 'retry reuses the pending batch');
+    await checkSingleColumn(8);
     assert.equal(await evaluate("document.querySelectorAll('.quiz-mastered').length"), 7);
     await evaluate("document.querySelector('#quiz-form input[name=q7][value=\"0\"]').checked=true;document.querySelector('#quiz-form').requestSubmit()");
     await wait("document.querySelectorAll('.quiz-mastered').length===8");
+    await reload(); await open(); await checkSingleColumn(8);
+    assert.equal(await evaluate("document.querySelectorAll('.quiz-mastered').length"),8);
+    await evaluate("document.querySelector('[data-action=lesson-tab][data-tab=read]').click();document.querySelector('.quiz-question-count').scrollIntoView({block:'center'})");
+    await evaluate('new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))');
+    await writeFile(path.join(directory,'quiz-single-column-smoke.png'),(await window.webContents.capturePage()).toPNG());
+    await evaluate("document.querySelector('[data-action=lesson-tab][data-tab=quiz]').click()");
     await evaluate("document.querySelector('#more-quiz-form').scrollIntoView({block:'center'});new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))");
     const screenshot = path.join(directory, 'quiz-append-smoke.png'); await writeFile(screenshot, (await window.webContents.capturePage()).toPNG());
-    console.log('QUIZ_SMOKE_OK', JSON.stringify({ passed: true, calls: calls.length, questions: 8, realKeyCalls: 0, checks: ['append-selected-count', 'original-questions-preserved', 'passed-questions-show-answers', 'only-unpassed-answers-required', 'grades-survive-reload', 'failed-batch-retried-once-explicitly'], screenshot }));
+    console.log('QUIZ_SMOKE_OK', JSON.stringify({ passed: true, calls: calls.length, questions: 8, realKeyCalls: 0, checks: ['append-selected-count', 'single-original-column','grouped-count-after-retry-and-reload','original-questions-preserved', 'passed-questions-show-answers', 'only-unpassed-answers-required', 'grades-survive-reload', 'failed-batch-retried-once-explicitly'], screenshot }));
   } finally { backend.closeAllConnections(); await new Promise(resolve => backend.close(resolve)); }
 };

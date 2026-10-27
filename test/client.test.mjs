@@ -1,6 +1,7 @@
 import test from 'node:test';
 import { createGenerationProgress } from '../public/generation-progress.js';
 import { generationCancelled, isGenerationCancelled } from '../public/task-cancellation.js';
+import { createStudyPositionTracker, studyPositionFor } from '../public/study-position.js';
 import { factCheckLabels, sameFactContent } from '../public/fact-check.js';
 import { masteredQuizQuestions, quizRecordAfterChange, quizQuestionKey, quizInitialCount, quizBatchLimit, quizQuestionLimit } from '../public/quiz-progress.js';
 import assert from 'node:assert/strict';
@@ -756,10 +757,10 @@ function realSettingsHarness(bridge) {
   dom.window.learnflowDesktop = bridge; dom.window.scrollTo = () => {};
   const context = vm.createContext({ generationCancelled, isGenerationCancelled, masteredQuizQuestions, quizRecordAfterChange, quizQuestionKey, quizInitialCount, quizBatchLimit, quizQuestionLimit, createGenerationProgress, factCheckLabels, sameFactContent, officialSource, validSourceSearch, courseReferences, teachingContextNotice, qualityRubric, qualityLabels, qualityModelId, revisionTypes, revisionStatuses, revisionCheckLabels, revisionContent, revisionText, revisionDiff,
     demoPlan, demoLessons, lessonFromBlocks, validOutline, validBlockContent, validBlockSpec, blockGenerationContext, revisedContent, restoredContent, assistedBlockTypes, Marked, DOMPurify, createMarkdownRenderer, validQuestionnaire, validClarification, learningBriefFrom, validIllustration, validImageProposal, speechDefaults, speechVoices, listeningText, speechTurns, speechRequest, validAudioId, validKnowledgeSource, validKnowledgeDraft, localKnowledgeDraft, knowledgeTags, knowledgeConditions, validAnnotations, personalNotesForSource, personalNotesMarkdown, knowledgeCatalog, knowledgeDomain, knowledgeDomainColors, knowledgeTopic, retrieveKnowledge, validKnowledgeOrganization, courseKnowledgeTree, knowledgeTree, knowledgeGraph, filterKnowledgeGraph, createGraphMotion, stepGraphMotion, structuredClone, crypto: webcrypto, AbortSignal,
-    document, window: dom.window, FormData: dom.window.FormData, setTimeout: () => 1, clearTimeout() {}
+    document, window: dom.window, FormData: dom.window.FormData, createStudyPositionTracker, studyPositionFor, setTimeout: () => 1, clearTimeout() {}
   });
   vm.runInContext(source, context);
-  return { document, run: code => vm.runInContext(code, context), close: () => dom.window.close(),
+  return { document, run: code => vm.runInContext(code, context), close: () => {vm.runInContext('studyTracker.dispose()',context);dom.window.close();},
     ready: async () => { await Promise.resolve(); },
     fire: async (name, target, extras = {}) => { for (const listener of listeners.get(name) || []) await listener({ target, ...extras, preventDefault() {} }); }
   };
@@ -771,7 +772,7 @@ function harness(saved, fetchImpl, desktopBridge) {
     if (!nodes.has(selector)) nodes.set(selector, { innerHTML: '', textContent: '', open: false, attributes: {}, setAttribute(name, value) { this.attributes[name] = value; }, classList: { add() {}, remove() {} }, scrollIntoView() {}, focus() {}, showModal() { this.open = true; }, close() { this.open = false; } });
     return nodes.get(selector);
   };
-  const context = vm.createContext({ generationCancelled, isGenerationCancelled, masteredQuizQuestions, quizRecordAfterChange, quizQuestionKey, quizInitialCount, quizBatchLimit, quizQuestionLimit, createGenerationProgress, factCheckLabels, sameFactContent, officialSource, validSourceSearch, courseReferences, teachingContextNotice, qualityRubric, qualityLabels, qualityModelId, revisionTypes, revisionStatuses, revisionCheckLabels, revisionContent, revisionText, revisionDiff,
+  const context = vm.createContext({ createStudyPositionTracker, studyPositionFor, generationCancelled, isGenerationCancelled, masteredQuizQuestions, quizRecordAfterChange, quizQuestionKey, quizInitialCount, quizBatchLimit, quizQuestionLimit, createGenerationProgress, factCheckLabels, sameFactContent, officialSource, validSourceSearch, courseReferences, teachingContextNotice, qualityRubric, qualityLabels, qualityModelId, revisionTypes, revisionStatuses, revisionCheckLabels, revisionContent, revisionText, revisionDiff,
     demoPlan, demoLessons, lessonFromBlocks, validOutline, validBlockContent, validBlockSpec, blockGenerationContext, revisedContent, restoredContent, assistedBlockTypes, Marked, DOMPurify, createMarkdownRenderer, validQuestionnaire, validClarification, learningBriefFrom, validIllustration, validImageProposal, speechDefaults, speechVoices, listeningText, speechTurns, speechRequest, validAudioId, validKnowledgeSource, validKnowledgeDraft, localKnowledgeDraft, knowledgeTags, knowledgeConditions, validAnnotations, personalNotesForSource, personalNotesMarkdown, knowledgeCatalog, knowledgeDomain, knowledgeDomainColors, knowledgeTopic, retrieveKnowledge, validKnowledgeOrganization, courseKnowledgeTree, knowledgeTree, knowledgeGraph, filterKnowledgeGraph, createGraphMotion, stepGraphMotion, structuredClone, crypto: webcrypto, AbortSignal,
     document: { querySelector: node, addEventListener(name, listener) { const group = listeners.get(name) || []; group.push(listener); listeners.set(name, group); } },
     localStorage: { get length() { return storage.size; }, key: index => [...storage.keys()][index] ?? null, getItem: key => storage.get(key) ?? null, setItem: (key, value) => storage.set(key, value), removeItem: key => storage.delete(key) },
@@ -850,6 +851,80 @@ test('pending first quizzes display the fixed four-question rule without rewriti
   assert.doesNotMatch(app.node('#app').innerHTML,/首次固定生成4题/);
   assert.equal(app.run('state.blockCourses.p1.blocks[1].content.questions.length'),1);
 });
+test('appended quizzes appear in the original exercise column with total counts and continuous visible numbering', () => {
+  const app=harness(), question=i=>({prompt:`题目${i}？`,options:['甲','乙','丙','丁'],answer:0,explanation:'按已讲条件判断。'});
+  const course={intro:'导语',blocks:[
+    {id:'r1',type:'reading',title:'讲解',objective:'理解',content:{text:'已讲内容。'}},
+    {id:'q1',type:'quiz',title:'文件保存与找回小测',objective:'检验文件操作。',content:{questions:[1,2,3,4].map(question)}},
+    {id:'s1',type:'summary',title:'本课总结',objective:'回顾',content:null},
+    {id:'extra-1',type:'quiz',title:'补充练习 · 第 2 组',objective:'继续检验',content:{questions:[5,6,7].map(question)}},
+    {id:'extra-2',type:'quiz',title:'补充练习 · 第 3 组',objective:'待重试',content:null},
+    {id:'p1-extra',type:'practice',title:'独立实践',objective:'应用',content:{text:'完成任务。'}}
+  ]};
+  app.run(`state.blockCourses.p1=${JSON.stringify(course)};activeLesson='p1';page='study';lessonTab='read';render()`);
+  const original=app.run('JSON.stringify(state)');
+  const doc=new JSDOM(app.node('#app').innerHTML).window.document;
+  assert.deepEqual([...doc.querySelectorAll('.block-sequence [data-block-id]')].map(section=>section.dataset.blockId),['r1','q1','s1','p1-extra']);
+  assert.deepEqual([...doc.querySelectorAll('.block-sequence .teaching-part-heading>.pill')].map(label=>label.textContent),['01 · 知识讲解','02 · 随堂练习','03 · 知识总结','04 · 动手实践']);
+  const quiz=doc.querySelector('[data-block-id="q1"]');
+  assert.equal(quiz.querySelector('.block-title').textContent,'文件保存与找回小测');
+  assert.match(quiz.querySelector('.quiz-question-count').textContent,/已生成 7 道练习题/);
+  assert.match(quiz.querySelector('.quiz-addition-pending').textContent,/1 次追加尚未完成/);
+  assert.equal(quiz.querySelector('[data-action="quiz"]').textContent.trim(),'去练习');
+  assert.equal(app.run('contentFor("p1").questions.length'),7);
+  assert.equal(app.run('JSON.stringify(state)'),original);
+  app.run("lessonTab='quiz';render()");
+  assert.equal(new JSDOM(app.node('#app').innerHTML).window.document.querySelectorAll('.question').length,7);
+});
+
+test('grouped exercises retain separate review targets without presenting the original review as covering new questions', async t => {
+  const app=realSettingsHarness({load:async()=>({status:{mode:'demo'}}),checkBlockFacts:async()=>{throw new Error('Rendering must not call the model');}});
+  t.after(()=>app.close());await app.ready();
+  const q={prompt:'选择适用条件？',options:['甲','乙','丙','丁'],answer:0,explanation:'按条件判断。'};
+  const original={questions:[q]},additional={questions:[{...q,prompt:'另一个情境应如何选择？'}]};
+  const course={intro:'导语',blocks:[{id:'r1',type:'reading',title:'讲解',objective:'理解',content:{text:'已讲内容。'}},{id:'q1',type:'quiz',title:'原有练习',objective:'检验',content:original},{id:'q2',type:'quiz',title:'补充练习 · 第 2 组',objective:'追加',content:additional}]};
+  const reviews=[{id:'review-original',blockId:'q1',status:'clear',summary:'原题未发现疑点。',issues:[],sources:[],content:original},{id:'review-added',blockId:'q2',status:'failed',summary:'追加题核查未完成。',error:'模拟核查失败。',issues:[],sources:[],content:additional}];
+  app.run(`state.blockCourses.p1=${JSON.stringify(course)};state.factChecks={p1:${JSON.stringify(reviews)}};activeLesson='p1';page='study';lessonTab='read';render()`);
+  const originalState=app.run('JSON.stringify(state)'),doc=app.document;
+  const history=doc.querySelector('[data-block-id="q1"] .quiz-check-history');
+  assert.ok(history);assert.equal(history.open,false);
+  assert.match(history.querySelector('summary').textContent,/2 批/);
+  assert.equal(history.querySelectorAll('.fact-check-strip').length,2);
+  assert.equal(history.querySelectorAll('.is-clear').length,1);
+  assert.equal(history.querySelectorAll('.is-failed').length,1);
+  assert.deepEqual([...history.querySelectorAll('[data-action="check-block-facts"]')].map(button=>button.dataset.block),['q1','q2']);
+  assert.equal(doc.querySelector('[data-block-id="q2"]'),null);
+  assert.equal(app.run('JSON.stringify(state)'),originalState);
+});
+
+test('manual exercise modules stay separate and imported supplement-only courses keep one visible anchor', () => {
+  const app=harness(),q={prompt:'判断条件？',options:['甲','乙','丙','丁'],answer:0,explanation:'按条件判断。'};
+  const course={intro:'导语',blocks:[{id:'r1',type:'reading',title:'讲解',objective:'理解',content:{text:'正文。'}},{id:'q1',type:'quiz',title:'主练习',objective:'检验',content:null},{id:'q2',type:'quiz',title:'用户单独添加的练习',objective:'进阶检验',content:{questions:[q]}},{id:'q3',type:'quiz',title:'补充练习 · 第 3 组',objective:'追加',content:{questions:[{...q,prompt:'新情境？'}]}}]};
+  app.run(`state.blockCourses.p1=${JSON.stringify(course)};activeLesson='p1';page='study';lessonTab='read';render()`);
+  let doc=new JSDOM(app.node('#app').innerHTML).window.document;
+  assert.equal(doc.querySelectorAll('.quiz-question-count').length,2);
+  assert.ok(doc.querySelector('[data-block-id="q2"]'));
+  assert.equal(doc.querySelector('[data-block-id="q3"]'),null);
+  assert.match(doc.querySelector('[data-block-id="q1"] .quiz-question-count').textContent,/已生成 1 道/);
+  assert.equal(doc.querySelector('[data-block-id="q1"] [data-action="generate-block"]').dataset.block,'q1');
+  app.run("state.blockCourses.p1.blocks=state.blockCourses.p1.blocks.filter(b=>!['q1','q2'].includes(b.id));state.blockCourses.p1.blocks.push({...state.blockCourses.p1.blocks[1],id:'q4',title:'补充练习 · 第 4 组'});render()");
+  doc=new JSDOM(app.node('#app').innerHTML).window.document;
+  assert.equal(doc.querySelectorAll('.quiz-question-count').length,1);
+  assert.ok(doc.querySelector('[data-block-id="q3"]'));
+  assert.match(doc.querySelector('.quiz-question-count').textContent,/已生成 2 道/);
+});
+
+test('hiding appended quiz columns does not create new explanation/example pairings across stored boundaries', () => {
+  const app=harness(),q={prompt:'判断条件？',options:['甲','乙','丙','丁'],answer:0,explanation:'按条件判断。'};
+  const spec=(id,type)=>({id,type,title:id,objective:'理解',content:{text:'教学正文。'}});
+  const course={intro:'导语',blocks:[{id:'q1',type:'quiz',title:'原题',objective:'检验',content:{questions:[q]}},spec('r1','reading'),{id:'q2',type:'quiz',title:'补充练习 · 第 2 组',objective:'追加',content:{questions:[q]}},spec('x1','example'),spec('r2','reading'),spec('x2','example')]};
+  app.run(`state.blockCourses.p1=${JSON.stringify(course)};activeLesson='p1';page='study';lessonTab='read';render()`);
+  const doc=new JSDOM(app.node('#app').innerHTML).window.document;
+  assert.equal(doc.querySelector('[data-block-id="r1"]').closest('.teaching-unit').querySelectorAll('.teaching-example').length,0);
+  assert.equal(doc.querySelector('[data-block-id="x1"]').closest('.teaching-unit'),null);
+  assert.equal(doc.querySelector('[data-block-id="r2"]').closest('.teaching-unit').querySelector('[data-block-id="x2"]').dataset.blockId,'x2');
+});
+
 test('additional quiz batches preserve passes across submission and reload; failed additions retry the same pending block', async () => {
   const requests = []; let fail = false;
   const app = harness(null, async (url, options) => {
@@ -888,6 +963,11 @@ test('additional quiz batches preserve passes across submission and reload; fail
   dom = new JSDOM(app.node('#app').innerHTML);
   assert.equal(dom.window.document.querySelectorAll('.quiz-mastered').length, 5);
   assert.ok(dom.window.document.querySelector('[name=q5]')); assert.ok(dom.window.document.querySelector('[name=q6]')); dom.window.close();
+  app.run("lessonTab='read';render()");
+  dom=new JSDOM(app.node('#app').innerHTML);
+  assert.equal(dom.window.document.querySelectorAll('.quiz-question-count').length,1);
+  assert.match(dom.window.document.querySelector('.quiz-question-count').textContent,/已生成 7 道/);
+  assert.equal(dom.window.document.querySelectorAll('.block-sequence [data-block-id]').length,2);dom.window.close();
 });
 
 test('cancelling a new web quiz batch removes its placeholder and preserves old questions and scores', async () => {
@@ -1050,6 +1130,31 @@ test('home restores the hero, statistics and two-panel layout without changing l
   assert.equal(complete.querySelector('.home-continue [data-action="open-lesson"]').textContent.trim(), '复习课程');
 });
 
+test('Continue learning uses the saved lesson and column per route while the recommended next lesson stays unchanged',async()=>{
+  const app=harness();
+  const saved={lessonId:'p2',tab:'quiz',anchor:{kind:'question',index:1,version:'0'.repeat(16)},offset:80,scrollTop:1500,label:'随堂练习 · 第 2 题',syllabusCollapsed:true,collapsedBlockIds:[],updated:1000};
+  app.run(`state.studyPositions={[state.active]:${JSON.stringify(saved)}};render()`);
+  let doc=new JSDOM(app.node('#app').innerHTML).window.document;
+  assert.equal(doc.querySelector('.home-continue [data-action="open-lesson"]').dataset.id,'p2');
+  assert.equal(doc.querySelector('.home-continue [data-action="open-lesson"]').dataset.resume,'true');
+  assert.equal(doc.querySelector('.next-up small').textContent,'上次学到');
+  assert.equal(doc.querySelector('.resume-location').textContent,saved.label);
+  assert.equal(app.run('nextLesson().id'),'p1');
+  const before=app.run('JSON.stringify(state.progress)');
+  await app.run("action('open-lesson',{dataset:{id:'p2',resume:'true'}})");
+  assert.equal(app.run('activeLesson'),'p2');assert.equal(app.run('lessonTab'),'quiz');assert.equal(app.run('syllabusCollapsed'),true);
+  assert.equal(app.run('JSON.stringify(state.progress)'),before);
+  const restored=harness(app.run('JSON.stringify(state)'));
+  doc=new JSDOM(restored.node('#app').innerHTML).window.document;
+  assert.equal(doc.querySelector('.home-continue [data-action="open-lesson"]').dataset.id,'p2');
+  restored.run("state.studyPositions[state.active].lessonId='missing-lesson';render()");
+  doc=new JSDOM(restored.node('#app').innerHTML).window.document;
+  assert.equal(doc.querySelector('.home-continue [data-action="open-lesson"]').dataset.id,'p1');
+  restored.run(`state.studyPositions[state.active]=${JSON.stringify({...saved,label:'<img src=x onerror=bad()>'})};render()`);
+  doc=new JSDOM(restored.node('#app').innerHTML).window.document;
+  assert.equal(doc.querySelector('.resume-location img'),null);assert.equal(doc.querySelector('.resume-location').textContent,'<img src=x onerror=bad()>');
+});
+
 test('legacy and block lessons share a title/tab toolbar while settings, annotations and quiz notices stay outside it', async t => {
   const app = realSettingsHarness({ load: async () => ({ status:{mode:'demo'} }), inspectQuality:async()=>({}), getLesson:async()=>({}) });
   t.after(() => app.close()); await app.ready();
@@ -1060,18 +1165,29 @@ test('legacy and block lessons share a title/tab toolbar while settings, annotat
     assert.equal(doc.querySelectorAll('.lesson-toolbar').length, 1);
     assert.equal(doc.querySelector('.lesson-toolbar h1').textContent, demoPlan.lessons[0].title);
     assert.equal(doc.querySelector('.lesson-toolbar h1').getAttribute('title'), demoPlan.lessons[0].title);
-    assert.deepEqual([...doc.querySelectorAll('.lesson-toolbar [role="tab"]')].map(tab=>tab.dataset.tab), ['read','quiz','chat']);
+    assert.deepEqual([...doc.querySelectorAll('.lesson-toolbar [role="tab"]')].map(tab=>tab.dataset.tab), ['read','quiz']);
+    assert.equal(doc.querySelector('.lesson-toolbar [data-tab="chat"]'),null);
     assert.equal(Boolean(doc.querySelector('.knowledge-entry-toolbar')?.closest('.lesson-toolbar')), false);
     assert.equal(Boolean(doc.querySelector('.quality-entry')?.closest('.lesson-toolbar')), false);
     assert.equal(Boolean(doc.querySelector('.course-source-controls')?.closest('.lesson-toolbar')), false);
   };
   assertToolbar();
   const oldState = app.run('JSON.stringify(state)');
-  await app.fire('click', doc.querySelector('[data-action="lesson-tab"][data-tab="chat"]'));
-  assert.equal(doc.querySelector('[data-tab="chat"]').getAttribute('aria-selected'), 'true');
+  await app.fire('click', doc.querySelector('[data-action="quick-ask"]'));
+  assert.ok(doc.querySelector('.quick-ask-button.active'));
+  assert.ok(doc.querySelector('.study-chat'));
   assert.equal(app.run('JSON.stringify(state)'), oldState);
   app.run("state.blockCourses.p1={intro:'导语',blocks:[{id:'read-ui',type:'reading',title:'讲解',objective:'理解',content:{text:'讲解正文'}},{id:'task-ui',type:'practice',title:'实践',objective:'应用',content:{text:'实践正文'}}]}; lessonTab='read'; render()");
   assertToolbar();
+  app.run("state.chats.p1=[{role:'user',content:'原有问题'},{role:'assistant',content:'原有回答'}];render()");
+  const chats=app.run('JSON.stringify(state.chats.p1)');
+  await app.fire('click',doc.querySelector('[data-action="quick-ask"]'));
+  assert.match(doc.querySelector('.chat-history').textContent,/原有问题[\s\S]*原有回答/);
+  assert.ok(doc.querySelector('[data-action="open-speech"]'));
+  assert.equal(doc.querySelector('.lesson-toolbar [data-tab="chat"]'),null);
+  await app.fire('click',doc.querySelector('[data-action="back-to-reading"]'));
+  assert.equal(app.run('JSON.stringify(state.chats.p1)'),chats);
+  assert.equal(doc.querySelector('[data-tab="read"]').getAttribute('aria-selected'),'true');
   assert.equal(doc.querySelector('.teaching-reading .revision-actions>[data-action="request-revision"]').textContent, '换个讲法');
   assert.equal(doc.querySelector('[data-block-id="task-ui"] .revision-actions>[data-action="request-revision"]').textContent, '换个任务');
   assert.equal(doc.querySelector('.teaching-reading .block-title-row>[data-action="toggle-block-collapse"]').textContent, '收起');
