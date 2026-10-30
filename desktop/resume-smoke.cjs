@@ -32,7 +32,7 @@ exports.run=async(window,directory)=>{
   positions=(await load()).state.studyPositions;const latest=positions[plan.id];assert.ok(latest.offset>first.offset+110);
   assert.equal(await evaluate("document.querySelector('.home-continue [data-resume=true]').dataset.id"),id);
   assert.equal(await evaluate("document.querySelector('.resume-location').textContent"),practice.title);
-  await evaluate("document.querySelector('.home-continue [data-resume=true]').click()");
+  await evaluate("document.querySelector('.hero-continue[data-resume=true]').click()");
   await wait(`document.querySelector('[data-block-id="${practice.id}"]') && document.querySelector('#course-syllabus').hidden`);await frames();
   const restored=await evaluate(`({y:scrollY,offset:document.querySelector('.lesson-toolbar').getBoundingClientRect().height+12-document.querySelector('[data-block-id="${practice.id}"]').getBoundingClientRect().top,folded:document.querySelector('[data-block-id="${course.blocks[0].id}"] .block-collapsible-body').hidden})`);
   assert.ok(Math.abs(restored.offset-latest.offset)<5);assert.equal(restored.folded,true);

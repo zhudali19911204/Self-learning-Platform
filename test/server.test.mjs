@@ -193,7 +193,7 @@ test('serves all client assets and demo status; does not expose server files', a
   assert.equal(status.model, null);
   assert.equal(status.provider, 'ollama');
   assert.equal(status.configurationError, null);
-  for (const path of ['/', '/app.js', '/demo.js', '/blocks.js', '/teaching-context.js', '/planning.js', '/markdown.js', '/knowledge-index.js', '/knowledge-views.js', '/graph-motion.js', '/study-position.js', '/vendor/marked.js', '/vendor/purify.js', '/styles.css', '/favicon.svg']) {
+  for (const path of ['/', '/app.js', '/demo.js', '/blocks.js', '/teaching-context.js', '/planning.js', '/markdown.js', '/knowledge-index.js', '/knowledge-views.js', '/graph-motion.js', '/study-position.js', '/home-motion.js', '/vendor/marked.js', '/vendor/purify.js', '/styles.css', '/favicon.svg']) {
     const r = await app.get(path); assert.equal(r.status, 200); assert.ok((await r.text()).length > 0);
     assert.ok(r.headers.get('content-security-policy').includes("script-src 'self'"));
   }

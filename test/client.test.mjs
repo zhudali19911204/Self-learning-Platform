@@ -2,6 +2,7 @@ import test from 'node:test';
 import { createGenerationProgress } from '../public/generation-progress.js';
 import { generationCancelled, isGenerationCancelled } from '../public/task-cancellation.js';
 import { createStudyPositionTracker, studyPositionFor } from '../public/study-position.js';
+import { startHomeMotion } from '../public/home-motion.js';
 import { factCheckLabels, sameFactContent } from '../public/fact-check.js';
 import { masteredQuizQuestions, quizRecordAfterChange, quizQuestionKey, quizInitialCount, quizBatchLimit, quizQuestionLimit } from '../public/quiz-progress.js';
 import assert from 'node:assert/strict';
@@ -757,7 +758,7 @@ function realSettingsHarness(bridge) {
   dom.window.learnflowDesktop = bridge; dom.window.scrollTo = () => {};
   const context = vm.createContext({ generationCancelled, isGenerationCancelled, masteredQuizQuestions, quizRecordAfterChange, quizQuestionKey, quizInitialCount, quizBatchLimit, quizQuestionLimit, createGenerationProgress, factCheckLabels, sameFactContent, officialSource, validSourceSearch, courseReferences, teachingContextNotice, qualityRubric, qualityLabels, qualityModelId, revisionTypes, revisionStatuses, revisionCheckLabels, revisionContent, revisionText, revisionDiff,
     demoPlan, demoLessons, lessonFromBlocks, validOutline, validBlockContent, validBlockSpec, blockGenerationContext, revisedContent, restoredContent, assistedBlockTypes, Marked, DOMPurify, createMarkdownRenderer, validQuestionnaire, validClarification, learningBriefFrom, validIllustration, validImageProposal, speechDefaults, speechVoices, listeningText, speechTurns, speechRequest, validAudioId, validKnowledgeSource, validKnowledgeDraft, localKnowledgeDraft, knowledgeTags, knowledgeConditions, validAnnotations, personalNotesForSource, personalNotesMarkdown, knowledgeCatalog, knowledgeDomain, knowledgeDomainColors, knowledgeTopic, retrieveKnowledge, validKnowledgeOrganization, courseKnowledgeTree, knowledgeTree, knowledgeGraph, filterKnowledgeGraph, createGraphMotion, stepGraphMotion, structuredClone, crypto: webcrypto, AbortSignal,
-    document, window: dom.window, FormData: dom.window.FormData, createStudyPositionTracker, studyPositionFor, setTimeout: () => 1, clearTimeout() {}
+    document, window: dom.window, FormData: dom.window.FormData, createStudyPositionTracker, studyPositionFor, startHomeMotion, setTimeout: () => 1, clearTimeout() {}
   });
   vm.runInContext(source, context);
   return { document, run: code => vm.runInContext(code, context), close: () => {vm.runInContext('studyTracker.dispose()',context);dom.window.close();},
@@ -772,7 +773,7 @@ function harness(saved, fetchImpl, desktopBridge) {
     if (!nodes.has(selector)) nodes.set(selector, { innerHTML: '', textContent: '', open: false, attributes: {}, setAttribute(name, value) { this.attributes[name] = value; }, classList: { add() {}, remove() {} }, scrollIntoView() {}, focus() {}, showModal() { this.open = true; }, close() { this.open = false; } });
     return nodes.get(selector);
   };
-  const context = vm.createContext({ createStudyPositionTracker, studyPositionFor, generationCancelled, isGenerationCancelled, masteredQuizQuestions, quizRecordAfterChange, quizQuestionKey, quizInitialCount, quizBatchLimit, quizQuestionLimit, createGenerationProgress, factCheckLabels, sameFactContent, officialSource, validSourceSearch, courseReferences, teachingContextNotice, qualityRubric, qualityLabels, qualityModelId, revisionTypes, revisionStatuses, revisionCheckLabels, revisionContent, revisionText, revisionDiff,
+  const context = vm.createContext({ createStudyPositionTracker, studyPositionFor, startHomeMotion, generationCancelled, isGenerationCancelled, masteredQuizQuestions, quizRecordAfterChange, quizQuestionKey, quizInitialCount, quizBatchLimit, quizQuestionLimit, createGenerationProgress, factCheckLabels, sameFactContent, officialSource, validSourceSearch, courseReferences, teachingContextNotice, qualityRubric, qualityLabels, qualityModelId, revisionTypes, revisionStatuses, revisionCheckLabels, revisionContent, revisionText, revisionDiff,
     demoPlan, demoLessons, lessonFromBlocks, validOutline, validBlockContent, validBlockSpec, blockGenerationContext, revisedContent, restoredContent, assistedBlockTypes, Marked, DOMPurify, createMarkdownRenderer, validQuestionnaire, validClarification, learningBriefFrom, validIllustration, validImageProposal, speechDefaults, speechVoices, listeningText, speechTurns, speechRequest, validAudioId, validKnowledgeSource, validKnowledgeDraft, localKnowledgeDraft, knowledgeTags, knowledgeConditions, validAnnotations, personalNotesForSource, personalNotesMarkdown, knowledgeCatalog, knowledgeDomain, knowledgeDomainColors, knowledgeTopic, retrieveKnowledge, validKnowledgeOrganization, courseKnowledgeTree, knowledgeTree, knowledgeGraph, filterKnowledgeGraph, createGraphMotion, stepGraphMotion, structuredClone, crypto: webcrypto, AbortSignal,
     document: { querySelector: node, addEventListener(name, listener) { const group = listeners.get(name) || []; group.push(listener); listeners.set(name, group); } },
     localStorage: { get length() { return storage.size; }, key: index => [...storage.keys()][index] ?? null, getItem: key => storage.get(key) ?? null, setItem: (key, value) => storage.set(key, value), removeItem: key => storage.delete(key) },
@@ -1130,6 +1131,17 @@ test('home restores the hero, statistics and two-panel layout without changing l
   assert.equal(complete.querySelector('.home-continue [data-action="open-lesson"]').textContent.trim(), '复习课程');
 });
 
+test('home constellation previews real card titles safely and leaves learning data unchanged',()=>{
+  const app=harness();
+  app.run(`state.notes=[{id:'home-note',title:'<img src=x onerror=bad()>',tags:['实际知识'],updated:1000}];`);
+  const before=app.run('JSON.stringify(state)');app.run('render()');
+  const doc=new JSDOM(app.node('#app').innerHTML).window.document;
+  assert.equal(doc.querySelector('.float-card strong').textContent,'<img src=x onerror=bad()>');
+  assert.equal(doc.querySelector('.hero-art img'),null);
+  assert.match(doc.querySelector('.constellation-caption').textContent,/连线为视觉示意/);
+  assert.equal(app.run('JSON.stringify(state)'),before);
+});
+
 test('Continue learning uses the saved lesson and column per route while the recommended next lesson stays unchanged',async()=>{
   const app=harness();
   const saved={lessonId:'p2',tab:'quiz',anchor:{kind:'question',index:1,version:'0'.repeat(16)},offset:80,scrollTop:1500,label:'随堂练习 · 第 2 题',syllabusCollapsed:true,collapsedBlockIds:[],updated:1000};
@@ -1137,6 +1149,9 @@ test('Continue learning uses the saved lesson and column per route while the rec
   let doc=new JSDOM(app.node('#app').innerHTML).window.document;
   assert.equal(doc.querySelector('.home-continue [data-action="open-lesson"]').dataset.id,'p2');
   assert.equal(doc.querySelector('.home-continue [data-action="open-lesson"]').dataset.resume,'true');
+  assert.equal(doc.querySelector('.hero-continue').dataset.id,'p2');
+  assert.equal(doc.querySelector('.hero-continue').dataset.resume,'true');
+  assert.match(doc.querySelector('.hero-resume').textContent,/随堂练习 · 第 2 题/);
   assert.equal(doc.querySelector('.next-up small').textContent,'上次学到');
   assert.equal(doc.querySelector('.resume-location').textContent,saved.label);
   assert.equal(app.run('nextLesson().id'),'p1');

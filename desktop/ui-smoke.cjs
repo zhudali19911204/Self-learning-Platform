@@ -8,7 +8,7 @@ exports.run = async (window, directory) => {
   const { demoPlan } = await import('../public/demo.js');
   const evaluate = code => window.webContents.executeJavaScript(code, true);
   const frames = () => evaluate('new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))');
-  const wait = expression => evaluate(`new Promise((resolve,reject)=>{let n=0;const timer=setInterval(()=>{if(${expression}){clearInterval(timer);resolve()}else if(++n>100){clearInterval(timer);reject(new Error('UI smoke timed out'));}},50);})`);
+  const wait = expression => evaluate(`new Promise((resolve,reject)=>{let n=0;const timer=setInterval(()=>{if(${expression}){clearInterval(timer);resolve()}else if(++n>100){clearInterval(timer);reject(new Error(${JSON.stringify('UI smoke timed out: '+expression)}));}},50);})`);
   const screenshots = path.join(directory, '..', 'round-one-previews');
   await mkdir(screenshots, { recursive:true });
   window.webContents.setBackgroundThrottling(false);
@@ -16,6 +16,7 @@ exports.run = async (window, directory) => {
   const original = (await evaluate('window.learnflowDesktop.load()')).state;
   const plan = { ...structuredClone(demoPlan), id:`ui-${randomUUID()}`, title:'用 AI 提升日常工作效率', source:'ai', lessons:demoPlan.lessons.map((lesson,i)=>({ ...lesson, id:`ui-${randomUUID()}`, ...(i===0?{title:'从清晰的问题到可靠的输出：理解输入、约束与验证，并在实际工作中复用',objective:'通过明确目标、约束与检查方式，完成一次可核对的工作任务。'}:{}) })) };
   const lessonId = plan.lessons[0].id;
+  plan.description='从一个实际问题出发，明确目标与约束，动手完成任务，再核对结果。课程介绍可以展开阅读，首页默认保留简洁的三行摘要。'.repeat(12);
   await evaluate(`window.learnflowDesktop.savePlan(${JSON.stringify(plan)})`);
   const outline = { intro:'先理解任务，再设计输入，最后核对结果。这里的所有内容均为本地界面测试素材。', blocks:[
     {type:'reading',title:'把业务问题拆成清晰的目标、输入与完成标准',objective:'能用自己的话描述任务，并列出验证方式。'},
@@ -45,10 +46,36 @@ exports.run = async (window, directory) => {
     assert.deepEqual(home.panels,['home-continue','home-knowledge']);
     assert.equal(home.columns,width>560?2:1); assert.equal(home.floatingCards,3);
     assert.equal(home.primaryHeight, 40);
+    const description=await evaluate(`(() => {const text=document.querySelector('.home-course-description p'),button=document.querySelector('[data-action=toggle-home-description]'),hero=document.querySelector('.hero-continue');return {height:text.clientHeight,lineHeight:parseFloat(getComputedStyle(text).lineHeight),canExpand:!button.hidden,heroTarget:hero.dataset.id,cardTarget:document.querySelector('.home-continue [data-action=open-lesson]').dataset.id,heroOnScreen:hero.getBoundingClientRect().bottom<innerHeight};})()`);
+    assert.ok(description.height<=description.lineHeight*3+1,`description must be limited to three lines at ${width}`);
+    assert.equal(description.canExpand,true);assert.equal(description.heroTarget,description.cardTarget);assert.equal(description.heroOnScreen,true);
+    await evaluate("document.querySelector('[data-action=toggle-home-description]').click()");
+    assert.equal(await evaluate("document.querySelector('[data-action=toggle-home-description]').getAttribute('aria-expanded')==='true' && document.querySelector('.home-course-description p').clientHeight>parseFloat(getComputedStyle(document.querySelector('.home-course-description p')).lineHeight)*3"),true);
+    await evaluate("document.querySelector('[data-action=toggle-home-description]').click()");await frames();
     await writeFile(path.join(screenshots,`home-${width}.png`),(await window.webContents.capturePage()).toPNG());
     if(width===1360 || width===390) {
       await evaluate("document.querySelector('.dashboard-columns').scrollIntoView({block:'start'})"); await frames();
       await writeFile(path.join(screenshots,`home-panels-${width}.png`),(await window.webContents.capturePage()).toPNG());
+    }
+    if(width===1360) {
+      await evaluate("window.scrollTo({top:0,behavior:'auto'})");await frames();
+      await wait("!document.querySelector('.hero').classList.contains('is-motion-paused')");
+      const point=await evaluate("(()=>{const r=document.querySelector('.hero').getBoundingClientRect();return {x:r.left+r.width*.8,y:r.top+r.height*.65}})()");
+      await evaluate(`document.querySelector('.hero').dispatchEvent(new PointerEvent('pointermove',{clientX:${point.x},clientY:${point.y},pointerType:'mouse'}))`);await frames();
+      assert.notEqual(await evaluate("document.querySelector('.hero').style.getPropertyValue('--pointer-x')"),'0px');
+      // A shorter viewport lets the entire hero leave the viewport even when
+      // the dashboard below it has only two compact panels.
+      window.setContentSize(width,650);await frames();
+      await evaluate("document.querySelector('.bottom-note').scrollIntoView({block:'end',behavior:'auto'})");
+      await wait("document.querySelector('.hero').classList.contains('is-motion-paused')");
+      assert.equal(await evaluate("getComputedStyle(document.querySelector('.constellation-flow')).animationPlayState"),'paused');
+      const cdp=window.webContents.debugger;cdp.attach('1.3');
+      try {
+        await cdp.sendCommand('Emulation.setEmulatedMedia',{features:[{name:'prefers-reduced-motion',value:'reduce'}]});
+        await wait("document.querySelector('.page-home').classList.contains('is-motion-reduced')");
+        assert.equal(await evaluate("getComputedStyle(document.querySelector('.constellation-flow')).animationName"),'none');
+        assert.equal(await evaluate("[...document.querySelectorAll('[data-stat-count]')].every(n=>n.textContent===n.dataset.statCount)"),true);
+      } finally {await cdp.sendCommand('Emulation.setEmulatedMedia',{features:[]});cdp.detach();window.setContentSize(width,900);}
     }
     await evaluate("document.querySelector('.home-continue [data-action=open-lesson]').click()");
     await wait("document.querySelector('.teaching-reading .block-text')"); await frames();

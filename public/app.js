@@ -19,6 +19,7 @@ import { factCheckLabels, sameFactContent } from './fact-check.js';
 import { masteredQuizQuestions, quizRecordAfterChange, quizQuestionKey, quizInitialCount, quizBatchLimit, quizQuestionLimit } from './quiz-progress.js';
 import { generationCancelled, isGenerationCancelled } from './task-cancellation.js';
 import { createStudyPositionTracker, studyPositionFor } from './study-position.js';
+import { startHomeMotion } from './home-motion.js';
 
 const renderMarkdown = createMarkdownRenderer(Marked, DOMPurify);
 
@@ -75,6 +76,8 @@ let graphMotion = null, graphFrame = 0, pendingGraph = null, graphPositions = ne
 let graphPaused = Boolean(window.matchMedia?.('(prefers-reduced-motion: reduce)').matches);
 let graphTagFilter = '', graphStatusFilter = '', graphTypeFilter = 'all', graphRelationFilter = 'all', graphOrphansOnly = false, graphLocalTwoHop = false, graphSpacing = 1;
 let readingReturn = null;
+let stopHomeMotion = () => {}, homeEntranceShown = false;
+const homeStatsSeen = new Map(), expandedHomeDescriptions = new Set();
 let pendingStudyPosition=Promise.resolve(), studyPositionError='', lessonOpenTicket=0;
 let syllabusCollapsed = false, annotationDraft = null, pendingAnnotationAnchor = null;
 const collapsedBlocks = new Set();
@@ -451,6 +454,7 @@ function switchLessonTab(target, focusQuestion = false) {
 }
 function render() {
   const readingPosition=studyTracker.capture();
+  stopHomeMotion();
   stopGraphMotion(); pendingGraph = null;
   rememberModelDrafts();
   const titles = { home: '学习概览', routes: '我的学习路线', study: '学习工作台', practice: '练习与巩固', wiki: '我的知识库', settings: '设置与数据' };
@@ -474,6 +478,8 @@ function render() {
   paintAnnotations();
   decorateGraphToolbar();
   startGraphMotion(pendingGraph);
+  stopHomeMotion=startHomeMotion({document,window,seen:homeStatsSeen,enter:!homeEntranceShown});
+  if(page==='home')homeEntranceShown=true;
   studyTracker.rendered();
   if(readingPosition)void studyTracker.restore(readingPosition);
 }
@@ -643,14 +649,22 @@ function home() {
   const attempts = Object.values(state.progress).reduce((n, v) => n + (v.attempts || 0), 0);
   const courseStarted = p.lessons.some(l => state.progress[l.id]?.attempts || state.lessons[l.id] || state.blockCourses?.[l.id]);
   const continueLabel = completed() === p.lessons.length ? '复习课程' : resume||courseStarted ? '继续学习' : '进入课程';
+  const descriptionExpanded = expandedHomeDescriptions.has(p.id);
+  const resumeAttrs = `data-id="${escape(next.id)}" data-resume="true"`;
+  const nodes = state.notes.slice(-3).reverse();
+  const nodeFallbacks = [['route','学习路线','从目标出发'],['bolt','动手实践','让知识发生'],['book','知识卡片','连接每次收获']];
+  const starCards = nodeFallbacks.map(([symbol,title,subtitle],index)=>{
+    const note=nodes[index];
+    return `<div class="float-card ${['float-top','float-left','float-bottom'][index]}"${note?` title="${escape(note.title)}"`:''}><span class="float-icon ${['lavender','peach','green'][index]}">${icon(note?'book':symbol)}</span><div><small>${note?'我的知识卡片':subtitle}</small><strong>${escape(note?.title||title)}</strong></div><span class="constellation-card-dot"></span></div>`;
+  }).join('');
   const continuePanel = `<section class="home-continue" aria-labelledby="home-continue-title"><div class="section-heading"><h2 id="home-continue-title">继续你的学习<span>KEEP GOING</span></h2><button class="text-button" data-page="routes">全部路线 ${icon('arrow')}</button></div>
     <article class="course-card"><div class="course-top"><span class="course-icon">${icon('book')}</span><div>${pill(p.source === 'demo' ? '示例课程' : 'AI 定制', 'purple')} ${pill(p.level)}</div></div>
-      <h3>${escape(p.title)}</h3><p>${escape(p.description)}</p><div class="progress-label"><span>已掌握课程</span><strong>${completed()} / ${p.lessons.length} 节</strong></div><div class="progress-bar" role="progressbar" aria-label="当前路线学习进度" aria-valuemin="0" aria-valuemax="${p.lessons.length}" aria-valuenow="${completed()}"><span style="width:${percent()}%"></span></div>
+      <h3>${escape(p.title)}</h3><div class="home-course-description${descriptionExpanded?' is-expanded':''}"><p id="home-course-description">${escape(p.description)}</p><button type="button" class="text-button" data-action="toggle-home-description" aria-controls="home-course-description" aria-expanded="${descriptionExpanded}" hidden>${descriptionExpanded?'收起介绍':'展开介绍'} ${icon('down')}</button></div><div class="progress-label"><span>已掌握课程</span><strong>${completed()} / ${p.lessons.length} 节</strong></div><div class="progress-bar" role="progressbar" aria-label="当前路线学习进度" aria-valuemin="0" aria-valuemax="${p.lessons.length}" aria-valuenow="${completed()}"><span style="width:${percent()}%"></span></div>
       <div class="next-up"><span class="next-marker">${icon('book')}</span><div><small>${resume?'上次学到':completed() === p.lessons.length ? '回顾所学' : '接下来学习'}</small><strong>${escape(next.title)}</strong>${resume?.label?`<span class="resume-location">${escape(resume.label)}</span>`:''}</div><span>${next.minutes} 分钟</span></div>${button(continueLabel, 'open-lesson', 'primary full', `data-id="${escape(next.id)}" data-resume="true"`, 'arrow')}${studyPositionError?`<p class="field-hint" role="status">${escape(studyPositionError)}</p>`:''}</article></section>`;
   const knowledgePanel = `<section class="home-knowledge"><div class="section-heading"><h2>知识在这里生长<span>YOUR SECOND BRAIN</span></h2></div><article class="knowledge-preview">${state.notes.length ? `<div class="knowledge-heading">${icon('brain')}最近收获</div>${state.notes.slice(-3).reverse().map(n => `<button class="note-preview" data-action="open-note" data-id="${n.id}"><span class="note-glyph">${icon('book')}</span><div><strong>${escape(n.title)}</strong><small>${escape(n.tags.slice(0, 2).join(' · '))} · ${date(n.updated)}</small></div>${icon('arrow')}</button>`).join('')}` : `<div class="seed-illustration">${icon('leaf')}<span>+ 第一颗知识种子</span></div><h3>学过的，不再只是路过。</h3><p>学习过程中随时提炼概念与心得，<br>整理成可以反复使用的知识卡片。</p><div class="sample-note"><span>未来的知识卡片</span><strong>核心概念 + 实践经验 + 我的思考</strong><div>${pill('可编辑')} ${pill('可关联')} ${pill('可检索')}</div></div>`}<button class="text-button purple-text" data-page="wiki">打开我的知识库 ${icon('arrow')}</button></article></section>`;
   return `<section class="page-intro"><div><div class="eyebrow">A LITTLE BETTER, EVERY DAY</div><h1>让每一次好奇，都有回响<span class="title-dot">.</span></h1><p>从一个学习目标开始，构建属于你的知识世界。</p></div>${button('开启新的学习', 'planner', 'primary', '', 'plus')}</section>
-  <section class="hero" aria-label="你的 AI 学习伙伴"><div class="hero-copy">${pill('你的 AI 学习伙伴', 'hero-pill')}<h2>不止学会，<br>更要成为自己的知识。</h2><p>为你规划路径，陪你练习思考，<br>将每一次收获，连接成你的第二大脑。</p>${button('探索我的学习路线', 'routes', 'dark')}<div class="hero-caption"><span class="mini-dot"></span>目标驱动 <span>·</span> 学练结合 <span>·</span> 知识沉淀</div></div><div class="hero-art" aria-hidden="true"><div class="orbit orbit-one"></div><div class="orbit orbit-two"></div><div class="orb-center">${icon('brain')}<span>我的知识宇宙</span></div><div class="float-card float-top"><span class="float-icon lavender">${icon('route')}</span><div><small>找到你的方向</small><strong>个性化学习路线</strong></div><b>↗</b></div><div class="float-card float-left"><span class="float-icon peach">${icon('bolt')}</span><div><small>在实践中理解</small><strong>让知识发生</strong></div></div><div class="float-card float-bottom"><span class="float-icon green">${icon('book')}</span><div><small>连接每一次收获</small><strong>你的第二大脑</strong></div><span class="check-bubble">✓</span></div><span class="star star-one">✦</span><span class="star star-two">✧</span><span class="orb-dot dot-one"></span><span class="orb-dot dot-two"></span></div></section>
-  <section class="stats" aria-label="学习统计">${[['route', '学习路线', state.plans.length, '条探索中的路径', 'lavender'], ['check', '已完成课程', allCompleted, '次从不懂到掌握', 'green'], ['bolt', '练习提交', attempts, '次认真思考', 'peach'], ['brain', '知识卡片', state.notes.length, '份属于你的积累', 'blue']].map(([symbol, label, value, detail, color]) => `<div class="stat"><div class="stat-top"><span>${label}</span><span class="stat-icon ${color}">${icon(symbol)}</span></div><strong>${value}<small>${label === '学习路线' ? '条' : label === '知识卡片' ? '张' : '次'}</small></strong><p>${detail}</p></div>`).join('')}</section>
+  <section class="hero" aria-label="你的 AI 学习伙伴"><div class="hero-copy"><span class="hero-pill"><span></span>你的 AI 学习伙伴</span><h2>让每一次学习，<br><em>连接成你的知识。</em></h2><p>从一个好奇的念头，到一片自己的知识宇宙。<br>规划、实践、积累，每一步都彼此相连。</p><div class="hero-actions">${button(resume?'继续上次学习':continueLabel,'open-lesson','primary hero-continue',resumeAttrs,'arrow')}${button('探索我的学习路线','routes','hero-route')}</div><div class="hero-resume" title="${escape(next.title)}"><span class="mini-dot"></span><span>${resume?'上次学到':'接下来学习'} · ${escape(next.title)}${resume?.label?` / ${escape(resume.label)}`:''}</span></div></div><div class="hero-art" aria-hidden="true"><div class="constellation-scene"><svg class="constellation-lines" viewBox="0 0 560 360" fill="none"><g class="constellation-wires"><path d="M280 180 153 61 67 130 104 251 280 180 448 283 508 175 409 64 280 180 104 251 198 319 448 283M153 61 409 64M67 130 280 180 508 175M198 319 280 180"/></g><g class="constellation-flow"><path d="M153 61 280 180 448 283"/><path d="M104 251 280 180 409 64"/></g><g class="constellation-points">${[[153,61],[67,130],[104,251],[198,319],[448,283],[508,175],[409,64],[41,218],[488,45],[337,318],[229,30],[529,263]].map(([x,y],i)=>`<circle cx="${x}" cy="${y}" r="${i<7?3:1.7}"/>`).join('')}</g></svg><div class="orbit orbit-one"></div><div class="orbit orbit-two"></div><div class="orbit orbit-three"></div><div class="orb-center">${icon('brain')}<span>我的知识宇宙</span></div>${starCards}<span class="star star-one">✦</span><span class="star star-two">✧</span><span class="orb-dot dot-one"></span><span class="orb-dot dot-two"></span></div><span class="constellation-caption">${nodes.length?'知识卡片预览 · 连线为视觉示意':'知识星图示意 · 从第一步开始连接'}</span></div></section>
+  <section class="stats" aria-label="学习统计">${[['route', '学习路线', state.plans.length, '条探索中的路径', 'lavender'], ['check', '已完成课程', allCompleted, '次从不懂到掌握', 'green'], ['bolt', '练习提交', attempts, '次认真思考', 'peach'], ['brain', '知识卡片', state.notes.length, '份属于你的积累', 'blue']].map(([symbol, label, value, detail, color]) => {const unit=label==='学习路线'?'条':label==='知识卡片'?'张':'次';return `<div class="stat stat-${color}"><div class="stat-top"><span>${label}</span><span class="stat-icon ${color}">${icon(symbol)}</span></div><strong aria-label="${value} ${unit}"><span class="stat-value" data-stat-count="${value}" data-stat-key="${symbol}" aria-hidden="true">${value}</span><small aria-hidden="true">${unit}</small></strong><p>${detail}</p></div>`;}).join('')}</section>
   <div class="dashboard-columns">${continuePanel}${knowledgePanel}</div>
   <div class="bottom-note">${icon('spark')} 学习的终点，不是记住答案，而是拥有解决问题的能力。</div>`;
 }
@@ -1467,6 +1481,14 @@ async function download(name, content, type) {
 }
 function markdown(n) { return `# ${n.title}\n\n${n.summary.split('\n').map(line => '> ' + line).join('\n')}\n\n标签：${n.tags.join('、')}\n\n来源课程：${n.courseTitle}\n\n${n.content}\n`; }
 async function action(name, element) {
+  if(name==='toggle-home-description') {
+    const expanded=element.getAttribute('aria-expanded')!=='true';
+    if(expanded)expandedHomeDescriptions.add(state.active);else expandedHomeDescriptions.delete(state.active);
+    element.closest('.home-course-description').classList.toggle('is-expanded',expanded);
+    element.setAttribute('aria-expanded',String(expanded));
+    element.innerHTML=`${expanded?'收起介绍':'展开介绍'} ${icon('down')}`;
+    return;
+  }
   if (name === 'toggle-generation-progress') { generationProgress.toggle(); return; }
   if (name === 'dismiss-generation-task') { generationProgress.dismiss(element.dataset.id); return; }
   if (name === 'cancel-generation-task') { await generationProgress.cancel(element.dataset.id); return; }
