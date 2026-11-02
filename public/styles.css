@@ -791,19 +791,26 @@ input,textarea,select { accent-color:var(--purple); }
 /* Keep readable text outside the animated perspective tree. */
 .constellation-labels { position:absolute; inset:0; }
 .constellation-core-label { position:absolute; top:55%; left:calc(50% - 75px); width:150px; text-align:center; color:#fff; font-size:12px; line-height:20px; font-weight:600; letter-spacing:.3px; }
-.page-home .float-card { max-width:205px; min-width:150px; border:1px solid #a1b6df55; background:linear-gradient(135deg,#1a243d,#101c30); box-shadow:0 3px 0 #080f21,0 4px 0 #9e93c522,0 16px 28px #02071477,inset 0 1px #e8ddff12; padding:11px 12px; border-radius:12px; gap:10px; transform:none; animation:none; will-change:auto; }
-.page-home .float-card>div { min-width:0; }
-.page-home .float-card small { color:#c1c9df; font-size:11px; margin-bottom:4px; line-height:1.4; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
-.page-home .float-card strong { font-size:12px; line-height:1.6; font-weight:600; color:#faf9ff; display:-webkit-box; -webkit-box-orient:vertical; -webkit-line-clamp:2; overflow:hidden; overflow-wrap:anywhere; }
-.page-home .float-icon { height:31px; width:31px; border-radius:9px; }
-.page-home .float-icon .icon { height:17px; width:17px; }
-.page-home .float-icon.lavender { background:#a58aff22; color:#c1a9ff; }
-.page-home .float-icon.peach { background:#ffc28a1c; color:#f7c79b; }
-.page-home .float-icon.green { background:#86e4c11c; color:#a1e3ca; }
-.constellation-card-dot { flex:none; width:4px; height:4px; background:#b9a1ff; border-radius:50%; box-shadow:0 0 9px #b9a1ff88; }
-.page-home .float-top { top:24px; left:13%; }
-.page-home .float-left { bottom:56px; left:4%; }
-.page-home .float-bottom { bottom:43px; right:9%; }
+.page-home .float-card { --planet-scale:1; --sphere-size:calc(44px * var(--planet-scale)); --sphere-light:#8b7fb1; --sphere-mid:#3b4167; --sphere-deep:#15223a; --sphere-glow:#9d8bdd20; --planet-z:-50px; --planet-z-end:-20px; --planet-pan:.65; --planet-drift-x:3px; --planet-drift-y:-5px; --planet-duration:26s; --planet-delay:-11s; --planet-label-top:54px; width:132px; height:106px; max-width:none; min-width:0; display:flex; flex-direction:column; align-items:center; justify-content:flex-start; border:0; background:none; box-shadow:none; padding:var(--planet-label-top) 4px 0; border-radius:0; gap:0; text-align:center; perspective:650px; perspective-origin:50% calc(var(--sphere-size) / 2); transform:none; animation:none; will-change:auto; }
+.page-home .float-card::before { content:none; }
+.page-home .float-card::after { content:none; }
+.page-home .float-card>div { min-width:0; width:100%; }
+.page-home .float-card small { display:none; }
+.page-home .float-card strong { font-size:12px; line-height:1.5; font-weight:500; color:#c5cee3; text-shadow:0 1px 8px #050a18; display:-webkit-box; -webkit-box-orient:vertical; -webkit-line-clamp:2; overflow:hidden; overflow-wrap:anywhere; }
+.page-home .float-icon { position:absolute; top:0; left:calc(50% - var(--sphere-size) / 2); height:var(--sphere-size); width:var(--sphere-size); border:0; border-radius:50%; background:none; box-shadow:none; isolation:isolate; transform:translate3d(calc(var(--pointer-x,0px) * var(--planet-pan)),calc(var(--pointer-y,0px) * var(--planet-pan)),var(--planet-z)); animation:knowledge-planet-depth var(--planet-duration) ease-in-out var(--planet-delay) infinite alternate; will-change:transform; }
+/* Feather only the sphere surface; keep the atmosphere and icon outside its mask. */
+.page-home .float-icon::before { content:""; position:absolute; inset:0; z-index:0; border-radius:50%; background:radial-gradient(ellipse at 23% 16%,#d4dcff33,transparent 50%),radial-gradient(circle at 32% 27%,var(--sphere-light),var(--sphere-mid) 51%,var(--sphere-deep) 85%); box-shadow:inset calc(var(--sphere-size) * -.12) calc(var(--sphere-size) * -.1) calc(var(--sphere-size) * .26) #02081766; mask-image:radial-gradient(circle closest-side,#000 calc(100% - 1px),#000c calc(100% - .45px),transparent 100%); pointer-events:none; }
+.page-home .float-icon::after { content:""; position:absolute; inset:-18%; z-index:-1; border-radius:50%; background:radial-gradient(circle closest-side,var(--sphere-glow) 30%,transparent 100%); pointer-events:none; }
+.page-home .float-icon .icon { position:relative; z-index:1; height:15px; width:15px; }
+.page-home .float-icon.lavender { color:#c1bcda; }
+.page-home .float-icon.peach { color:#c9cee7; }
+.page-home .float-icon.green { color:#d7e8f5; }
+.page-home .constellation-card-dot { display:none; }
+.page-home .float-top { --sphere-size:calc(32px * var(--planet-scale)); --sphere-light:#626384; --sphere-mid:#303952; --sphere-deep:#111c30; --sphere-glow:#8e94c512; --planet-z:-200px; --planet-z-end:-170px; --planet-pan:.2; --planet-drift-x:-2px; --planet-drift-y:3px; --planet-duration:34s; --planet-delay:-17s; --planet-label-top:38px; top:18px; left:8%; height:82px; z-index:-1; }
+.page-home .float-top strong { color:#9daac5; }
+.page-home .float-left { --sphere-light:#827ca7; --sphere-mid:#343c60; --sphere-deep:#101e32; --sphere-glow:#938cce16; bottom:34px; left:1%; z-index:1; }
+.page-home .float-bottom { --sphere-size:calc(56px * var(--planet-scale)); --sphere-light:#93a3c8; --sphere-mid:#3a5672; --sphere-deep:#101e32; --sphere-glow:#80bbd033; --planet-z:90px; --planet-z-end:125px; --planet-pan:1.4; --planet-drift-x:5px; --planet-drift-y:-6px; --planet-duration:22s; --planet-delay:-6s; --planet-label-top:80px; width:138px; height:122px; bottom:18px; right:4%; z-index:3; }
+.page-home .float-bottom strong { color:#d8e2f4; }
 .page-home .star-one { color:#c3b2ff; right:12%; top:86px; font-size:23px; transform:translateZ(-20px); }
 .page-home .star-two { color:#9ee9ec; right:7%; top:231px; font-size:16px; transform:translateZ(20px); }
 .page-home .dot-one { width:5px; height:5px; background:#9ce4ee; right:15%; top:160px; box-shadow:0 0 12px #7fe4ee; }
@@ -854,14 +861,15 @@ input,textarea,select { accent-color:var(--purple); }
 @keyframes constellation-core-float { 0%,100% { transform:translateY(0) rotateX(-12deg) rotateY(-24deg) rotateZ(-7deg); } 50% { transform:translateY(-9px) rotateX(-8deg) rotateY(-17deg) rotateZ(-5deg); } }
 @keyframes constellation-orbit-3d { from { transform:translate3d(-50%,-50%,0) rotateX(66deg) rotateZ(-22deg); } to { transform:translate3d(-50%,-50%,0) rotateX(66deg) rotateZ(338deg); } }
 @keyframes constellation-orbit-cross { from { transform:translate3d(-50%,-50%,-12px) rotateX(58deg) rotateY(47deg) rotateZ(35deg); } to { transform:translate3d(-50%,-50%,-12px) rotateX(58deg) rotateY(47deg) rotateZ(395deg); } }
+@keyframes knowledge-planet-depth { from { transform:translate3d(calc(var(--pointer-x,0px) * var(--planet-pan)),calc(var(--pointer-y,0px) * var(--planet-pan)),var(--planet-z)); } to { transform:translate3d(calc(var(--pointer-x,0px) * var(--planet-pan) + var(--planet-drift-x)),calc(var(--pointer-y,0px) * var(--planet-pan) + var(--planet-drift-y)),var(--planet-z-end)); } }
 @media(max-width:1200px) {
   .page-home .hero-copy { padding:32px 0 30px 30px; }
   .page-home .hero h2 { font-size:34px; }
   .page-home .hero-copy>p { font-size:12px; }
   .page-home .hero-actions { gap:4px; }
-  .page-home .float-card { width:42%; max-width:178px; min-width:0; padding:10px; gap:8px; }
-  .page-home .float-left { left:3%; }
-  .page-home .float-bottom { right:10%; }
+  .page-home .float-card { --planet-scale:.94; width:122px; }
+  .page-home .float-left { left:1%; }
+  .page-home .float-bottom { right:5%; }
   .page-home .stat { padding:16px; }
 }
 @media(max-width:1000px) {
@@ -871,13 +879,12 @@ input,textarea,select { accent-color:var(--purple); }
   .page-home .hero-copy>p { font-size:11px; }
   .page-home .hero-art { min-height:355px; }
   .page-home .constellation-scene { inset:18px 0; --scene-scale:.92; }
-  .page-home .float-card { width:44%; min-width:0; max-width:155px; padding:9px; gap:7px; }
+  .page-home .float-card { --planet-scale:.88; width:116px; }
   .page-home .float-card strong { font-size:12px; }
   .page-home .float-card small { font-size:10px; }
-  .page-home .float-icon { width:27px; height:27px; }
-  .page-home .float-top { left:13%; top:25px; }
-  .page-home .float-left { left:3%; bottom:38px; }
-  .page-home .float-bottom { right:3%; bottom:38px; }
+  .page-home .float-top { left:5%; top:12px; }
+  .page-home .float-left { left:1%; bottom:30px; }
+  .page-home .float-bottom { --planet-label-top:72px; height:114px; right:1%; bottom:18px; }
   .page-home .hero-art .orbit-one { width:250px; height:250px; }
   .page-home .hero-art .orbit-two { width:265px; height:265px; }
   .page-home .hero-art .orbit-three { width:285px; height:285px; }
@@ -901,12 +908,13 @@ input,textarea,select { accent-color:var(--purple); }
   :root .page-home .hero-continue { padding:8px 12px; font-size:12px; }
   :root .page-home .hero-route { padding:8px; font-size:11px; }
   .page-home .hero-resume { font-size:10px; margin-top:12px; }
-  .page-home .hero-art { min-height:270px; height:270px; max-width:390px; margin:0 auto; }
+  .page-home .hero-art { min-height:320px; height:320px; max-width:390px; margin:0 auto; }
   .page-home .constellation-scene { inset:0 8px 10px; --scene-scale:.92; }
-  .page-home .float-card { width:42%; min-width:0; max-width:150px; }
-  .page-home .float-top { top:17px; left:8%; }
-  .page-home .float-left { bottom:38px; left:4%; }
-  .page-home .float-bottom { bottom:38px; right:4%; }
+  .page-home .float-card { --planet-scale:.86; width:108px; }
+  .page-home .float-top { width:100px; top:16px; left:1%; }
+  .page-home .float-left { bottom:24px; left:1%; }
+  .page-home .float-bottom { --planet-label-top:74px; height:112px; bottom:22px; right:3%; }
+  .page-home .constellation-caption { bottom:5px; }
   .page-home .constellation-core-label { top:48%; }
   .page-home .star-one { top:38px; right:12%; }
   .page-home .star-two { top:172px; }
