@@ -48,8 +48,12 @@ test('home parallax is bounded and reset; long introductions keep their full tex
   f.hero.dispatchEvent(move);f.frame(0);
   assert.equal(f.hero.style.getPropertyValue('--pointer-x'),'7.00px');
   assert.equal(f.hero.style.getPropertyValue('--pointer-y'),'-6.00px');
+  assert.equal(f.hero.style.getPropertyValue('--tilt-x'),'5.00deg');
+  assert.equal(f.hero.style.getPropertyValue('--tilt-y'),'8.00deg');
   f.hero.dispatchEvent(new f.window.Event('pointerleave'));assert.equal(f.hero.style.getPropertyValue('--pointer-x'),'0px');
   f.reduce(true);f.hero.dispatchEvent(move);assert.equal(f.frames.size,0);
+  assert.equal(f.hero.style.getPropertyValue('--tilt-x'),'0deg');
+  assert.equal(f.hero.style.getPropertyValue('--tilt-y'),'0deg');
   const description=f.document.querySelector('.home-course-description'),text=description.querySelector('p'),button=description.querySelector('button');
   Object.defineProperty(text,'scrollHeight',{value:200,configurable:true});
   Object.defineProperty(text,'clientHeight',{value:70,configurable:true});

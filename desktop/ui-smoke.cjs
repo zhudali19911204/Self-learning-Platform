@@ -9,7 +9,7 @@ exports.run = async (window, directory) => {
   const evaluate = code => window.webContents.executeJavaScript(code, true);
   const frames = () => evaluate('new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))');
   const wait = expression => evaluate(`new Promise((resolve,reject)=>{let n=0;const timer=setInterval(()=>{if(${expression}){clearInterval(timer);resolve()}else if(++n>100){clearInterval(timer);reject(new Error(${JSON.stringify('UI smoke timed out: '+expression)}));}},50);})`);
-  const screenshots = path.join(directory, '..', 'round-one-previews');
+  const screenshots = path.join(directory, '..', 'home-3d-previews');
   await mkdir(screenshots, { recursive:true });
   window.webContents.setBackgroundThrottling(false);
   window.setMinimumSize(320, 480);
@@ -31,6 +31,10 @@ exports.run = async (window, directory) => {
     const content = {text:block.type==='reading'?reading:block.type==='example'?'## 示例\n\n将待办写成负责人、动作与时间。\n\n```text\n负责人：项目组\n动作：核对会议结论\n完成时间：确认后填写\n```':block.type==='practice'?'## 你的任务\n\n1. 选择一个实际问题。\n2. 说明必要输入。\n3. 列出完成标准。':'## 核心步骤\n\n- 明确目标。\n- 列出输入与约束。\n- 检查生成结果。'};
     await evaluate(`window.learnflowDesktop.saveBlock(${JSON.stringify(lessonId)},${JSON.stringify(block.id)},${JSON.stringify(content)})`);
   }
+  for(const title of ['把业务问题拆成清晰的目标、输入与完成标准','检查结果的适用条件，再决定是否采用','从案例到实践：将学习成果迁移到自己的工作']) {
+    const note={id:randomUUID(),lessonId,courseTitle:plan.title,title,summary:'独立的本地 3D 界面测试卡片。',content:'## 界面测试\n\n仅验证卡片标题在三维透视下的排版。',tags:['界面测试'],source:'demo',updated:Date.now()};
+    await evaluate(`window.learnflowDesktop.saveNote(${JSON.stringify(note)})`);
+  }
   window.webContents.reload();
   await new Promise(resolve=>window.webContents.once('did-finish-load',resolve));
   await wait("document.querySelector('.home-continue [data-action=open-lesson]')");
@@ -46,6 +50,41 @@ exports.run = async (window, directory) => {
     assert.deepEqual(home.panels,['home-continue','home-knowledge']);
     assert.equal(home.columns,width>560?2:1); assert.equal(home.floatingCards,3);
     assert.equal(home.primaryHeight, 40);
+    const depth=await evaluate(`(() => {const art=document.querySelector('.hero-art'),scene=art.querySelector('.constellation-scene'),core=art.querySelector('.core-body');return {perspective:parseFloat(getComputedStyle(art).perspective),scene:getComputedStyle(scene).transformStyle,core:getComputedStyle(core).transformStyle,thickness:art.querySelectorAll('.core-layer').length,cardMatrices:[...art.querySelectorAll('.float-card')].map(n=>getComputedStyle(n).transform),coreInside:core.getBoundingClientRect().left>=art.getBoundingClientRect().left&&core.getBoundingClientRect().right<=art.getBoundingClientRect().right};})()`);
+    assert.ok(depth.perspective>0);assert.equal(depth.scene,'preserve-3d');assert.equal(depth.core,'preserve-3d');
+    assert.ok(depth.thickness>1);assert.ok(depth.cardMatrices.every(matrix=>matrix==='none'));assert.equal(depth.coreInside,true,`3D core clipped at ${width}`);
+    const clarity=await evaluate(`(() => {
+      const art=document.querySelector('.hero-art'),cards=[...art.querySelectorAll('.float-card')],label=art.querySelector('.constellation-core-label');
+      const clearText=[...cards,label].every(node=>{for(let p=node;p!==art;p=p.parentElement){const style=getComputedStyle(p);if(style.transform!=='none'||style.filter!=='none'||style.animationName!=='none')return false;}return true;});
+      const overlaps=(a,b)=>{const x=a.getBoundingClientRect(),y=b.getBoundingClientRect();return Math.min(x.right,y.right)-Math.max(x.left,y.left)>1&&Math.min(x.bottom,y.bottom)-Math.max(x.top,y.top)>1;};
+      return {clearText,minFont:Math.min(...cards.map(card=>parseFloat(getComputedStyle(card.querySelector('strong')).fontSize))),overlaps:cards.some((card,i)=>overlaps(card,label)||cards.slice(i+1).some(other=>overlaps(card,other)))};
+    })()`);
+    assert.equal(clarity.clearText,true,`Text inherits a blur-producing transform at ${width}`);assert.ok(clarity.minFont>=12);assert.equal(clarity.overlaps,false,`Knowledge card text overlaps at ${width}`);
+    const clipping=await evaluate(`(() => {
+      const hero=document.querySelector('.hero'),art=hero.querySelector('.hero-art'),cards=[...art.querySelectorAll('.float-card')];
+      const animations=cards.flatMap(card=>card.getAnimations());
+      for(const animation of animations)animation.pause();
+      const samples=[];
+      for(const phase of [0,.5,1]) {
+        for(const animation of animations)animation.currentTime=Number(animation.effect.getTiming().duration)*phase;
+        for(const [x,y] of [[0,0],[-7,-6],[7,6],[-7,6],[7,-6]]) {
+          hero.style.setProperty('--pointer-x',x+'px');hero.style.setProperty('--pointer-y',y+'px');
+          hero.style.setProperty('--tilt-x',(-y/6*5)+'deg');hero.style.setProperty('--tilt-y',(x/7*8)+'deg');
+          const scene=hero.querySelector('.constellation-scene');scene.style.transition='none';
+          const outer=hero.getBoundingClientRect();
+          for(const card of cards) {
+            const rect=card.getBoundingClientRect();
+            const clips=[hero,art].filter(node=>['hidden','clip','scroll','auto'].includes(getComputedStyle(node).overflowX));
+            samples.push({phase,x,y,card:card.className,gaps:{left:rect.left-outer.left,right:outer.right-rect.right,top:rect.top-outer.top,bottom:outer.bottom-rect.bottom},inside:clips.every(node=>{const r=node.getBoundingClientRect();return rect.left>=r.left+2&&rect.right<=r.right-2&&rect.top>=r.top+2&&rect.bottom<=r.bottom-2;}),heroInside:rect.left>=outer.left+2&&rect.right<=outer.right-2&&rect.top>=outer.top+2&&rect.bottom<=outer.bottom-2});
+          }
+        }
+      }
+      for(const name of ['--pointer-x','--pointer-y','--tilt-x','--tilt-y'])hero.style.removeProperty(name);
+      hero.querySelector('.constellation-scene').style.removeProperty('transition');
+      for(const animation of animations)animation.play();
+      return samples.filter(sample=>!sample.inside||!sample.heroInside);
+    })()`);
+    assert.equal(clipping.length,0,`3D cards are clipped during movement at ${width}: ${JSON.stringify(clipping.slice(0,3))}`);
     const description=await evaluate(`(() => {const text=document.querySelector('.home-course-description p'),button=document.querySelector('[data-action=toggle-home-description]'),hero=document.querySelector('.hero-continue');return {height:text.clientHeight,lineHeight:parseFloat(getComputedStyle(text).lineHeight),canExpand:!button.hidden,heroTarget:hero.dataset.id,cardTarget:document.querySelector('.home-continue [data-action=open-lesson]').dataset.id,heroOnScreen:hero.getBoundingClientRect().bottom<innerHeight};})()`);
     assert.ok(description.height<=description.lineHeight*3+1,`description must be limited to three lines at ${width}`);
     assert.equal(description.canExpand,true);assert.equal(description.heroTarget,description.cardTarget);assert.equal(description.heroOnScreen,true);
@@ -63,20 +102,25 @@ exports.run = async (window, directory) => {
       const point=await evaluate("(()=>{const r=document.querySelector('.hero').getBoundingClientRect();return {x:r.left+r.width*.8,y:r.top+r.height*.65}})()");
       await evaluate(`document.querySelector('.hero').dispatchEvent(new PointerEvent('pointermove',{clientX:${point.x},clientY:${point.y},pointerType:'mouse'}))`);await frames();
       assert.notEqual(await evaluate("document.querySelector('.hero').style.getPropertyValue('--pointer-x')"),'0px');
+      assert.notEqual(await evaluate("document.querySelector('.hero').style.getPropertyValue('--tilt-y')"),'0deg');
       // A shorter viewport lets the entire hero leave the viewport even when
       // the dashboard below it has only two compact panels.
       window.setContentSize(width,650);await frames();
       await evaluate("document.querySelector('.bottom-note').scrollIntoView({block:'end',behavior:'auto'})");
       await wait("document.querySelector('.hero').classList.contains('is-motion-paused')");
       assert.equal(await evaluate("getComputedStyle(document.querySelector('.constellation-flow')).animationPlayState"),'paused');
+      assert.equal(await evaluate("getComputedStyle(document.querySelector('.space-stars-far')).animationPlayState"),'paused');
       const cdp=window.webContents.debugger;cdp.attach('1.3');
       try {
         await cdp.sendCommand('Emulation.setEmulatedMedia',{features:[{name:'prefers-reduced-motion',value:'reduce'}]});
         await wait("document.querySelector('.page-home').classList.contains('is-motion-reduced')");
         assert.equal(await evaluate("getComputedStyle(document.querySelector('.constellation-flow')).animationName"),'none');
+        assert.equal(await evaluate("getComputedStyle(document.querySelector('.space-stars-far')).animationName"),'none');
         assert.equal(await evaluate("[...document.querySelectorAll('[data-stat-count]')].every(n=>n.textContent===n.dataset.statCount)"),true);
+        assert.equal(await evaluate("document.querySelector('.hero').style.getPropertyValue('--tilt-y')"),'0deg');
       } finally {await cdp.sendCommand('Emulation.setEmulatedMedia',{features:[]});cdp.detach();window.setContentSize(width,900);}
     }
+    if(process.argv.includes('--home-only')) {checks.push({width,home,depth});continue;}
     await evaluate("document.querySelector('.home-continue [data-action=open-lesson]').click()");
     await wait("document.querySelector('.teaching-reading .block-text')"); await frames();
     const directoryWidth = await evaluate("({viewport:innerWidth,directory:document.querySelector('#course-syllabus').getBoundingClientRect().width,reader:document.querySelector('.lesson-content').getBoundingClientRect().width})");

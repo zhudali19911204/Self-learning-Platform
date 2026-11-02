@@ -1139,6 +1139,8 @@ test('home constellation previews real card titles safely and leaves learning da
   assert.equal(doc.querySelector('.float-card strong').textContent,'<img src=x onerror=bad()>');
   assert.equal(doc.querySelector('.hero-art img'),null);
   assert.match(doc.querySelector('.constellation-caption').textContent,/连线为视觉示意/);
+  assert.equal(doc.querySelector('.constellation-scene .float-card'),null,'readable text stays outside the animated 3D hierarchy');
+  assert.ok(doc.querySelector('.constellation-labels .constellation-core-label'));
   assert.equal(app.run('JSON.stringify(state)'),before);
 });
 

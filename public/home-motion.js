@@ -16,7 +16,9 @@ export function startHomeMotion({document, window, seen = new Map(), enter = fal
     for (const id of frames) window.cancelAnimationFrame(id);
     frames.clear(); pointerFrame = 0;
   };
-  const resetPointer = () => { hero.style.setProperty('--pointer-x', '0px'); hero.style.setProperty('--pointer-y', '0px'); };
+  const resetPointer = () => {
+    for (const [name,value] of [['--pointer-x','0px'],['--pointer-y','0px'],['--tilt-x','0deg'],['--tilt-y','0deg']]) hero.style.setProperty(name,value);
+  };
   const startCounts = () => {
     if (!statsVisible || document.hidden || media?.matches) return;
     for (const node of counts) {
@@ -52,6 +54,8 @@ export function startHomeMotion({document, window, seen = new Map(), enter = fal
       pointerFrame = 0;
       hero.style.setProperty('--pointer-x', `${(x * 7).toFixed(2)}px`);
       hero.style.setProperty('--pointer-y', `${(y * 6).toFixed(2)}px`);
+      hero.style.setProperty('--tilt-x', `${(-y * 5).toFixed(2)}deg`);
+      hero.style.setProperty('--tilt-y', `${(x * 8).toFixed(2)}deg`);
     });
   };
   const reset = () => { if (pointerFrame) { window.cancelAnimationFrame(pointerFrame); frames.delete(pointerFrame); pointerFrame = 0; } resetPointer(); };
