@@ -38,6 +38,47 @@ exports.run = async (window, directory) => {
   window.webContents.reload();
   await new Promise(resolve=>window.webContents.once('did-finish-load',resolve));
   await wait("document.querySelector('.home-continue [data-action=open-lesson]')");
+  if(process.argv.includes('--graph-double-only')) {
+    window.setContentSize(1360,900);
+    const baseline=JSON.stringify((await evaluate('window.learnflowDesktop.load()')).state);
+    await evaluate("document.querySelector('[data-page=wiki]').click();document.querySelector('[data-view=graph]').click()");
+    await wait("document.querySelector('.graph-node-card')");
+    await evaluate("const pause=document.querySelector('[data-action=graph-pause]');if(pause.getAttribute('aria-pressed')!=='true')pause.click();document.querySelector('[data-action=graph-zoom-out]').click();document.querySelector('.knowledge-graph-canvas').scrollIntoView({block:'center'})");
+    await frames();
+    const input=(type,target,clickCount)=>window.webContents.sendInputEvent({type,x:target.x,y:target.y,button:'left',clickCount});
+    const targetFor=part=>evaluate(`(() => {
+      const svg=document.querySelector('#knowledge-graph-svg');
+      for(const node of svg.querySelectorAll('.graph-node-card')) {
+        const target=node.querySelector('${part}'),r=target.getBoundingClientRect();
+        const x=Math.round(r.left+Math.min(r.width/2,${part==='text'?20:100})),y=Math.round(r.top+r.height/2);
+        if(document.elementFromPoint(x,y)?.closest('.graph-node')!==node)continue;
+        window.__doubleClickTarget=target;window.__doubleClickSvg=svg;
+        return {x,y,id:node.dataset.id.slice(5)};
+      }
+      throw new Error('No visible graph target for ${part}');
+    })()`);
+    for(const part of ['circle','text']) {
+      const target=await targetFor(part),viewport=await evaluate("document.querySelector('#knowledge-graph-svg').getAttribute('viewBox')");
+      input('mouseDown',target,1);input('mouseUp',target,1);await frames();
+      assert.equal(await evaluate("window.__doubleClickTarget.isConnected && document.querySelector('#knowledge-graph-svg')===window.__doubleClickSvg"),true,'First click retains the native double-click target');
+      assert.equal(await evaluate("!!document.querySelector('#note-preview-view')"),false);
+      input('mouseDown',target,2);input('mouseUp',target,2);
+      await wait("document.querySelector('#note-preview-view')");
+      assert.equal(await evaluate("document.querySelector('[data-action=delete-note]').dataset.id"),target.id);
+      if(part==='text')await writeFile(path.join(screenshots,'graph-double-click-card.png'),(await window.webContents.capturePage()).toPNG());
+      await evaluate("document.querySelector('[data-action=close-note]').click();document.querySelector('.knowledge-graph-canvas').scrollIntoView({block:'center'})");await frames();
+      assert.equal(await evaluate("document.querySelector('#knowledge-graph-svg').getAttribute('viewBox')"),viewport);
+    }
+    const target=await targetFor('circle'),before=await evaluate("window.__doubleClickTarget.getAttribute('cx')");
+    input('mouseDown',target,1);
+    window.webContents.sendInputEvent({type:'mouseMove',x:target.x+28,y:target.y+16,button:'left'});
+    input('mouseUp',{x:target.x+28,y:target.y+16},1);await frames();
+    assert.notEqual(await evaluate("window.__doubleClickTarget.getAttribute('cx')"),before);
+    assert.equal(await evaluate("!!document.querySelector('#note-preview-view')"),false,'Dragging never opens a card');
+    assert.equal(JSON.stringify((await evaluate('window.learnflowDesktop.load()')).state),baseline);
+    console.log('GRAPH_DOUBLE_CLICK_SMOKE',JSON.stringify({passed:true,realModelCalls:0,checks:['native-dot-double-click','native-label-double-click','stable-target-after-first-click','zoom-preserved-on-return','drag-preserved','learning-data-unchanged'],screenshots}));
+    return;
+  }
   const learningData=({studyPositions,...state})=>JSON.stringify(state);
   const baseline = learningData((await evaluate('window.learnflowDesktop.load()')).state);
   const checks = [];

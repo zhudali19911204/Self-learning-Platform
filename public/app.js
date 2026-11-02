@@ -675,7 +675,7 @@ function home() {
   const knowledgePanel = `<section class="home-knowledge"><div class="section-heading"><h2>知识在这里生长<span>YOUR SECOND BRAIN</span></h2></div><article class="knowledge-preview">${state.notes.length ? `<div class="knowledge-heading">${icon('brain')}最近收获</div>${state.notes.slice(-3).reverse().map(n => `<button class="note-preview" data-action="open-note" data-id="${n.id}"><span class="note-glyph">${icon('book')}</span><div><strong>${escape(n.title)}</strong><small>${escape(n.tags.slice(0, 2).join(' · '))} · ${date(n.updated)}</small></div>${icon('arrow')}</button>`).join('')}` : `<div class="seed-illustration">${icon('leaf')}<span>+ 第一颗知识种子</span></div><h3>学过的，不再只是路过。</h3><p>学习过程中随时提炼概念与心得，<br>整理成可以反复使用的知识卡片。</p><div class="sample-note"><span>未来的知识卡片</span><strong>核心概念 + 实践经验 + 我的思考</strong><div>${pill('可编辑')} ${pill('可关联')} ${pill('可检索')}</div></div>`}<button class="text-button purple-text" data-page="wiki">打开我的知识库 ${icon('arrow')}</button></article></section>`;
   return `<section class="page-intro"><div><div class="eyebrow">A LITTLE BETTER, EVERY DAY</div><h1>让每一次好奇，都有回响<span class="title-dot">.</span></h1><p>从一个学习目标开始，构建属于你的知识世界。</p></div>${button('开启新的学习', 'planner', 'primary', '', 'plus')}</section>
   <section class="hero" aria-label="你的 AI 学习伙伴">${homeDeepSpace()}<div class="hero-copy"><span class="hero-pill"><span></span>你的 AI 学习伙伴</span><h2>让每一次学习，<br><em>连接成你的知识。</em></h2><p>从一个好奇的念头，到一片自己的知识宇宙。<br>规划、实践、积累，每一步都彼此相连。</p><div class="hero-actions">${button(resume?'继续上次学习':continueLabel,'open-lesson','primary hero-continue',resumeAttrs,'arrow')}${button('探索我的学习路线','routes','hero-route')}</div><div class="hero-resume" title="${escape(next.title)}"><span class="mini-dot"></span><span>${resume?'上次学到':'接下来学习'} · ${escape(next.title)}${resume?.label?` / ${escape(resume.label)}`:''}</span></div></div><div class="hero-art" aria-hidden="true"><div class="constellation-scene"><svg class="constellation-lines" viewBox="0 0 560 360" fill="none"><g class="constellation-wires"><path d="M280 180 153 61 67 130 104 251 280 180 448 283 508 175 409 64 280 180 104 251 198 319 448 283M153 61 409 64M67 130 280 180 508 175M198 319 280 180"/></g><g class="constellation-flow"><path d="M153 61 280 180 448 283"/><path d="M104 251 280 180 409 64"/></g><g class="constellation-points">${[[153,61],[67,130],[104,251],[198,319],[448,283],[508,175],[409,64],[41,218],[488,45],[337,318],[229,30],[529,263]].map(([x,y],i)=>`<circle cx="${x}" cy="${y}" r="${i<7?3:1.7}"/>`).join('')}</g></svg><div class="orbit orbit-one"></div><div class="orbit orbit-two"></div><div class="orbit orbit-three"></div>${starCore}<span class="star star-one">✦</span><span class="star star-two">✧</span><span class="orb-dot dot-one"></span><span class="orb-dot dot-two"></span></div><div class="constellation-labels">${starCards}<span class="constellation-core-label">我的知识宇宙</span></div><span class="constellation-caption">${nodes.length?'知识卡片预览 · 连线为视觉示意':'知识星图示意 · 从第一步开始连接'}</span></div></section>
-  <section class="stats" aria-label="学习统计">${[['route', '学习路线', state.plans.length, '条探索中的路径', 'lavender'], ['check', '已完成课程', allCompleted, '次从不懂到掌握', 'green'], ['bolt', '练习提交', attempts, '次认真思考', 'peach'], ['brain', '知识卡片', state.notes.length, '份属于你的积累', 'blue']].map(([symbol, label, value, detail, color]) => {const unit=label==='学习路线'?'条':label==='知识卡片'?'张':'次';return `<div class="stat stat-${color}"><div class="stat-top"><span>${label}</span><span class="stat-icon ${color}">${icon(symbol)}</span></div><strong aria-label="${value} ${unit}"><span class="stat-value" data-stat-count="${value}" data-stat-key="${symbol}" aria-hidden="true">${value}</span><small aria-hidden="true">${unit}</small></strong><p>${detail}</p></div>`;}).join('')}</section>
+  <section class="stats" aria-label="学习统计">${[['route', '学习路线', state.plans.length, 'lavender'], ['check', '已完成课程', allCompleted, 'green'], ['bolt', '练习提交', attempts, 'peach'], ['brain', '知识卡片', state.notes.length, 'blue']].map(([symbol, label, value, color]) => {const unit=label==='学习路线'?'条':label==='知识卡片'?'张':'次';return `<div class="stat stat-${color}"><div class="stat-top"><span>${label}</span><span class="stat-icon ${color}">${icon(symbol)}</span></div><strong aria-label="${value} ${unit}"><span class="stat-value" data-stat-count="${value}" data-stat-key="${symbol}" aria-hidden="true">${value}</span><small aria-hidden="true">${unit}</small></strong></div>`;}).join('')}</section>
   <div class="dashboard-columns">${continuePanel}${knowledgePanel}</div>
   <div class="bottom-note">${icon('spark')} 学习的终点，不是记住答案，而是拥有解决问题的能力。</div>`;
 }
@@ -929,10 +929,41 @@ function knowledgeResults() {
   const filter = topicFilter ? `<div class="wiki-active-filter">当前主题：${escape(topicFilter)} <button type="button" data-action="filter-topic" data-topic="">清除主题筛选</button></div>` : '';
   return filter + knowledgeGraphView(filtered.filter(note => (!graphTagFilter || (note.tags || []).includes(graphTagFilter)) && (!graphStatusFilter || (note.status || 'draft') === graphStatusFilter)));
 }
-function refreshKnowledgeResults() {
+function refreshKnowledgeResults({preserveGraph=false}={}) {
   stopGraphMotion(); pendingGraph = null; hoveredGraphId = '';
   const results = $('#note-results');
-  if (results) { results.innerHTML = knowledgeResults(); results.setAttribute('aria-label', knowledgeViewLabel()); }
+  if (results) {
+    const markup=knowledgeResults(),svg=preserveGraph?results.querySelector?.('#knowledge-graph-svg'):null;
+    let patched=false;
+    if(svg&&document.createElement){
+      const next=document.createElement('div');next.innerHTML=markup;
+      const nextSvg=next.querySelector('#knowledge-graph-svg'),selection=results.querySelector('.graph-selection');
+      if(nextSvg&&selection){
+        // Preserve the SVG and existing node elements between the two clicks.
+        // This also keeps drag targets stable when local-neighborhood selection changes.
+        const existing=new Map([...svg.querySelectorAll('.graph-node')].map(node=>[node.dataset.id,node]));
+        const retained=new Set();
+        for(const node of nextSvg.querySelectorAll('.graph-node')){
+          retained.add(node.dataset.id);
+          const old=existing.get(node.dataset.id);
+          if(old){for(const attr of ['class','style','aria-label'])old.setAttribute(attr,node.getAttribute(attr));}
+          else svg.append(node);
+        }
+        for(const [id,node] of existing)if(!retained.has(id))node.remove();
+        svg.querySelectorAll('.graph-edge').forEach(edge=>edge.remove());
+        svg.prepend(...nextSvg.querySelectorAll('.graph-edge'));
+        for(const attr of ['viewBox','data-graph-width','data-graph-height'])svg.setAttribute(attr,nextSvg.getAttribute(attr));
+        selection.innerHTML=next.querySelector('.graph-selection').innerHTML;
+        results.querySelector('.knowledge-graph').className=next.querySelector('.knowledge-graph').className;
+        results.querySelector('.knowledge-graph-header small').textContent=next.querySelector('.knowledge-graph-header small').textContent;
+        const local=results.querySelector('[data-action=graph-local]');
+        if(local){local.disabled=!selectedGraphId.startsWith('card:');local.setAttribute('aria-pressed',String(graphLocalTwoHop));}
+        patched=true;
+      }
+    }
+    if(!patched)results.innerHTML=markup;
+    results.setAttribute('aria-label', knowledgeViewLabel());
+  }
   const count = $('.wiki-match-count');
   if (count) count.textContent = query || topicFilter ? `显示 ${filteredKnowledgeNotes().length} / ${state.notes.length} 张卡片` : `共 ${state.notes.length} 张卡片`;
   decorateGraphToolbar(); startGraphMotion(pendingGraph); applyGraphFocus();
@@ -964,10 +995,10 @@ function knowledgeGraphView(notes) {
   const selected = byId.get(selectedGraphId);
   const box = graphViewport && graphViewport.totalWidth === graph.width && graphViewport.totalHeight === graph.height ? graphViewport : { x: 0, y: 0, width: graph.width, height: graph.height, totalWidth: graph.width, totalHeight: graph.height };
   const lines = graph.edges.map(edge => { const from = byId.get(edge.source), to = byId.get(edge.target); return `<line class="graph-edge graph-edge-${edge.type}" data-source="${escape(edge.source)}" data-target="${escape(edge.target)}" x1="${from.x}" y1="${from.y}" x2="${to.x}" y2="${to.y}"><title>${escape({ membership: '属于主题', hierarchy: '主题层级', related: '明确相关', prerequisites: '前置知识', contrasts: '对比知识', suggested: '共同标签·候选关联' }[edge.type])}</title></line>`; }).join('');
-  const points = graph.nodes.map(node => `<a href="#" class="graph-node graph-node-${node.kind}${node.id === selectedGraphId ? ' selected' : ''}" style="--node-color:${knowledgeDomainColors[node.domain] || knowledgeDomainColors['待归类']}" data-action="select-graph-node" data-id="${escape(node.id)}" aria-label="${escape(node.kind === 'topic' ? `主题：${node.topic}` : `卡片：${node.label}`)}"><title>${escape(node.kind === 'topic' ? `主题：${node.topic}，${node.count} 张卡片` : `${node.label} · ${node.topic}`)}</title><circle cx="${node.x}" cy="${node.y}" r="${node.kind === 'topic' ? 10 : 6}"></circle><text x="${node.x + 11}" y="${node.y + 4}">${escape(node.label.length > 12 ? node.label.slice(0, 11) + '…' : node.label)}</text></a>`).join('');
+  const points = graph.nodes.map(node => `<a href="#" class="graph-node graph-node-${node.kind}${node.id === selectedGraphId ? ' selected' : ''}" style="--node-color:${knowledgeDomainColors[node.domain] || knowledgeDomainColors['待归类']}" data-action="select-graph-node" data-id="${escape(node.id)}" aria-label="${escape(node.kind === 'topic' ? `主题：${node.topic}` : `卡片：${node.label}`)}"><title>${escape(node.kind === 'topic' ? `主题：${node.topic}，${node.count} 张卡片` : `${node.label} · ${node.topic} · 双击打开知识卡片`)}</title><circle cx="${node.x}" cy="${node.y}" r="${node.kind === 'topic' ? 10 : 6}"></circle><text x="${node.x + 11}" y="${node.y + 4}">${escape(node.label.length > 12 ? node.label.slice(0, 11) + '…' : node.label)}</text></a>`).join('');
   const selectedCard = selected?.kind === 'card' ? state.notes.find(note => note.id === selected.cardId) : null;
   const related = selected ? graph.edges.filter(edge => edge.source === selected.id || edge.target === selected.id).filter(edge => !['membership', 'hierarchy'].includes(edge.type)).slice(0, 8) : [];
-  return `<div class="knowledge-graph${graph.shownCards > 30 ? ' graph-dense' : ''}"><div class="knowledge-graph-header"><div><strong>知识关联图谱</strong><small>${graph.shownCards} 张卡片 · ${graph.edges.length} 条连线${graph.totalCards > graph.shownCards ? ` · 仅显示最近 ${graph.shownCards} 张；可搜索或按主题缩小范围` : ''}</small></div><div class="graph-controls"><button type="button" data-action="graph-zoom-in" aria-label="放大图谱">＋</button><button type="button" data-action="graph-zoom-out" aria-label="缩小图谱">－</button><button type="button" data-action="graph-reset">重置</button></div></div><div class="knowledge-graph-canvas"><svg id="knowledge-graph-svg" viewBox="${box.x} ${box.y} ${box.width} ${box.height}" data-graph-width="${graph.width}" data-graph-height="${graph.height}" role="group" aria-label="可缩放和拖动的知识关联图谱">${lines}${points}</svg></div><div class="graph-legend"><span class="graph-legend-topic">主题与归属</span><span class="graph-legend-related">明确关联</span><span class="graph-legend-prerequisites">前置知识</span><span class="graph-legend-contrasts">对比知识</span><span class="graph-legend-suggested">共同标签（候选）</span></div><div class="graph-selection">${selected ? `<strong>${escape(selected.kind === 'topic' ? selected.topic : selectedCard?.title || selected.label)}</strong><p>${selected.kind === 'topic' ? `${selected.count} 张卡片归入这一主题。` : escape(selectedCard?.summary || '暂无摘要。')}</p>${selected.kind === 'topic' ? `<button type="button" class="btn secondary" data-action="filter-topic" data-topic="${escape(selected.topic)}">查看这个主题</button>` : `<button type="button" class="btn primary" data-action="open-note" data-id="${escape(selected.cardId)}">打开知识卡片</button>`}${related.length ? `<div class="graph-related">${related.map(edge => { const other = byId.get(edge.source === selected.id ? edge.target : edge.source); return other?.kind === 'card' ? `<button type="button" data-action="select-graph-node" data-id="${escape(other.id)}">${escape(other.label)} <small>${edge.type === 'suggested' ? '共同标签·候选' : edge.type === 'prerequisites' ? '前置知识' : edge.type === 'contrasts' ? '对比知识' : '明确相关'}</small></button>` : ''; }).join('')}</div>` : ''}` : '<p>点击节点查看卡片和关联；拖动画布、滚轮或右上角按钮可缩放。</p>'}</div></div>`;
+  return `<div class="knowledge-graph${graph.shownCards > 30 ? ' graph-dense' : ''}"><div class="knowledge-graph-header"><div><strong>知识关联图谱</strong><small>${graph.shownCards} 张卡片 · ${graph.edges.length} 条连线${graph.totalCards > graph.shownCards ? ` · 仅显示最近 ${graph.shownCards} 张；可搜索或按主题缩小范围` : ''}</small></div><div class="graph-controls"><button type="button" data-action="graph-zoom-in" aria-label="放大图谱">＋</button><button type="button" data-action="graph-zoom-out" aria-label="缩小图谱">－</button><button type="button" data-action="graph-reset">重置</button></div></div><div class="knowledge-graph-canvas"><svg id="knowledge-graph-svg" viewBox="${box.x} ${box.y} ${box.width} ${box.height}" data-graph-width="${graph.width}" data-graph-height="${graph.height}" role="group" aria-label="可缩放和拖动的知识关联图谱">${lines}${points}</svg></div><div class="graph-legend"><span class="graph-legend-topic">主题与归属</span><span class="graph-legend-related">明确关联</span><span class="graph-legend-prerequisites">前置知识</span><span class="graph-legend-contrasts">对比知识</span><span class="graph-legend-suggested">共同标签（候选）</span></div><div class="graph-selection">${selected ? `<strong>${escape(selected.kind === 'topic' ? selected.topic : selectedCard?.title || selected.label)}</strong><p>${selected.kind === 'topic' ? `${selected.count} 张卡片归入这一主题。` : escape(selectedCard?.summary || '暂无摘要。')}</p>${selected.kind === 'topic' ? `<button type="button" class="btn secondary" data-action="filter-topic" data-topic="${escape(selected.topic)}">查看这个主题</button>` : `<button type="button" class="btn primary" data-action="open-note" data-id="${escape(selected.cardId)}">打开知识卡片</button>`}${related.length ? `<div class="graph-related">${related.map(edge => { const other = byId.get(edge.source === selected.id ? edge.target : edge.source); return other?.kind === 'card' ? `<button type="button" data-action="select-graph-node" data-id="${escape(other.id)}">${escape(other.label)} <small>${edge.type === 'suggested' ? '共同标签·候选' : edge.type === 'prerequisites' ? '前置知识' : edge.type === 'contrasts' ? '对比知识' : '明确相关'}</small></button>` : ''; }).join('')}</div>` : ''}` : '<p>单击节点查看关联，双击卡片节点打开知识卡片；拖动画布、滚轮或右上角按钮可缩放。</p>'}</div></div>`;
 }
 function setGraphViewport(svg, x, y, width, height) {
   graphViewport = { x, y, width, height, totalWidth: Number(svg.dataset.graphWidth), totalHeight: Number(svg.dataset.graphHeight) };
@@ -1919,7 +1950,7 @@ async function action(name, element) {
     selectedGraphId = deselect ? '' : id;
     if (deselect) graphLocalTwoHop = false;
     suppressedGraphHoverId = deselect ? id : '';
-    refreshKnowledgeResults(); return;
+    refreshKnowledgeResults({preserveGraph:true}); return;
   }
   if (name === 'graph-orphans') { graphOrphansOnly = !graphOrphansOnly; graphLocalTwoHop = false; selectedGraphId = ''; graphViewport = null; refreshKnowledgeResults(); return; }
   if (name === 'graph-local') { if (!selectedGraphId.startsWith('card:')) return; graphLocalTwoHop = !graphLocalTwoHop; graphOrphansOnly = false; graphViewport = null; refreshKnowledgeResults(); return; }
@@ -1986,6 +2017,7 @@ document.addEventListener('keydown', event => {
 document.addEventListener('click', async event => {
   const element = event.target.closest('[data-page], [data-action]'); if (!element || element.disabled) return;
   event.preventDefault();
+  if(element.dataset.action==='select-graph-node'&&event.detail>1)return;
   if (element.dataset.page) { activeNote = null; return element.dataset.page === 'study' ? openLesson(activeLesson || nextLesson().id, lessonTab) : navigate(element.dataset.page); }
   const loading = ['export-course', 'import-course', 'generate-lesson', 'generate-block', 'restore-block', 'create-note', 'test-connection', 'check-image-connection', 'delete-note'].includes(element.dataset.action);
   const html = element.innerHTML;
@@ -1996,6 +2028,17 @@ document.addEventListener('click', async event => {
 document.addEventListener('pointerup', event => {
   if (event.target.closest?.('#annotation-quick-add, #annotation-dialog')) return;
   if (page === 'study' && lessonTab === 'read') setTimeout(showAnnotationShortcut, 0);
+});
+
+document.addEventListener('dblclick', event => {
+  const node=event.target.closest?.('#knowledge-graph-svg .graph-node-card');
+  const graphId=node?.dataset.id;
+  if(!node?.isConnected||graphDrag||typeof graphId!=='string'||!graphId.startsWith('card:'))return;
+  const id=graphId.slice('card:'.length);
+  if(!state.notes.some(note=>note.id===id))return;
+  event.preventDefault();
+  selectedGraphId=graphId;suppressedGraphHoverId='';
+  activeNote=id;navigate('wiki');
 });
 document.addEventListener('keyup', event => {
   if (page === 'study' && lessonTab === 'read' && event.target.closest?.('.annotatable')) showAnnotationShortcut();

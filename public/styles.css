@@ -372,7 +372,9 @@
 #note-results .graph-edge-suggested{stroke:#aaa0b7;stroke-opacity:.8;stroke-dasharray:4 4}
 #note-results .graph-node-card circle{fill:var(--node-color,#70a3e9);stroke:#fff;stroke-width:2}
 #note-results .graph-node-topic circle{fill:var(--node-color,#70a3e9);stroke:#fff;stroke-width:2.5}
-#note-results .graph-node text{fill:#3f3550;stroke:#fff;stroke-width:3px}
+#note-results .graph-node text{fill:#3f3550;stroke:#fff;stroke-width:3px;pointer-events:all;user-select:none}
+#note-results .knowledge-graph.graph-dense .graph-node-card text{pointer-events:none}
+#note-results .knowledge-graph.graph-dense .graph-node-card:hover text,#note-results .knowledge-graph.graph-dense .graph-node-card:focus-visible text,#note-results .knowledge-graph.graph-dense .graph-node-card.selected text,#note-results .knowledge-graph.graph-dense .graph-node-card.focused text{pointer-events:all}
 #note-results .graph-node-topic text{fill:#3f3550}
 #note-results .graph-node:hover circle,#note-results .graph-node:focus-visible circle,#note-results .graph-node.selected circle,#note-results .graph-node.focused circle{fill:var(--node-color,#70a3e9);stroke:#403058;stroke-width:3.5}
 #note-results #knowledge-graph-svg.has-focus .graph-edge:not(.dimmed){stroke-opacity:1;stroke-width:2.5}

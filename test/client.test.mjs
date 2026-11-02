@@ -2284,6 +2284,55 @@ test('graph hover temporarily focuses direct relations and clicking the same nod
   assert.ok(svg.classList.contains('has-focus'), 'hover works again after re-entering');
 });
 
+test('double-clicking graph dots or labels opens the exact card while selection preserves the SVG and its node targets',async t=>{
+  const app=realSettingsHarness({load:async()=>({status:{mode:'demo'}})});
+  t.after(()=>app.close());await app.ready();
+  const notes=[{id:'card_git_1',title:'Git 个人身份',content:'这是 Git 身份配置的完整正文。'},{id:'other',title:'另一张卡片',content:'其他正文。'}].map(note=>({...note,lessonId:'p1',summary:note.title,tags:['Git'],topic:'开发工具/Git',updated:1}));
+  app.run(`state.notes=${JSON.stringify(notes)};page='wiki';render()`);
+  await app.fire('click',app.document.querySelector('[data-view=graph]'));
+  const baseline=app.run('JSON.stringify(state)');
+  for(const part of ['circle','text']){
+    const svg=app.document.querySelector('#knowledge-graph-svg');
+    const node=svg.querySelector('[data-id="card:card_git_1"]'),target=node.querySelector(part);
+    await app.fire('click',target,{detail:1});
+    assert.equal(app.document.querySelector('#knowledge-graph-svg'),svg);
+    assert.equal(svg.querySelector('[data-id="card:card_git_1"]'),node);
+    assert.equal(node.querySelector(part),target,'first click must not replace the double-click target');
+    await app.fire('click',target,{detail:2});
+    await app.fire('dblclick',target,{button:0});
+    assert.equal(app.run('activeNote'),'card_git_1');
+    assert.match(app.document.querySelector('#note-preview-view').textContent,/Git 身份配置的完整正文/);
+    assert.equal(app.run('JSON.stringify(state)'),baseline);
+    await app.fire('click',app.document.querySelector('[data-action=close-note]'));
+    assert.ok(app.document.querySelector('#knowledge-graph-svg [data-id="card:card_git_1"].selected'));
+  }
+});
+
+test('graph double-click remains safe in local-neighborhood mode and ignores topics, ongoing drags and missing cards',async t=>{
+  const app=realSettingsHarness({load:async()=>({status:{mode:'demo'}})});
+  t.after(()=>app.close());await app.ready();
+  const notes=['a','b','c','d'].map((id,i)=>({id,title:'卡片 '+id,lessonId:'p1',summary:id,content:id,tags:[],topic:'测试',related:i<3?[String.fromCharCode(id.charCodeAt(0)+1)]:[],updated:1}));
+  app.run(`state.notes=${JSON.stringify(notes)};page='wiki';render()`);
+  await app.fire('click',app.document.querySelector('[data-view=graph]'));
+  await app.fire('click',app.document.querySelector('[data-id="card:a"]'));
+  await app.fire('click',app.document.querySelector('[data-action=graph-local]'));
+  assert.equal(app.document.querySelectorAll('.graph-node-card').length,3);
+  const svg=app.document.querySelector('#knowledge-graph-svg'),b=svg.querySelector('[data-id="card:b"]');
+  await app.fire('click',b);
+  assert.equal(app.document.querySelector('#knowledge-graph-svg'),svg);
+  assert.equal(svg.querySelector('[data-id="card:b"]'),b);
+  assert.equal(svg.querySelectorAll('.graph-node-card').length,4);
+  await app.fire('dblclick',svg.querySelector('.graph-node-topic text'));
+  assert.equal(app.run('activeNote'),null);
+  await app.fire('pointerdown',b.querySelector('circle'),{clientX:10,clientY:10});
+  await app.fire('dblclick',b.querySelector('circle'));
+  assert.equal(app.run('activeNote'),null);
+  await app.fire('pointerup',svg);
+  app.run("state.notes=state.notes.filter(note=>note.id!=='b')");
+  await app.fire('dblclick',b.querySelector('text'));
+  assert.equal(app.run('activeNote'),null);
+});
+
 test('graph uses one stable color per root directory, including cards with different YAML topics', async t => {
   const app = realSettingsHarness({ load: async () => ({ status: { mode: 'demo' } }) });
   t.after(() => app.close()); await app.ready();
