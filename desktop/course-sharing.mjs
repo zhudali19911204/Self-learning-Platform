@@ -32,7 +32,7 @@ function cleanCourse(value, newIds = false) {
   let valid = false;
   try { valid = validState(stateFor(value)) && !Object.keys(value.lessons).some(id => !value.plan.lessons.some(l => l.id === id)); } catch { /* Invalid external shapes must not escape as implementation errors. */ }
   if (!valid) throw new Error('课程包内容格式无效，未修改现有课程。');
-  const plan = { ...pick(value.plan, ['title', 'description', 'goal', 'level', 'daily', 'days', 'source']), id: newIds ? randomUUID() : 'shared-course', lessons: [] };
+  const plan = { ...pick(value.plan, ['title', 'description', 'goal', 'level', 'daily', 'days', 'source', 'category']), id: newIds ? randomUUID() : 'shared-course', lessons: [] };
   if(value.plan.materials?.length) plan.materials=value.plan.materials.map(m=>({...pick(m,['version','id','name','type','bytes','importedAt','warning']),parts:m.parts.map(p=>pick(p,['id','location','text']))}));
   const lessons = {}, blockCourses = {};
   value.plan.lessons.forEach((meta, index) => {

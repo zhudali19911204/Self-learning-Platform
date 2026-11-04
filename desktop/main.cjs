@@ -55,7 +55,7 @@ async function start() {
   const { createSpeechModel } = await import(pathToFileURL(path.join(__dirname, '..', 'speech-model.mjs')));
   const { assistedBlockTypes } = await import(pathToFileURL(path.join(__dirname, '..', 'public', 'blocks.js')));
   const { validImageSuggestion, validImageProposal } = await import(pathToFileURL(path.join(__dirname, '..', 'public', 'illustrations.js')));
-  const isolatedTest = smoke && (process.argv.includes('--resume-only') ? 'resume-tests' : process.argv.includes('--ui-only') ? 'ui-tests' : process.argv.includes('--cancel-only') ? 'cancel-tests' : process.argv.includes('--quiz-only') ? 'quiz-tests' : process.argv.includes('--facts-only') ? 'fact-tests' : process.argv.includes('--sources-only') ? 'source-tests' : process.argv.includes('--quality-only') || process.argv.includes('--revision-only') ? 'score-tests' : process.argv.includes('--sharing-only') ? 'sharing-tests' : '');
+  const isolatedTest = smoke && (process.argv.includes('--categories-only') ? 'category-tests' : process.argv.includes('--resume-only') ? 'resume-tests' : process.argv.includes('--ui-only') ? 'ui-tests' : process.argv.includes('--cancel-only') ? 'cancel-tests' : process.argv.includes('--quiz-only') ? 'quiz-tests' : process.argv.includes('--facts-only') ? 'fact-tests' : process.argv.includes('--sources-only') ? 'source-tests' : process.argv.includes('--quality-only') || process.argv.includes('--revision-only') ? 'score-tests' : process.argv.includes('--sharing-only') ? 'sharing-tests' : '');
   const dataDirectory = isolatedTest ? path.join(app.getPath('userData'), isolatedTest, randomBytes(8).toString('hex')) : path.join(app.getPath('userData'), 'data');
   await mkdir(dataDirectory, { recursive: true });
   settingsLayoutStore = createSettingsLayoutStore(dataDirectory);
@@ -220,6 +220,7 @@ async function start() {
   handle('learnflow:get-lesson', id => learning.getLesson(id));
   handle('learnflow:save-plan', value => { const result=learning.savePlan(value);for(const m of value.materials||[])stagedMaterials.delete(m.id);return result; });
   handle('learnflow:set-active-plan', id => learning.setActivePlan(id));
+  handle('learnflow:set-plan-categories', changes => learning.setPlanCategories(changes));
   handle('learnflow:delete-plan', async id => {
     const preview = learning.planDeletionPreview(id);
     const choice = await dialog.showMessageBox(window, {
@@ -575,7 +576,8 @@ async function start() {
   if (!smoke) window.focus();
   if (development) { window.setTitle('知行 Learnflow · 开发测试版'); console.log('DESKTOP_DEV_READY'); }
   if (smoke) {
-    if (process.argv.includes('--materials-only')) await require('./materials-smoke.cjs').run(window,dataDirectory,sourceFixture);
+    if (process.argv.includes('--categories-only')) await require('./categories-smoke.cjs').run(window,dataDirectory);
+    else if (process.argv.includes('--materials-only')) await require('./materials-smoke.cjs').run(window,dataDirectory,sourceFixture);
     else if (process.argv.includes('--resume-only')) await require('./resume-smoke.cjs').run(window,dataDirectory);
     else if (process.argv.includes('--ui-only')) await require('./ui-smoke.cjs').run(window,dataDirectory);
     else if (process.argv.includes('--cancel-only')) await require('./cancellation-smoke.cjs').run(window,dataDirectory);

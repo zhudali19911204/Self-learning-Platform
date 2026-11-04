@@ -2,7 +2,7 @@
 
 中文 AI 自学与个人知识管理工具：**学习目标 → 个性化路线 → 课程与实践 → 练习答疑 → 知识卡片**。以 Windows 桌面版为主要使用入口，保留 Web 开发模式，支持本机模型和云端模型。
 
-当前源码版本：`1.3.7`，以 [package.json](package.json) 为准。本文介绍当前工作区功能；已有安装包需要重新构建，才会包含源码中的最新修改。
+当前源码版本：`1.3.8`，以 [package.json](package.json) 为准。本文介绍当前工作区功能；已有安装包需要重新构建，才会包含源码中的最新修改。
 
 ## 主要功能
 
@@ -50,6 +50,10 @@ npm run desktop:dev
 4. **展开课程**：进入章节，生成大纲与所需内容块；实践任务在自己的工具中完成。
 5. **练习与答疑**：提交练习、查看解析、追加新题；答对的原题不必重复作答。右侧入口可进行 AI 答疑或朗读。
 6. **积累与继续**：选中原文添加批注，或制作知识卡片。下次从首页“继续学习”恢复具体章节与栏目位置。
+
+### 课程分类与手动调整
+
+“学习路线 → 我的课程分类”覆盖 AI、数据分析、办公自动化、语言沟通、财税法务、商业管理等 13 类，按标题优先的本地规则整理。支持搜索课程和分类，默认只展开当前课程所在类别，可逐类或全部展开收起。点击“调整分类”可批量修改；手动选择优先保存，选择“自动分类”恢复规则判断。分类不调用模型，随备份和课程包保留，并同步知识库领域。[分类规则](docs/course-classification.md)
 
 ### 三种课程生成方式
 
@@ -167,7 +171,7 @@ node desktop/start.cjs --smoke-test --ui-only
 
 受限环境若因子进程权限无法运行 `npm test`，可改用 `node --test --test-isolation=none`。桌面回归使用 `.desktop-test/` 中的隔离数据和模拟模型，不消耗真实 Key。
 
-其他专项参数：`--resume-only`、`--quiz-only`、`--sources-only`、`--facts-only`、`--quality-only`、`--sharing-only`、`--settings-only`、`--cancel-only`，均与 `--smoke-test` 一起使用。付费诊断脚本需显式授权，不属于默认自动化测试。
+其他专项参数：`--categories-only`、`--resume-only`、`--quiz-only`、`--sources-only`、`--facts-only`、`--quality-only`、`--sharing-only`、`--settings-only`、`--cancel-only`，均与 `--smoke-test` 一起使用。付费诊断脚本需显式授权，不属于默认自动化测试。
 
 ## 常见问题
 
@@ -209,6 +213,7 @@ node desktop/start.cjs --smoke-test --ui-only
 | [课程评分](docs/course-score-validation.md) | 评分校验、未核实意见及历史报告 |
 | [随堂练习](docs/course-quiz-practice.md) | 固定首批题数、追加练习与通过记录 |
 | [学习位置恢复](docs/learning-resume.md) | 继续学习与具体栏目、阅读位置恢复 |
+| [课程分类](docs/course-classification.md) | 自动规则、手动调整、知识库领域及保存范围 |
 | [课程分享](docs/course-sharing.md) | 课程包范围、导入及数据隔离 |
 | [生成优化与实现](docs/course-generation-implementation.md) | 教学上下文、提示词策略与生成校验 |
 | [原始提示词](docs/course-generation-prompts.md)／[优化版](docs/course-generation-prompts-optimized.md) | 提示词设计与对照 |

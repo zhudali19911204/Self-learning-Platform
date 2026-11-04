@@ -111,5 +111,9 @@ test('SQLite restart, full backups and course sharing retain material text and r
  const course=createCoursePackage(plan,id=>store.getLesson(id));const shared=instantiateCoursePackage(course);
  assert.deepEqual(shared.plans[0].materials,all);
  assert.equal(shared.blockCourses[shared.plans[0].lessons[0].id].blocks[0].content.grounding.citations[0].location,'第 1–3 行');
+ const imported=store.importCoursePackage(course);
+ assert.deepEqual(imported.state.plans.find(p=>p.id===imported.planId).materials,all);
+ assert.equal(store.getLesson(imported.state.plans.find(p=>p.id===imported.planId).lessons[0].id).blockCourse.blocks[0].content.grounding.citations[0].location,'第 1–3 行');
+ await store.deletePlan(imported.planId);
  await store.deletePlan('material-course');assert.equal(store.exportState().plans.some(p=>p.materials),false);store.close();
 });

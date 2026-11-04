@@ -1,3 +1,4 @@
+import { courseDomain } from './course-categories.js';
 const fold = value => String(value ?? '').normalize('NFKC').toLocaleLowerCase();
 const unique = values => [...new Set(values)];
 export const knowledgeTopic = value => String(value || '未分类').split(/[\\/]/).map(item => item.trim()).filter(Boolean).join('/') || '未分类';
@@ -16,24 +17,8 @@ export const knowledgeDomainColors = Object.freeze({
   '生活与兴趣': '#b49c69',
   '待归类': '#9ca3af'
 });
-const domainRules = [
-  ['人工智能', /大模型|人工智能|机器学习|深度学习|智能体|提示词|神经网络|transformer|\b(?:llm|gpt|rag|ai)\b/i],
-  ['数据与分析', /数据分析|数据库|数据处理|数据可视化|统计|报表|商业智能|\b(?:sql|power\s*(?:bi|query)|dax|excel|tableau)\b/i],
-  ['语言与沟通', /英语|日语|法语|德语|外语|语言学习|口语|听力|写作|演讲|沟通|\benglish\b/i],
-  ['商业与管理', /商业|经营|管理|营销|财务|会计|产品经理|项目管理|运营|创业/i],
-  ['设计与创作', /设计|绘画|摄影|剪辑|视频|音乐|创作|动画|视觉/i],
-  ['科学与通识', /数学|物理|化学|生物|历史|地理|哲学|心理学|科学/i],
-  ['生活与兴趣', /健康|健身|烹饪|旅行|生活|兴趣|游戏|电竞/i],
-  ['技术与开发', /编程|程序|代码|开发|软件|计算机|网络|运维|版本控制|自动化|\b(?:git|github|python|javascript|typescript|java|linux|docker|c\+\+)\b/i]
-];
 export function knowledgeDomain(course = {}) {
-  const title = String(course.title || course.courseTitle || '');
-  const details = [course.goal, course.description, ...(course.lessons || []).flatMap(lesson => [lesson.title, lesson.objective, ...(lesson.tags || [])])].filter(Boolean).join(' ');
-  for (const source of [title, details]) {
-    const match = domainRules.find(([, pattern]) => pattern.test(source));
-    if (match) return match[0];
-  }
-  return '待归类';
+  return courseDomain(course);
 }
 
 export function knowledgeTheme(note) {

@@ -28,6 +28,7 @@ import { qualityRubric, qualityLabels, qualityModelId } from '../public/course-q
 import { teachingContextNotice } from '../public/teaching-context.js';
 import { officialSource, validSourceSearch, courseReferences } from '../public/course-sources.js';
 import { validMaterials, localMaterialSource, MATERIAL_LIMITS } from '../public/materials.js';
+import { courseCategories, categoryFor, automaticCourseCategory, validCategoryChanges } from '../public/course-categories.js';
 import { revisionTypes, revisionStatuses, revisionCheckLabels, revisionContent, revisionText, revisionDiff } from '../public/course-revision.js';
 const DOMPurify = createDOMPurify(new JSDOM('').window);
 const source = (await readFile(new URL('../public/app.js', import.meta.url), 'utf8')).replace(/^import .* from '\.\/[^']+';$/gm, '');
@@ -747,19 +748,19 @@ test('quiz progress describes prior teaching reuse instead of a new search even 
 
 // Keyless-form regressions need real elements.namedItem() and actual FormData.
 function realSettingsHarness(bridge) {
-  const dom = new JSDOM('<div id="app"></div><div id="toast"></div><aside id="generation-progress" popover="manual" hidden></aside><button id="annotation-quick-add" data-action="add-annotation" hidden></button><dialog id="annotation-dialog"></dialog><dialog id="knowledge-draft-dialog"></dialog><dialog id="knowledge-organize-dialog"></dialog><dialog id="quality-dialog"></dialog>', { url: 'http://localhost' });
+  const dom = new JSDOM('<div id="app"></div><div id="toast"></div><aside id="generation-progress" popover="manual" hidden></aside><button id="annotation-quick-add" data-action="add-annotation" hidden></button><dialog id="annotation-dialog"></dialog><dialog id="knowledge-draft-dialog"></dialog><dialog id="knowledge-organize-dialog"></dialog><dialog id="quality-dialog"></dialog><dialog id="course-category-dialog"></dialog>', { url: 'http://localhost' });
   const document = dom.window.document, listeners = new Map();
   document.querySelector('#knowledge-organize-dialog').showModal = function () { this.open = true; };
   document.querySelector('#knowledge-organize-dialog').close = function () { this.open = false; };
-  for (const id of ['annotation-dialog', 'knowledge-draft-dialog', 'quality-dialog']) {
+  for (const id of ['annotation-dialog', 'knowledge-draft-dialog', 'quality-dialog', 'course-category-dialog']) {
     document.querySelector(`#${id}`).showModal = function () { this.open = true; };
     document.querySelector(`#${id}`).close = function () { this.open = false; };
   }
   document.addEventListener = (name, listener) => { const group = listeners.get(name) || []; group.push(listener); listeners.set(name, group); };
   dom.window.learnflowDesktop = bridge; dom.window.scrollTo = () => {};
-  const context = vm.createContext({ generationCancelled, isGenerationCancelled, masteredQuizQuestions, quizRecordAfterChange, quizQuestionKey, quizInitialCount, quizBatchLimit, quizQuestionLimit, createGenerationProgress, factCheckLabels, sameFactContent, MATERIAL_LIMITS, validMaterials, localMaterialSource, officialSource, validSourceSearch, courseReferences, teachingContextNotice, qualityRubric, qualityLabels, qualityModelId, revisionTypes, revisionStatuses, revisionCheckLabels, revisionContent, revisionText, revisionDiff,
+  const context = vm.createContext({ courseCategories, categoryFor, automaticCourseCategory, validCategoryChanges, generationCancelled, isGenerationCancelled, masteredQuizQuestions, quizRecordAfterChange, quizQuestionKey, quizInitialCount, quizBatchLimit, quizQuestionLimit, createGenerationProgress, factCheckLabels, sameFactContent, MATERIAL_LIMITS, validMaterials, localMaterialSource, officialSource, validSourceSearch, courseReferences, teachingContextNotice, qualityRubric, qualityLabels, qualityModelId, revisionTypes, revisionStatuses, revisionCheckLabels, revisionContent, revisionText, revisionDiff,
     demoPlan, demoLessons, lessonFromBlocks, validOutline, validBlockContent, validBlockSpec, blockGenerationContext, revisedContent, restoredContent, assistedBlockTypes, Marked, DOMPurify, createMarkdownRenderer, validQuestionnaire, validClarification, learningBriefFrom, validIllustration, validImageProposal, speechDefaults, speechVoices, listeningText, speechTurns, speechRequest, validAudioId, validKnowledgeSource, validKnowledgeDraft, localKnowledgeDraft, knowledgeTags, knowledgeConditions, validAnnotations, personalNotesForSource, personalNotesMarkdown, knowledgeCatalog, knowledgeDomain, knowledgeDomainColors, knowledgeTopic, retrieveKnowledge, validKnowledgeOrganization, courseKnowledgeTree, knowledgeTree, knowledgeGraph, filterKnowledgeGraph, createGraphMotion, stepGraphMotion, structuredClone, crypto: webcrypto, AbortSignal,
-    document, window: dom.window, FormData: dom.window.FormData, createStudyPositionTracker, studyPositionFor, startHomeMotion, setTimeout: () => 1, clearTimeout() {}
+    document, window: dom.window, localStorage:dom.window.localStorage, fetch:async()=>({ok:true,json:async()=>({mode:'demo'})}), FormData: dom.window.FormData, createStudyPositionTracker, studyPositionFor, startHomeMotion, setTimeout: () => 1, clearTimeout() {}
   });
   vm.runInContext(source, context);
   return { document, run: code => vm.runInContext(code, context), close: () => {vm.runInContext('studyTracker.dispose()',context);dom.window.close();},
@@ -774,7 +775,7 @@ function harness(saved, fetchImpl, desktopBridge) {
     if (!nodes.has(selector)) nodes.set(selector, { innerHTML: '', textContent: '', open: false, attributes: {}, setAttribute(name, value) { this.attributes[name] = value; }, classList: { add() {}, remove() {} }, scrollIntoView() {}, focus() {}, showModal() { this.open = true; }, close() { this.open = false; } });
     return nodes.get(selector);
   };
-  const context = vm.createContext({ createStudyPositionTracker, studyPositionFor, startHomeMotion, generationCancelled, isGenerationCancelled, masteredQuizQuestions, quizRecordAfterChange, quizQuestionKey, quizInitialCount, quizBatchLimit, quizQuestionLimit, createGenerationProgress, factCheckLabels, sameFactContent, MATERIAL_LIMITS, validMaterials, localMaterialSource, officialSource, validSourceSearch, courseReferences, teachingContextNotice, qualityRubric, qualityLabels, qualityModelId, revisionTypes, revisionStatuses, revisionCheckLabels, revisionContent, revisionText, revisionDiff,
+  const context = vm.createContext({ courseCategories, categoryFor, automaticCourseCategory, validCategoryChanges, createStudyPositionTracker, studyPositionFor, startHomeMotion, generationCancelled, isGenerationCancelled, masteredQuizQuestions, quizRecordAfterChange, quizQuestionKey, quizInitialCount, quizBatchLimit, quizQuestionLimit, createGenerationProgress, factCheckLabels, sameFactContent, MATERIAL_LIMITS, validMaterials, localMaterialSource, officialSource, validSourceSearch, courseReferences, teachingContextNotice, qualityRubric, qualityLabels, qualityModelId, revisionTypes, revisionStatuses, revisionCheckLabels, revisionContent, revisionText, revisionDiff,
     demoPlan, demoLessons, lessonFromBlocks, validOutline, validBlockContent, validBlockSpec, blockGenerationContext, revisedContent, restoredContent, assistedBlockTypes, Marked, DOMPurify, createMarkdownRenderer, validQuestionnaire, validClarification, learningBriefFrom, validIllustration, validImageProposal, speechDefaults, speechVoices, listeningText, speechTurns, speechRequest, validAudioId, validKnowledgeSource, validKnowledgeDraft, localKnowledgeDraft, knowledgeTags, knowledgeConditions, validAnnotations, personalNotesForSource, personalNotesMarkdown, knowledgeCatalog, knowledgeDomain, knowledgeDomainColors, knowledgeTopic, retrieveKnowledge, validKnowledgeOrganization, courseKnowledgeTree, knowledgeTree, knowledgeGraph, filterKnowledgeGraph, createGraphMotion, stepGraphMotion, structuredClone, crypto: webcrypto, AbortSignal,
     document: { querySelector: node, addEventListener(name, listener) { const group = listeners.get(name) || []; group.push(listener); listeners.set(name, group); } },
     localStorage: { get length() { return storage.size; }, key: index => [...storage.keys()][index] ?? null, getItem: key => storage.get(key) ?? null, setItem: (key, value) => storage.set(key, value), removeItem: key => storage.delete(key) },
@@ -1988,6 +1989,80 @@ test('revision history is bounded, validated and restored in order', () => {
   assert.equal(restoredContent('practice', practice).text, '任务');
   assert.throws(() => revisedContent('summary', {text:'总结'}, {text:'新总结'}), /只能重新生成/);
   assert.throws(() => restoredContent('reading', {text:'正文'}), /没有可恢复/);
+});
+test('course library opens only the current category by default and keeps deliberate folds across navigation without changing learning data',async t=>{
+  const app=realSettingsHarness();t.after(()=>app.close());await app.ready();
+  await new Promise(resolve=>setImmediate(resolve));
+  app.run(`state.plans.push(...['Word 排版入门','英文会议沟通','LLM 工具调用'].map((title,i)=>({...structuredClone(demoPlan),id:'library-'+i,title,goal:'学习目标',lessons:demoPlan.lessons.map((l,j)=>({...l,id:'library-'+i+'-'+j,tags:[]}))})));navigate('routes')`);
+  const doc=app.document,before=app.run('JSON.stringify(state)');
+  const toggles=()=>[...doc.querySelectorAll('.route-group-toggle')];
+  const toggle=category=>toggles().find(el=>el.dataset.category===category);
+  const panel=category=>doc.getElementById(toggle(category).getAttribute('aria-controls'));
+  assert.equal(toggles().filter(el=>el.getAttribute('aria-expanded')==='true').length,1);
+  assert.equal(panel('编程开发').hidden,false);assert.equal(panel('办公与自动化').hidden,true);
+  const office=toggle('办公与自动化');office.focus();await app.fire('click',office);
+  assert.equal(panel('办公与自动化').hidden,false);assert.equal(doc.activeElement,office);
+  await app.fire('click',toggle('编程开发'));assert.equal(panel('编程开发').hidden,true);
+  app.run("navigate('home');navigate('routes')");
+  assert.equal(panel('办公与自动化').hidden,false);assert.equal(panel('编程开发').hidden,true);
+  const all=doc.querySelector('[data-action=toggle-all-route-categories]');
+  await app.fire('click',all);assert.ok(toggles().every(el=>el.getAttribute('aria-expanded')==='true'));assert.equal(all.textContent,'全部收起');
+  await app.fire('click',all);assert.ok(toggles().every(el=>el.getAttribute('aria-expanded')==='false'));
+  assert.equal(app.run('JSON.stringify(state)'),before);
+});
+
+test('course library searches normalized names, categories and tags; clearing restores folds and selection stays on the chosen course',async t=>{
+  const app=realSettingsHarness();t.after(()=>app.close());await app.ready();
+  await new Promise(resolve=>setImmediate(resolve));
+  app.run(`state.plans.push(...['Word 排版入门','Word 简历实战','英文会议沟通','LLM 工具调用'].map((title,i)=>({...structuredClone(demoPlan),id:'search-'+i,title,goal:'学习目标',lessons:demoPlan.lessons.map((l,j)=>({...l,id:'search-'+i+'-'+j,tags:i===2?['跨部门表达']:[]}))})));navigate('routes')`);
+  const doc=app.document,search=doc.querySelector('#route-course-search');
+  const input=async value=>{search.value=value;search.focus();await app.fire('input',search);};
+  const chips=()=>[...doc.querySelectorAll('#route-library-results .route-chip')];
+  await app.fire('click',doc.querySelector('[data-action=toggle-all-route-categories]'));
+  await app.fire('click',doc.querySelector('[data-action=toggle-all-route-categories]'));
+  await input('ｗＯＲＤ');assert.equal(chips().length,2);assert.ok(chips().every(c=>/Word/.test(c.textContent)));
+  assert.equal(doc.activeElement,search);assert.equal(doc.querySelector('#route-course-search'),search);
+  assert.equal(doc.querySelector('.route-group-items').hidden,false);assert.match(doc.querySelector('#route-library-status').textContent,/2 门课程/);
+  await input('办公与自动化');assert.equal(chips().length,2);
+  await input('Word 简历');assert.equal(chips().length,1);assert.equal(chips()[0].dataset.id,'search-1');
+  await input('跨部门表达');assert.equal(chips()[0].dataset.id,'search-2');
+  await input('<img src=x onerror=alert(1)>');assert.equal(chips().length,0);assert.ok(doc.querySelector('.route-library-empty'));assert.equal(doc.querySelector('#route-library-results img'),null);
+  assert.equal(doc.querySelector('[data-action=toggle-all-route-categories]').disabled,true);
+  await app.fire('click',doc.querySelector('[data-action=clear-route-search]'));
+  assert.equal(search.value,'');assert.equal(doc.activeElement,search);assert.ok([...doc.querySelectorAll('.route-group-items')].every(p=>p.hidden));
+  await input('Word 简历');await app.fire('click',chips()[0]);
+  assert.equal(app.run('state.active'),'search-1');assert.match(doc.querySelector('.route-overview h2').textContent,/Word 简历/);
+  assert.equal(doc.querySelector('#route-course-search').value,'Word 简历');
+});
+
+test('course category dialog persists manual choices in Web storage, restores auto and keeps the prior state on storage failure',async()=>{
+  const app=realSettingsHarness();
+  try {
+    await app.ready();app.run("navigate('routes');action('open-course-categories',{dataset:{}})");
+    let form=app.document.querySelector('#course-category-form');form.querySelector('select').value='办公与自动化';
+    await app.fire('submit',form);
+    assert.equal(app.run('state.plans[0].category'),'办公与自动化');
+    assert.equal(app.run("JSON.parse(localStorage.getItem('learnflow.v1')).plans[0].category"),'办公与自动化');
+    app.run("action('open-course-categories',{dataset:{}})");
+    form=app.document.querySelector('#course-category-form');assert.equal(form.querySelector('select').value,'办公与自动化');form.querySelector('select').value='';
+    await app.fire('submit',form);assert.equal(app.run('state.plans[0].category'),undefined);
+    app.run("action('open-course-categories',{dataset:{}});globalThis.localStorage={getItem:()=>null,setItem(){throw Error('quota')}}");
+    const before=app.run('JSON.stringify(state)');form=app.document.querySelector('#course-category-form');form.querySelector('select').value='语言与沟通';
+    await app.fire('submit',form);assert.equal(app.run('JSON.stringify(state)'),before);
+    assert.match(app.document.querySelector('#course-category-error').textContent,/原分类已保留/);
+    assert.equal(app.document.querySelector('#course-category-dialog').open,true);
+  } finally {app.close();}
+});
+test('desktop category save failures retain the selected draft and do not change course state',async()=>{
+  const calls=[];let fail=true;
+  const app=realSettingsHarness({load:async()=>({settings:{provider:'ollama'},status:{mode:'demo'}}),setPlanCategories:async changes=>{calls.push(changes);if(fail)throw Error('模拟写入失败');}});
+  try {
+    await app.ready();app.run("navigate('routes');action('open-course-categories',{dataset:{}})");
+    const before=app.run('JSON.stringify(state)'),form=app.document.querySelector('#course-category-form');form.querySelector('select').value='财税与法务';
+    await app.fire('submit',form);assert.equal(app.run('JSON.stringify(state)'),before);assert.equal(form.querySelector('select').value,'财税与法务');
+    assert.match(app.document.querySelector('#course-category-error').textContent,/模拟写入失败/);
+    fail=false;await app.fire('submit',form);assert.equal(app.run('state.plans[0].category'),'财税与法务');assert.equal(calls.length,2);
+  } finally {app.close();}
 });
 test('existing routes are categorized locally; deletion removes only the selected route and can be restored', async () => {
   const app = harness();

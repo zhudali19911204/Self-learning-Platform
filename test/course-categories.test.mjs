@@ -1,0 +1,47 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {mkdtemp,rm} from 'node:fs/promises';
+import {tmpdir} from 'node:os';
+import path from 'node:path';
+import {courseCategories,categoryFor,automaticCourseCategory,courseDomain,validCategoryChanges} from '../public/course-categories.js';
+import {createSqliteStore} from '../desktop/sqlite-store.mjs';
+import {createCoursePackage,instantiateCoursePackage} from '../desktop/course-sharing.mjs';
+import {demoPlan} from '../public/demo.js';
+import {validState} from '../desktop/local-store.mjs';
+test('course rules cover language, office, finance, law and internal pricing while keeping explicit tools recognizable',()=>{
+ const cases=[['LLM工具调用原理与流程实战','AI 与大模型'],['英文跨部门会议：听懂提问与流畅回应','语言与沟通'],['零基础 Word 14天自学路线：独立排版一份完整简历','办公与自动化'],['UiPath RPA办公自动化与财务对账','办公与自动化'],['14天DAX方法论入门：用Power BI实现业务汇总统计','数据分析'],['7天Excel周报与图表看板','数据分析'],['财务合规风险自查：税法、合同、公司法与内控实务','财税与法务'],['淡水合约零基础入门','财税与法务'],['14天公司间转移价格 ICO：从概念到MTP计算与报告','商业与管理'],['M 100.4轮胎成品交付转让定价：MTP核心公式与考核','商业与管理'],['GitHub中文实践','开发工具'],['Python自动化脚本','编程开发'],['摄影与视觉创作','设计与创作'],['心理学：从描述到解释','科学与通识'],['健康与健身','生活与兴趣'],['三角洲行动规则','游戏与兴趣']];
+ for(const [title,expected] of cases)assert.equal(categoryFor({title,goal:'使用AI生成Excel练习',lessons:[]}),expected,title);
+ assert.equal(automaticCourseCategory({title:'未知主题',goal:'英语听力',description:'学习Python',lessons:[]}), '语言与沟通');
+ assert.equal(categoryFor({title:'Excel数据分析',category:'语言与沟通'}),'语言与沟通');
+ assert.equal(categoryFor({title:'Excel数据分析',category:'其他主题'}),'其他主题');
+ assert.equal(courseDomain({title:'Excel数据分析',category:'语言与沟通'}),'语言与沟通');
+ assert.equal(courseDomain({title:'税务发票'}),'商业与管理');
+ assert.equal(new Set(courseCategories).size,courseCategories.length);
+ assert.equal(categoryFor({title:'尚未识别'}),'其他主题');
+});
+test('category changes validate fixed labels, uniqueness and explicit automatic reset',()=>{
+ assert.equal(validCategoryChanges([{id:'route-1',category:'办公与自动化'},{id:'route-2',category:''}]),true);
+ for(const changes of [[{id:'route-1',category:'未知分类'}],[{id:'route-1',category:null}],[{id:'route-1',category:''},{id:'route-1',category:'数据分析'}]])assert.equal(validCategoryChanges(changes),false);
+});
+test('manual choices survive reopen, full backup and course import; batch errors are atomic and automatic reset restores rules',async t=>{
+ const directory=await mkdtemp(path.join(tmpdir(),'learnflow-categories-'));
+ assert.ok(path.resolve(directory).startsWith(path.resolve(tmpdir())+path.sep));
+ let store=await createSqliteStore(directory);t.after(async()=>{store?.close();await rm(directory,{recursive:true,force:true});});
+ const extra={...structuredClone(demoPlan),id:'category-ai',title:'LLM实战',source:'ai',lessons:demoPlan.lessons.map((l,i)=>({...l,id:`category-${i}`}))};
+ store.savePlan(extra);const baseline=store.exportState();
+ const removeCategories=state=>({...state,plans:state.plans.map(({category,...p})=>p)});
+ store.setPlanCategories([{id:extra.id,category:'语言与沟通'},{id:demoPlan.id,category:'办公与自动化'}]);
+ assert.deepEqual(removeCategories(store.exportState()),baseline);
+ assert.throws(()=>store.setPlanCategories([{id:extra.id,category:'数据分析'},{id:'deleted',category:'其他主题'}]),/已删除/);
+ assert.equal(store.overview().plans.find(p=>p.id===extra.id).category,'语言与沟通');
+ assert.throws(()=>store.setPlanCategories([{id:extra.id,category:'非法类别'}]),/无效/);
+ const backup=store.exportState();store.close();store=await createSqliteStore(directory);
+ assert.equal(categoryFor(store.overview().plans.find(p=>p.id===extra.id)),'语言与沟通');
+ store.setPlanCategories([{id:extra.id,category:''}]);assert.equal(categoryFor(store.overview().plans.find(p=>p.id===extra.id)),'AI 与大模型');
+ await store.replaceState(backup);
+ const saved=store.overview().plans.find(p=>p.id===extra.id),course=createCoursePackage(saved,id=>store.getLesson(id));
+ assert.equal(instantiateCoursePackage(course).plans[0].category,'语言与沟通');
+ const imported=store.importCoursePackage(course);assert.equal(imported.state.plans.find(p=>p.id===imported.planId).category,'语言与沟通');
+ const invalid=structuredClone(backup);invalid.plans[0].category='伪造分类';assert.equal(validState(invalid),false);
+ await store.deletePlan(extra.id);assert.equal(store.overview().plans.some(p=>p.id===extra.id),false);
+});

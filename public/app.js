@@ -1,4 +1,5 @@
 import { demoPlan, demoLessons } from './demo.js';
+import { courseCategories, categoryFor, automaticCourseCategory, validCategoryChanges } from './course-categories.js';
 import { validMaterials, localMaterialSource, MATERIAL_LIMITS } from './materials.js';
 import { lessonFromBlocks, validOutline, validBlockContent, validBlockSpec, blockGenerationContext, revisedContent, restoredContent, assistedBlockTypes } from './blocks.js';
 import { Marked } from './vendor/marked.js';
@@ -343,18 +344,35 @@ function updateImageProtocolHints(protocol = $('#image-protocol').value) {
 let plannerDraft = { step: 'goal', goal: '', level: '零基础', daily: 25, days: 14, questionnaire: null, answers: [], notes: '' };
 let plannerBusy = false, plannerError = '';
 const plan = () => state.plans.find(p => p.id === state.active) || state.plans[0];
-const categoryRules = [
-  ['AI 与大模型', /(?:大模型|人工智能|机器学习|深度学习|智能体|提示词|\b(?:LLM|GPT|RAG|AI)\b|DeepSeek|通义|千问)/i],
-  ['数据分析', /(?:数据分析|数据可视化|数据库|数据处理|\b(?:Power\s*(?:BI|Query)|DAX|Excel|SQL|Tableau|BI)\b)/i],
-  ['开发工具', /(?:版本控制|代码管理|容器|运维|\b(?:Git|GitHub|Docker|Linux|Kubernetes|CI\/CD)\b)/i],
-  ['编程开发', /(?:编程|程序设计|代码|软件开发|前端|后端|自动化脚本|\b(?:Python|JavaScript|TypeScript|Java|Rust|C\+\+)\b)/i],
-  ['游戏与兴趣', /(?:游戏|电竞|三角洲行动|摄影|绘画|音乐|烹饪|旅行)/i]
-];
-function categoryFor(planValue) {
-  const title = planValue.title || '';
-  const details = [planValue.goal, planValue.description, ...planValue.lessons.flatMap(lesson => [lesson.title, ...lesson.tags])].join(' ');
-  for (const text of [title, details]) for (const [label, pattern] of categoryRules) if (pattern.test(text)) return label;
-  return '其他主题';
+let courseCategoryBusy=false;
+let routeLibraryQuery = '';
+const routeCategoryExpansion = new Map(), routeSearchExpansion = new Map();
+function openCourseCategories() {
+  const dialog=$('#course-category-dialog');
+  dialog.innerHTML=`<div class="modal-heading"><h2 id="course-category-title">调整课程分类</h2><button type="button" class="icon-button" data-action="close-course-categories" aria-label="关闭分类调整">${icon('close')}</button></div><p class="field-hint">可一次调整多条课程。手动分类优先；选择“自动分类”可恢复按课程内容判断。分类不会调用模型。</p><form id="course-category-form"><fieldset class="planner-fields"><div class="course-category-list">${state.plans.map(p=>`<label class="course-category-row"><span><strong>${escape(p.title)}</strong><small>${p.category?'已手动设置':'当前自动分类'} · ${escape(categoryFor(p))}</small></span><select name="category:${p.id}" aria-label="${escape(p.title)}的分类"><option value="" ${p.category?'':'selected'}>自动分类（${escape(automaticCourseCategory(p))}）</option>${courseCategories.map(c=>`<option value="${escape(c)}" ${p.category===c?'selected':''}>${escape(c)}</option>`).join('')}</select></label>`).join('')}</div><p id="course-category-error" class="inline-error" role="alert"></p><div class="planner-actions"><button type="button" class="btn secondary" data-action="close-course-categories">取消</button><button type="submit" class="btn primary">保存分类 ${icon('check')}</button></div></fieldset></form>`;
+  dialog.showModal();
+}
+async function saveCourseCategories(values) {
+  if(courseCategoryBusy) return;
+  const form=$('#course-category-form'),fields=form.querySelector('fieldset');
+  courseCategoryBusy=true;fields.disabled=true;$('#course-category-error').textContent='';
+  try {
+    if(storageWarning) throw new Error('本地数据有错误，请先处理后再调整分类。');
+    const changes=state.plans.filter(p=>values.has(`category:${p.id}`)).map(p=>({id:p.id,category:values.get(`category:${p.id}`)})).filter(c=>(state.plans.find(p=>p.id===c.id).category||'')!==c.category);
+    if(!validCategoryChanges(changes)) throw new Error('请选择有效的课程分类。');
+    await pendingSave;
+    if(storageWarning) throw new Error('本地数据保存失败，原分类已保留。');
+    if(desktop) await desktop.setPlanCategories(changes);
+    const selected=new Map(changes.map(c=>[c.id,c.category]));
+    const plans=state.plans.map(p=>{
+      if(!selected.has(p.id)) return p;
+      const next={...p};if(selected.get(p.id))next.category=selected.get(p.id);else delete next.category;return next;
+    });
+    const next={...state,plans};
+    if(!desktop) {try {localStorage.setItem(key,JSON.stringify(next));}catch {throw new Error('浏览器存储不可用或已满，原分类已保留。');}}
+    state=next;$('#course-category-dialog').close();render();toast(changes.length?'课程分类已保存。':'分类没有变化。');
+  } catch(error) {$('#course-category-error').textContent=error.message;}
+  finally {courseCategoryBusy=false;fields.disabled=false;}
 }
 const progress = id => state.quizRecords?.[id] && state.quizRecords[id].currentFingerprint !== state.quizRecords[id].progressFingerprint ? {} : state.progress[id] || {};
 function applyQuizState(id, result) {
@@ -686,12 +704,52 @@ function home() {
   <div class="dashboard-columns">${continuePanel}${knowledgePanel}</div>
   <div class="bottom-note">${icon('spark')} 学习的终点，不是记住答案，而是拥有解决问题的能力。</div>`;
 }
+function routeLibraryView() {
+  const normalize = value => String(value || '').normalize('NFKC').toLocaleLowerCase();
+  const terms = normalize(routeLibraryQuery).trim().split(/\s+/).filter(Boolean);
+  const grouped = new Map();
+  for (const route of state.plans) {
+    const category = categoryFor(route);
+    const text = normalize([category, route.title, route.goal, ...route.lessons.flatMap(l => [l.title, ...(l.tags || [])])].join(' '));
+    if (!terms.every(term => text.includes(term))) continue;
+    if (!grouped.has(category)) grouped.set(category, []);
+    grouped.get(category).push(route);
+  }
+  const searching = terms.length > 0, expansion = searching ? routeSearchExpansion : routeCategoryExpansion;
+  const activeCategory = categoryFor(plan());
+  const groups = [...grouped].sort((a, b) => courseCategories.indexOf(a[0]) - courseCategories.indexOf(b[0]));
+  const isOpen = category => expansion.get(category) ?? (searching || category === activeCategory);
+  return { groups, searching, expansion, isOpen, activeCategory, count: groups.reduce((total, [, routes]) => total + routes.length, 0) };
+}
+function routeLibraryGroups(view) {
+  if (!view.groups.length) return '<div class="route-library-empty">没有找到匹配的课程，请换个关键词或清空搜索。</div>';
+  return view.groups.map(([category, routes]) => {
+    const index = courseCategories.indexOf(category), open = view.isOpen(category);
+    return `<section class="route-group"><h3><button type="button" id="route-category-toggle-${index}" class="route-group-toggle" data-action="toggle-route-category" data-category="${escape(category)}" aria-expanded="${open}" aria-controls="route-category-items-${index}"><span class="route-group-name">${escape(category)}<span class="route-group-count">${routes.length}</span></span><span class="route-group-meta">${category === view.activeCategory ? '<span class="route-group-current">当前课程</span>' : ''}<span class="route-group-state">${open ? '收起' : '展开'}</span>${icon('arrow', 'route-group-chevron')}</span></button></h3><div id="route-category-items-${index}" class="route-group-items" role="region" aria-labelledby="route-category-toggle-${index}" ${open ? '' : 'hidden'}>${routes.map(route => `<button class="route-chip ${route.id === state.active ? 'selected' : ''}" data-action="switch-plan" data-id="${route.id}" aria-pressed="${route.id === state.active}">${icon('route')}<span>${escape(route.title)}</span></button>`).join('')}</div></section>`;
+  }).join('');
+}
+function routeLibraryStatus(view) {
+  return view.searching ? `找到 ${view.count} 门课程 · ${view.groups.length} 个分类` : `共 ${state.plans.length} 门课程 · ${view.groups.length} 个分类 · 点击分类按需展开`;
+}
+function routeLibrary() {
+  const view = routeLibraryView();
+  return `<section class="route-library" aria-labelledby="route-library-title"><div class="route-library-heading"><h2 id="route-library-title">我的课程分类</h2><div class="route-library-tools"><span>自动整理，可手动调整</span>${button('调整分类', 'open-course-categories', 'secondary', '', '')}</div></div><div class="route-library-toolbar"><div class="route-library-search">${icon('search')}<input type="search" id="route-course-search" aria-label="搜索课程或分类" placeholder="搜索课程名称、分类或关键词" maxlength="200" value="${escape(routeLibraryQuery)}" aria-controls="route-library-results"><button type="button" class="icon-button" data-action="clear-route-search" aria-label="清空课程搜索" ${routeLibraryQuery ? '' : 'hidden'}>${icon('close')}</button></div><button type="button" class="btn secondary" data-action="toggle-all-route-categories" ${view.groups.length ? '' : 'disabled'}>${view.groups.some(([category]) => !view.isOpen(category)) ? '全部展开' : '全部收起'}</button></div><p id="route-library-status" class="route-library-status" role="status" aria-live="polite">${routeLibraryStatus(view)}</p><div id="route-library-results">${routeLibraryGroups(view)}</div></section>`;
+}
+function refreshRouteLibraryResults() {
+  const results = $('#route-library-results');
+  if (!results) return;
+  const view = routeLibraryView();
+  results.innerHTML = routeLibraryGroups(view);
+  $('#route-library-status').textContent = routeLibraryStatus(view);
+  $('[data-action="clear-route-search"]').hidden = !routeLibraryQuery;
+  const toggle = $('[data-action="toggle-all-route-categories"]');
+  toggle.disabled = !view.groups.length;
+  toggle.textContent = view.groups.some(([category]) => !view.isOpen(category)) ? '全部展开' : '全部收起';
+}
 function routes() {
   const p = plan();
-  const grouped = new Map();
-  for (const route of state.plans) { const category = categoryFor(route); if (!grouped.has(category)) grouped.set(category, []); grouped.get(category).push(route); }
   return `<section class="page-intro"><div><div class="eyebrow">YOUR LEARNING JOURNEY</div><h1>每个目标，都有一条路。</h1><p>把远处的目标，拆解为今天可以迈出的一步。</p></div><div class="route-page-actions">${desktop ? button('导入课程包', 'import-course', 'secondary', '', 'plus') : ''}${recentDeleteBackup() ? button('恢复最近删除', 'restore-deleted-plan', 'secondary', '', 'back') : ''}${button('新建学习路线', 'planner', 'primary', '', 'plus')}</div></section>
-  <div class="route-library"><div class="route-library-heading"><h2>我的课程分类</h2><span>根据标题、目标和课程标签自动整理</span></div>${[...grouped].map(([category, routes]) => `<section class="route-group"><h3>${escape(category)} <span>${routes.length}</span></h3><div class="route-group-items">${routes.map(route => `<button class="route-chip ${route.id === state.active ? 'selected' : ''}" data-action="switch-plan" data-id="${route.id}" aria-pressed="${route.id === state.active}">${icon('route')}<span>${escape(route.title)}</span></button>`).join('')}</div></section>`).join('')}</div>
+  ${routeLibrary()}
   <section class="route-overview"><div>${pill(p.source === 'demo' ? '精选示例 · 非 AI 生成' : 'AI 定制路线', 'purple')}<h2>${escape(p.title)}</h2><p>${escape(p.goal)}</p><div class="metadata">${icon('clock')}每天 ${p.daily} 分钟 <span>·</span>计划 ${p.days} 天 <span>·</span>${escape(p.level)}</div><div class="route-overview-actions">${pill(categoryFor(p))}${desktop ? button('导出课程包', 'export-course', 'secondary', `data-id="${p.id}"`, 'export') : ''}${button('删除这条路线', 'delete-plan', 'danger', `data-id="${p.id}" ${state.plans.length <= 1 ? 'disabled title="至少保留一条路线"' : ''}`, 'close')}</div></div><div class="progress-ring" style="--progress:${percent()}%"><div><strong>${percent()}<small>%</small></strong><span>已完成</span></div></div></section>
   ${p.source === 'ai' ? `<section class="route-design"><h3>学习成果与规划说明</h3><p>${escape(p.description)}</p>${p.learningBrief ? `<details><summary>查看定制需求与回答</summary>${briefHTML(p.learningBrief)}${p.learningBrief.notes ? `<h4>最后补充</h4><p>${escape(p.learningBrief.notes)}</p>` : ''}</details>` : ''}</section>` : ''}
   <div class="route-layout"><section class="timeline">${p.lessons.map((l, i) => `${i === 0 || l.phase !== p.lessons[i - 1].phase ? `<h3 class="phase">${escape(l.phase)}</h3>` : ''}<article class="lesson-row ${progress(l.id).completed ? 'complete' : ''}"><div class="step-number">${progress(l.id).completed ? icon('check') : String(i + 1).padStart(2, '0')}</div><div class="lesson-row-main"><div class="lesson-title"><h3>${escape(l.title)}</h3>${progress(l.id).completed ? pill('已掌握', 'success') : l.id === nextLesson().id ? pill('推荐下一步', 'purple') : ''}</div><p>${escape(l.objective)}</p><div class="lesson-meta">${icon('clock')}${l.minutes} 分钟<span>·</span>${escape(l.tags.join(' / '))}</div></div>${button(progress(l.id).completed ? '复习' : '进入课程', 'open-lesson', 'secondary', `data-id="${l.id}"`)}</article>`).join('')}</section><aside class="tip-card"><span class="float-icon lavender">${icon('target')}</span><h3>按自己的节奏前进</h3><p>路线是一张地图。你可以先预览任意课程，再根据自己的基础选择起点。</p><hr><strong>掌握比完成更重要</strong><p>每节课通过全部测验后会记录为已掌握。答错时，读一读解析，再试一次。</p>${button('去练习与巩固', 'practice', 'secondary full', '', 'bolt')}</aside></div>`;
@@ -1550,6 +1608,28 @@ async function download(name, content, type) {
 }
 function markdown(n) { return `# ${n.title}\n\n${n.summary.split('\n').map(line => '> ' + line).join('\n')}\n\n标签：${n.tags.join('、')}\n\n来源课程：${n.courseTitle}\n\n${n.content}\n`; }
 async function action(name, element) {
+  if (name === 'toggle-route-category') {
+    const category = element.dataset.category, view = routeLibraryView();
+    if (!view.groups.some(([label]) => label === category)) return;
+    const open = !view.isOpen(category);
+    view.expansion.set(category, open);
+    element.setAttribute('aria-expanded', String(open));
+    element.querySelector('.route-group-state').textContent = open ? '收起' : '展开';
+    document.getElementById(element.getAttribute('aria-controls')).hidden = !open;
+    $('[data-action="toggle-all-route-categories"]').textContent = view.groups.some(([label]) => !view.isOpen(label)) ? '全部展开' : '全部收起';
+    return;
+  }
+  if (name === 'toggle-all-route-categories') {
+    const view = routeLibraryView(), open = view.groups.some(([category]) => !view.isOpen(category));
+    for (const [category] of view.groups) view.expansion.set(category, open);
+    refreshRouteLibraryResults(); return;
+  }
+  if (name === 'clear-route-search') {
+    routeLibraryQuery = ''; routeSearchExpansion.clear();
+    $('#route-course-search').value = ''; refreshRouteLibraryResults(); $('#route-course-search').focus(); return;
+  }
+  if(name==='open-course-categories') {if(!courseCategoryBusy)openCourseCategories();return;}
+  if(name==='close-course-categories') {if(!courseCategoryBusy)$('#course-category-dialog').close();return;}
   if(name==='close-material-preview') {$('#material-preview-dialog')?.close();return;}
   if(name==='preview-planner-material') {previewMaterial(plannerDraft.materials?.find(m=>m.id===element.dataset.id));return;}
   if(name==='remove-planner-material') {
@@ -2112,6 +2192,9 @@ document.addEventListener('cancel', event => {
   if (event.target.id === 'knowledge-draft-dialog' && knowledgeBusy) event.preventDefault();
 }, true);
 document.addEventListener('input', event => {
+  if (event.target.id === 'route-course-search') {
+    routeLibraryQuery = event.target.value.slice(0, 200); routeSearchExpansion.clear(); refreshRouteLibraryResults(); return;
+  }
   if (!['model-provider', 'image-protocol'].includes(event.target.id)) dirtyModelForm(event.target.closest?.('form'));
   if (!plannerBusy && event.target.closest?.('#planner')) {
     if (event.target.id === 'goal') plannerDraft.goal = event.target.value;
@@ -2217,6 +2300,7 @@ document.addEventListener('change', event => {
 });
 document.addEventListener('submit', async event => {
   event.preventDefault(); const form = event.target; const values = new FormData(form);
+  if(form.id==='course-category-form') return saveCourseCategories(values);
   if (form.id === 'annotation-form') {
     if (!annotationDraft) return;
     const text = String(values.get('text') || '').trim();

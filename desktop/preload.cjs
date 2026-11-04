@@ -24,6 +24,7 @@ contextBridge.exposeInMainWorld('learnflowDesktop', Object.freeze({
   },
   discardMaterial: id => invoke('learnflow:discard-material',id),
   setActivePlan: id => invoke('learnflow:set-active-plan', id),
+  setPlanCategories: changes => invoke('learnflow:set-plan-categories',changes),
   deletePlan: id => invoke('learnflow:delete-plan', id),
   saveLesson: (id, value) => invoke('learnflow:save-lesson', id, value),
   saveOutline: (id, value) => invoke('learnflow:save-outline', id, value),
