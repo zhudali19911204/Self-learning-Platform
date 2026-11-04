@@ -40,6 +40,7 @@ assets['/quiz-progress.js'] = ['quiz-progress.js', 'text/javascript'];
 assets['/task-cancellation.js'] = ['task-cancellation.js', 'text/javascript'];
 assets['/study-position.js'] = ['study-position.js', 'text/javascript'];
 assets['/home-motion.js'] = ['home-motion.js', 'text/javascript'];
+assets['/materials.js'] = ['materials.js', 'text/javascript'];
 const strings = (v, max = 20) => Array.isArray(v) && v.length > 0 && v.length <= max && v.every(x => str(x, 5000));
 const validPlanningInput = data => str(data.goal, 1000) && ['零基础', '有一点基础', '希望进阶'].includes(data.level) && Number.isInteger(data.daily) && data.daily >= 10 && data.daily <= 120 && Number.isInteger(data.days) && data.days >= 7 && data.days <= 90;
 function clarificationAssessmentIssue(value) {
@@ -119,16 +120,27 @@ export function createApp(config = {}) {
         if (typeof requestId !== 'string' || !/^generation-[a-z0-9-]{1,80}$/.test(requestId)) return;
         try { config.onGenerationProgress?.(requestId, stage); } catch { /* Notifications must not affect paid requests. */ }
       };
+      let activeMaterials = [];
       const generate = (instruction, input, validate) => {
         checkGenerationCancellation();
         notify('generating');
-        return generationAwait(llm.generate(input?.learningBrief && path !== '/api/plan' ? `${learnerGuidance} ${instruction}` : instruction, input, value => { checkGenerationCancellation(); notify('validating'); return validate(value); }));
+        if(activeMaterials.length) {
+          instruction += ' '+materialGuidance;
+          if(path !== '/api/lesson-block') input={...input,learningMaterialCatalog:materialCatalog(activeMaterials),learningMaterials:materialDocuments(activeMaterials,[input.title,input.objective,input.goal].filter(Boolean).join('\n'),{planning:true})};
+        }
+        return generationAwait(llm.generate(input?.learningBrief && path !== '/api/plan' ? `${learnerGuidance} ${instruction}` : instruction, input, value => { checkGenerationCancellation(); notify('validating'); if(activeMaterials.length && value?.sourceInsufficient) fail('导入资料不足以支撑当前学习目标，请调整目标或补充资料；未用模型记忆补写。',422); return validate(value); }));
       };
       if (path === '/api/status' && req.method === 'GET') return send(200, llm.status());
       if (path.startsWith('/api/') && req.method === 'POST') {
         const data = await body(req);
         if (!data || typeof data !== 'object' || Array.isArray(data)) fail('请求内容不正确。');
         if (data.learningBrief !== undefined && !validLearningBrief(data.learningBrief)) fail('学习需求摘要格式不正确。');
+        if(['/api/plan-clarify','/api/plan'].includes(path) && data.materialIds !== undefined) {
+          if(!config.getPlanningMaterials) fail('本模式暂不支持导入资料，请使用桌面版。');
+          try {activeMaterials=checkedMaterials(config.getPlanningMaterials(data.materialIds));} catch(error) {fail(error.message,422);}
+        } else if(['/api/lesson-outline','/api/lesson-block'].includes(path) && data.lessonId && config.getCourseMaterials) {
+          try {activeMaterials=checkedMaterials(config.getCourseMaterials(data.lessonId));} catch(error) {fail(error.message,422);}
+        }
         if (path === '/api/test-connection') return send(200, await llm.testConnection());
         let result;
         if (path === '/api/plan-clarify') {
@@ -181,7 +193,7 @@ export function createApp(config = {}) {
               fail(`路线生成两次仍未符合要求：${issue}。${/课程数量|lessons/.test(issue) ? '这是模型输出结构问题，不是连接失败；请重新生成，或换用更擅长结构化输出的模型。' : '请重新生成，并检查模型是否按要求提供完整课程信息与学习时长。'}`, 502);
             }
           }
-          result = { title: result.title, description: result.description, id: randomUUID(), goal: requested.goal, level: requested.level, daily: requested.daily, days: requested.days, source: 'ai', ...(learningBrief ? { learningBrief } : {}), lessons: result.lessons.map(l => ({ title: l.title, objective: l.objective, phase: l.phase, minutes: l.minutes, tags: l.tags, id: randomUUID() })) };
+          result = { title: result.title, description: result.description, id: randomUUID(), goal: requested.goal, level: requested.level, daily: requested.daily, days: requested.days, source: 'ai', ...(learningBrief ? { learningBrief } : {}), ...(activeMaterials.length ? {materials:structuredClone(activeMaterials)} : {}), lessons: result.lessons.map(l => ({ title: l.title, objective: l.objective, phase: l.phase, minutes: l.minutes, tags: l.tags, id: randomUUID() })) };
         } else if (path === '/api/lesson-outline') {
           if (!str(data.goal, 1000) || !str(data.title, 160) || !str(data.objective, 1000) || !str(data.level, 80)) fail('课程参数不完整。');
           if (data.minutes !== undefined && (!Number.isInteger(data.minutes) || data.minutes < 5 || data.minutes > 180)) fail('课程时长不正确。');
@@ -246,13 +258,13 @@ export function createApp(config = {}) {
               requested.quizMode = data.questionCount === undefined ? 'initial' : 'additional';
             }
             const excludedPrompts = new Set(existingQuestions.map(quizPromptKey));
-            if (search.enabled && !quiz) notify('searching');
-            const documents = quiz ? materials.documents : search.enabled ? await generationAwait(courseSources.prepare(`${data.title}\n${data.objective}\n${data.block.title}\n${data.block.objective}`.slice(0, 2000))) : null;
+            if (search.enabled && !quiz && !activeMaterials.length) notify('searching');
+            const documents = quiz ? materials.documents : activeMaterials.length ? materialDocuments(activeMaterials,`${data.block.title}\n${data.block.objective}\n${data.title}\n${data.objective}`) : search.enabled ? await generationAwait(courseSources.prepare(`${data.title}\n${data.objective}\n${data.block.title}\n${data.block.objective}`.slice(0, 2000))) : null;
             checkGenerationCancellation();
             checkSearch();
             if (documents) requested.officialDocuments = documents;
             const matchClaim = createCourseClaimMatcher();
-            result = await generate(instructions + practiceRevision + generationCitationContextGuidance(documents) + (documents ? sourceGenerationGuidance : '') + (quiz ? quizSourceGuidance + blockOutputGuidance('quiz',questionCount) : '') + (suggestImage ? `${illustrationGuidance}在返回 text 的同时，若有必要，可额外返回 imageProposal:{"prompt":"图片生成提示词","caption":"解释配图的中文图注"}；无需配图则省略该字段。不得返回图片地址。` : ''), requested, value => {
+            result = await generate(instructions + practiceRevision + generationCitationContextGuidance(documents) + (documents ? activeMaterials.length ? localSourceGuidance : sourceGenerationGuidance : '') + (quiz ? quizSourceGuidance + blockOutputGuidance('quiz',questionCount) : '') + (suggestImage ? `${illustrationGuidance}在返回 text 的同时，若有必要，可额外返回 imageProposal:{"prompt":"图片生成提示词","caption":"解释配图的中文图注"}；无需配图则省略该字段。不得返回图片地址。` : ''), requested, value => {
               if (documents) value = withInlineCourseCitations(data.block.type, value);
               if (documents && value?.sourceInsufficient === true) fail(sourceCitationIssue(data.block.type, value, documents), 422);
               if (quiz && Array.isArray(value?.questions) && value.questions.length !== questionCount) fail(`本次${requested.quizMode === 'initial' ? '首次生成固定' : '要求新增'}${questionCount}题，模型返回${value.questions.length}题；未保存新题，原题和成绩已保留。`, 422);
@@ -335,3 +347,4 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   const port = Number(process.env.PORT || 3000);
   createApp().listen(port, '127.0.0.1', () => console.log(`知行 Learnflow: http://localhost:${port}`));
 }
+import { checkedMaterials, materialDocuments, materialCatalog, materialGuidance, localSourceGuidance } from './course-materials.mjs';

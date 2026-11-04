@@ -1,4 +1,5 @@
 import { demoPlan, demoLessons } from './demo.js';
+import { validMaterials, localMaterialSource, MATERIAL_LIMITS } from './materials.js';
 import { lessonFromBlocks, validOutline, validBlockContent, validBlockSpec, blockGenerationContext, revisedContent, restoredContent, assistedBlockTypes } from './blocks.js';
 import { Marked } from './vendor/marked.js';
 import DOMPurify from './vendor/purify.js';
@@ -615,14 +616,17 @@ function decorateCourseSearch() {
   const checkBusy = factCheckToggleBusy || courseGenerationBusy.size > 0 || factCheckBusy.size > 0 || modelSettingsSaving;
   controls.innerHTML = `<div class="course-preference-row"><button type="button" class="course-search-switch" role="switch" aria-checked="${preference.enabled}" aria-describedby="course-search-help" data-action="toggle-course-search" data-id="${escape(activeLesson)}" ${busy ? 'disabled' : ''}><span class="switch-track" aria-hidden="true"></span>联网搜索</button><span id="course-search-help" class="field-hint">${preference.enabled ? '生成正文时搜索并读取网页资料 · 搜索可能计费' : '已关闭 · 使用模型本身生成正文'}</span><p class="course-search-status ${courseSearchMessages.get(activeLesson)?.error ? 'error-text' : ''}" role="status" aria-live="polite">${escape(courseSearchMessages.get(activeLesson)?.text || '')}</p></div>${desktop ? `<div class="course-preference-row"><button type="button" class="course-search-switch" role="switch" aria-checked="${factCheckPreferences.enabled}" aria-describedby="course-fact-check-help" data-action="toggle-course-fact-check" ${checkBusy || factCheckPreferences.error ? 'disabled' : ''}><span class="switch-track" aria-hidden="true"></span>质量审查</button><span id="course-fact-check-help" class="field-hint">${factCheckToggleBusy ? '正在保存…' : factCheckPreferences.enabled ? '已开启 · 生成后独立核查 · 全部课程生效，可能计费' : '已关闭 · 生成后不自动核查'}${qualityStatus.mode !== 'ai' ? ' · <button type="button" class="text-button" data-action="configure-fact-check">配置核查模型</button>' : ''}</span><p class="course-search-status error-text" role="status" aria-live="polite">${escape(factCheckToggleError || factCheckPreferences.error || '')}</p></div>` : ''}`;
   host.after(controls);
+  const imported=state.plans.find(p=>p.lessons.some(l=>l.id===activeLesson))?.materials;
+  if(imported?.length) controls.querySelector('.course-preference-row').innerHTML=`<strong>导入资料</strong><span class="field-hint">从 ${imported.length} 份本地资料中检索相关片段，不进行网页搜索</span><details class="course-material-list"><summary>查看 ${imported.length} 份资料</summary><div>${imported.map(m=>`<button type="button" class="text-button" data-action="open-material-source" data-url="learnflow-material:${m.id}">${escape(m.name)}</button>`).join('')}</div></details><p class="course-search-status ${courseSearchMessages.get(activeLesson)?.error?'error-text':''}" role="status">${escape(courseSearchMessages.get(activeLesson)?.text||'')}</p>`;
   document.querySelectorAll('[data-action="generate-block"], [data-action="request-revision"]').forEach(button => { button.disabled = busy || factCheckToggleBusy; });
 }
 async function courseBlockRequest(id, request) {
+  const fromMaterials=!!state.plans.find(p=>p.lessons.some(l=>l.id===id))?.materials?.length;
   if (courseGenerationBusy.has(id)) throw new Error('本课正在生成，请等待当前请求结束。');
   const sourceSearch = { ...courseSearchPreference(id) };
   const quiz = request.block?.type === 'quiz';
   courseGenerationBusy.add(id);
-  courseSearchMessages.set(id, { text: quiz ? '正在依据已讲内容生成练习，复用已有资料，不重新联网搜索…' : sourceSearch.enabled ? '正在查找网页资料并生成正文，请稍候…' : '正在生成正文…' }); decorateCourseSearch();
+  courseSearchMessages.set(id, { text: quiz ? '正在依据已讲内容生成练习，复用已有资料，不重新联网搜索…' : fromMaterials ? '正在从导入资料中选取原文并生成…' : sourceSearch.enabled ? '正在查找网页资料并生成正文，请稍候…' : '正在生成正文…' }); decorateCourseSearch();
   try {
     let content;
     if (desktop?.generateCourseBlock) {
@@ -634,14 +638,17 @@ async function courseBlockRequest(id, request) {
       content = result.content;
     } else content = await api('lesson-block', { ...request, lessonId: id, sourceSearch });
     if (courseSearchPreference(id).revision !== sourceSearch.revision) throw new Error('联网搜索设置已变化，请重新生成。');
-    courseSearchMessages.set(id, { text: quiz ? content.grounding ? '已依据已讲内容生成练习，复用了本课参考资料，未重新联网搜索。' : '已依据已讲内容生成练习，未添加外部引用，也未重新联网搜索。' : sourceSearch.enabled ? '已基于网页资料生成，参考文档见课程末尾。' : '' });
+    courseSearchMessages.set(id, { text: quiz ? content.grounding ? '已依据已讲内容生成练习，复用了本课参考资料，未重新联网搜索。' : '已依据已讲内容生成练习，未添加外部引用，也未重新联网搜索。' : fromMaterials ? '已基于导入资料生成，引用可打开文件原文。' : sourceSearch.enabled ? '已基于网页资料生成，参考文档见课程末尾。' : '' });
     return content;
   } catch (error) { courseSearchMessages.set(id, { text: error.message, error: true }); throw error; }
   finally { courseGenerationBusy.delete(id); decorateCourseSearch(); }
 }
 function courseReferencesFooter(course) {
   const references = courseReferences(course); if (!references.length) return '';
-  return `<details class="course-references" aria-label="参考文档"><summary class="course-references-toggle"><h2>参考文档</h2><span class="course-references-count">${references.length} 篇</span><span class="course-references-toggle-label" aria-hidden="true"></span></summary><p class="field-hint">以下为当前正文实际引用的网页资料。未列出引用的模块可能在关闭联网搜索时生成；引用存在不代表内容已逐条核验。</p><ol>${references.map(ref => `<li><div class="reference-title">${officialSource(ref.url) ? desktop ? `<button type="button" class="text-button" data-action="open-course-source" data-url="${escape(ref.url)}">${escape(ref.title)} ↗</button>` : `<a href="${escape(ref.url)}" target="_blank" rel="noopener noreferrer">${escape(ref.title)} ↗</a>` : escape(ref.title)}</div><p>${escape(ref.publisher)} · 读取于 ${escape(new Date(ref.retrievedAt).toLocaleDateString('zh-CN'))}</p><p class="reference-url">${escape(ref.url)}</p><p>用于：${escape(ref.blocks.join('、'))}</p><details><summary>查看引用依据</summary>${ref.evidence.map(e => `<p class="reference-claim">课程表述：${escape(e.claim)}</p><blockquote>${escape(e.quote)}</blockquote>`).join('')}</details></li>`).join('')}</ol></details>`;
+  return `<details class="course-references" aria-label="参考文档"><summary class="course-references-toggle"><h2>参考文档</h2><span class="course-references-count">${references.length} 篇</span><span class="course-references-toggle-label" aria-hidden="true"></span></summary><p class="field-hint">以下为当前正文实际引用的资料，包含本地文件或网页来源。未列出引用的模块可能在关闭联网搜索时生成；引用存在不代表内容已逐条核验。</p><ol>${references.map(ref => `<li><div class="reference-title">${localMaterialSource(ref.url) ? `<button type="button" class="text-button" data-action="open-material-source" data-url="${escape(ref.url)}">${escape(ref.title)} · 查看原文</button>` : officialSource(ref.url) ? desktop ? `<button type="button" class="text-button" data-action="open-course-source" data-url="${escape(ref.url)}">${escape(ref.title)} ↗</button>` : `<a href="${escape(ref.url)}" target="_blank" rel="noopener noreferrer">${escape(ref.title)} ↗</a>` : escape(ref.title)}</div><p>${escape(ref.publisher)} · 读取于 ${escape(new Date(ref.retrievedAt).toLocaleDateString('zh-CN'))}</p><p class="reference-url">${escape(localMaterialSource(ref.url) ? '本机提取的资料快照' : ref.url)}</p><p>用于：${escape(ref.blocks.join('、'))}</p><details><summary>查看引用依据</summary>${ref.evidence.map(e => `<p class="reference-claim">课程表述：${escape(e.claim)}</p><blockquote>${e.location?`<strong>${escape(e.location)}</strong><br>`:''}${escape(e.quote)}</blockquote>`).join('')}</details></li>`).join('')}</ol></details>`;
+}
+function evidenceSourceHTML(source) {
+  return localMaterialSource(source?.url) ? `<button type="button" class="text-button" data-action="open-material-source" data-url="${escape(source.url)}" data-part="${escape(source.partId||'')}">查看资料原文${source.location?' · '+escape(source.location):''}</button>` : escape(source?.url);
 }
 function homeDeepSpace() {
   let seed=2147;
@@ -651,7 +658,7 @@ function homeDeepSpace() {
     const opacity=(.25+random()*.65).toFixed(2),color=['#d9e6ff','#aebce3','#d3c3ff'][i%3];
     return `<circle cx="${x}" cy="${y}" r="${r}" fill="${color}" opacity="${opacity}"${near?` class="space-glint" style="--star-delay:-${(random()*12).toFixed(1)}s"`:''}/>`;
   }).join('');
-  return `<div class="deep-space" aria-hidden="true"><div class="space-haze"></div><svg class="space-cloud" viewBox="0 0 1200 420" preserveAspectRatio="none"><defs><filter id="space-cloud-texture" x="0" y="0" width="100%" height="100%"><feTurbulence type="fractalNoise" baseFrequency=".012 .035" numOctaves="3" seed="11"/><feColorMatrix type="saturate" values="0"/><feComponentTransfer><feFuncR type="table" tableValues=".02 .19 .47"/><feFuncG type="table" tableValues=".035 .12 .25"/><feFuncB type="table" tableValues=".10 .37 .67"/></feComponentTransfer></filter><radialGradient id="space-cloud-fade"><stop stop-color="white" stop-opacity=".85"/><stop offset=".45" stop-color="white" stop-opacity=".65"/><stop offset="1" stop-color="black"/></radialGradient><mask id="space-cloud-mask"><ellipse cx="860" cy="210" rx="440" ry="135" transform="rotate(-25 860 210)" fill="url(#space-cloud-fade)"/></mask></defs><rect width="1200" height="420" filter="url(#space-cloud-texture)" mask="url(#space-cloud-mask)"/></svg><svg class="space-stars space-stars-far" viewBox="0 0 1200 420" preserveAspectRatio="xMidYMid slice">${stars(112)}</svg><svg class="space-stars space-stars-near" viewBox="0 0 1200 420" preserveAspectRatio="xMidYMid slice">${stars(23,true)}</svg><span class="space-meteor"></span></div>`;
+  return `<div class="deep-space" aria-hidden="true"><div class="space-haze"></div><svg class="space-cloud" viewBox="0 0 1200 420" preserveAspectRatio="none"><defs><filter id="space-cloud-texture" x="0" y="0" width="100%" height="100%"><feTurbulence type="fractalNoise" baseFrequency=".012 .035" numOctaves="3" seed="11"/><feColorMatrix type="saturate" values="0"/><feComponentTransfer><feFuncR type="table" tableValues=".02 .19 .47"/><feFuncG type="table" tableValues=".035 .12 .25"/><feFuncB type="table" tableValues=".10 .37 .67"/></feComponentTransfer></filter><radialGradient id="space-cloud-fade"><stop stop-color="white" stop-opacity=".85"/><stop offset=".45" stop-color="white" stop-opacity=".65"/><stop offset="1" stop-color="black"/></radialGradient><mask id="space-cloud-mask"><ellipse cx="860" cy="210" rx="440" ry="135" transform="rotate(-25 860 210)" fill="url(#space-cloud-fade)"/></mask></defs><rect width="1200" height="420" filter="url(#space-cloud-texture)" mask="url(#space-cloud-mask)"/></svg><svg class="space-stars space-stars-far" viewBox="0 0 1200 420" preserveAspectRatio="xMidYMid slice">${stars(112)}</svg><svg class="space-stars space-stars-near" viewBox="0 0 1200 420" preserveAspectRatio="xMidYMid slice">${stars(23,true)}</svg><span class="space-meteor"></span><span class="space-meteor space-meteor-two"></span></div>`;
 }
 function home() {
   const p = plan(), resume=studyPositionFor(p,state.studyPositions), next = p.lessons.find(lesson=>lesson.id===resume?.lessonId)||nextLesson();
@@ -716,7 +723,7 @@ async function generateLessonOutline(id) {
   if (!meta || !p) throw new Error('课程不存在。');
   let pending = outlineDrafts.get(id);
   if (!pending?.draft && !pending?.outline) {
-    pending = { request: { goal: p.goal, level: p.level, ...(p.learningBrief ? { learningBrief: p.learningBrief } : {}), title: meta.title, objective: meta.objective, minutes: meta.minutes, route: p.lessons.map(({ title, objective }) => ({ title, objective })), lessonPosition: p.lessons.findIndex(lesson => lesson.id === id) + 1 } };
+    pending = { request: { lessonId:id, goal: p.goal, level: p.level, ...(p.learningBrief ? { learningBrief: p.learningBrief } : {}), title: meta.title, objective: meta.objective, minutes: meta.minutes, route: p.lessons.map(({ title, objective }) => ({ title, objective })), lessonPosition: p.lessons.findIndex(lesson => lesson.id === id) + 1 } };
     outlineDrafts.set(id, pending);
   }
   pending.busy = true; pending.error = '';
@@ -754,7 +761,7 @@ function factCheckStrip(block, lessonId) {
   const attrs = `data-id="${escape(lessonId)}" data-block="${escape(block.id)}"`;
   const selectable = desktop.correctFactIssues && record?.issues.some(i => !i.unlocated) && ['uncertain', 'edited'].includes(record.status);
   const selection = factCorrectionSelections.get(record?.id) || new Set();
-  const issues = record?.issues.map((i, index) => `<article>${i.unlocated ? '<p class="field-hint">原句待定位 · 以下为模型描述，未匹配到正文，暂不能直接修正。</p>' : selectable ? `<label class="check-label fact-issue-selection"><input type="checkbox" data-fact-selection data-fact-record="${escape(record.id)}" data-issue="${index}" ${selection.has(index) ? 'checked' : ''} ${busy ? 'disabled' : ''}>修正此疑点</label>` : ''}<blockquote>${escape(i.quote)}</blockquote><p>${escape(i.reason)}</p><p>建议：${escape(i.suggestion)}</p>${i.evidence.map(e => { const source = record.sources.find(s => s.id === e.id); return `<details><summary>资料依据 · ${escape(source?.title)}</summary><blockquote>${escape(e.quote)}</blockquote><p>${escape(source?.url)}</p></details>`; }).join('')}</article>`).join('') || '';
+  const issues = record?.issues.map((i, index) => `<article>${i.unlocated ? '<p class="field-hint">原句待定位 · 以下为模型描述，未匹配到正文，暂不能直接修正。</p>' : selectable ? `<label class="check-label fact-issue-selection"><input type="checkbox" data-fact-selection data-fact-record="${escape(record.id)}" data-issue="${index}" ${selection.has(index) ? 'checked' : ''} ${busy ? 'disabled' : ''}>修正此疑点</label>` : ''}<blockquote>${escape(i.quote)}</blockquote><p>${escape(i.reason)}</p><p>建议：${escape(i.suggestion)}</p>${i.evidence.map(e => { const source = record.sources.find(s => s.id === e.id); return `<details><summary>资料依据 · ${escape(source?.title)}</summary><blockquote>${e.location?`<strong>${escape(e.location)}</strong><br>`:''}${escape(e.quote)}</blockquote><p>${evidenceSourceHTML(source)}</p></details>`; }).join('')}</article>`).join('') || '';
   const correction = selectable ? `<p class="field-hint">勾选后确认，即可直接更新对应文案。不要求提供参考资料；疑点可能误判，修正后仍需核对。每次确认最多调用一次生成模型，可能计费。</p>${button(`确认修正（${selection.size}）`, 'correct-fact-issues', 'primary', `${attrs} data-record="${escape(record.id)}" ${busy || !selection.size || status.mode !== 'ai' ? 'disabled' : ''}`, '')}` : '';
   return `<details class="fact-check-strip is-${phase}"><summary><span class="fact-check-dot" aria-hidden="true"></span>${escape(label)}<span class="fact-check-view">查看</span></summary><div class="fact-check-details"><p>${escape(record?.summary || '使用另一个模型检查事实、适用条件、来源及答案。')}</p>${record?.error ? `<p class="inline-error">${escape(record.error)}</p>` : ''}${issues}${correction}<p class="inline-error" role="alert">${escape(factCorrectionErrors.get(key) || '')}</p><div class="fact-check-actions">${button(busy ? '处理中…' : record?.status === 'failed' ? '重试核查' : '核查当前版本', 'check-block-facts', 'secondary', `${attrs} ${busy || qualityStatus.mode !== 'ai' ? 'disabled' : ''}`, 'check')}${record?.beforeContent && ['corrected', 'edited'].includes(record.status) ? button('恢复修正前版本', 'restore-fact-check', 'secondary', `${attrs} data-record="${escape(record.id)}" ${busy ? 'disabled' : ''}`, 'back') : ''}</div><p class="field-hint">未发现问题不代表事实已证实。未变化的内容复用核查结果；新核查可能计费。</p></div></details>`;
 }
@@ -1319,7 +1326,26 @@ function renderIllustrationDialog() {
   $('#illustration-dialog').innerHTML = `<div class="modal-heading"><h2 id="illustration-title">教学配图</h2><button class="icon-button" data-action="close-illustration" aria-label="关闭" ${illustrationBusy ? 'disabled' : ''}>${icon('close')}</button></div>${tabs}<p>${escape(draft.reason)}</p>${warning}${draft.mode === 'search' ? search : generate}`;
 }
 
+let importingPlannerMaterials = false;
 function planner() { renderPlanner(); if (!$('#planner').open) $('#planner').showModal(); }
+function plannerMaterialsHTML() {
+  const materials=plannerDraft.materials || [];
+  const characters=materials.reduce((n,m)=>n+m.parts.reduce((a,p)=>a+p.text.length,0),0);
+  return `<section class="planner-materials"><strong>用自己的资料学习（可选）</strong>
+    <p class="field-hint">支持可提取文字的 PDF、Word（.docx）、Markdown、UTF-8 文本。最多 ${MATERIAL_LIMITS.files} 份、每份 10 MB、单份文字 30 万字、合计 100 万字。图片和扫描件须先进行文字识别。</p>
+    ${desktop?.importMaterials ? `<button type="button" class="btn secondary" data-action="import-planner-materials" ${plannerBusy||materials.length>=MATERIAL_LIMITS.files?'disabled':''}>${importingPlannerMaterials?'正在本机读取资料…':'导入学习资料'}</button>` : '<p class="field-hint">资料导入请使用桌面版。</p>'}
+    ${materials.length?`<p class="field-hint">已选 ${materials.length}/${MATERIAL_LIMITS.files} 份 · ${characters.toLocaleString()}/1,000,000 字。生成时从全库选取相关片段，单次最多读取 3 份相关资料。</p>`:''}
+    <div class="planner-material-list">${materials.map(m=>`<div class="planner-material-item"><div><strong>${escape(m.name)}</strong><small>${m.parts.reduce((n,p)=>n+p.text.length,0).toLocaleString()} 字 · ${m.parts.length} 段原文</small>${m.warning?`<p class="error-text">${escape(m.warning)}</p>`:''}</div><button type="button" class="text-button" data-action="preview-planner-material" data-id="${m.id}">预览</button><button type="button" class="text-button" data-action="remove-planner-material" data-id="${m.id}" ${plannerBusy?'disabled':''}>移除</button></div>`).join('')}</div>
+    ${materials.length?'<p class="field-hint">文件仅在本机提取。点击生成后，资料目录、少量原文样本及相关片段会发送给当前模型，不会一次发送全部正文；请先预览核对文字、表格顺序与公式。</p>':''}</section>`;
+}
+function previewMaterial(material,partId='') {
+  if(!material) throw new Error('资料原文不可用，请重新导入。');
+  let dialog=$('#material-preview-dialog');
+  if(!dialog) {dialog=document.createElement('dialog');dialog.id='material-preview-dialog';document.body.append(dialog);}
+  dialog.innerHTML=`<div class="modal-heading"><h2>${escape(material.name)}</h2><button type="button" class="icon-button" data-action="close-material-preview" aria-label="关闭资料预览">${icon('close')}</button></div><p class="field-hint">本机提取的文字快照。PDF 为实际页码，Word 为提取段落，文本为行号；图片与原排版未保留。</p>${material.warning?`<p class="notice">${escape(material.warning)}</p>`:''}<div class="material-parts">${material.parts.map(p=>`<section id="material-${p.id}" class="material-part ${p.id===partId?'material-part-selected':''}"><h3>${escape(p.location)}</h3><pre>${escape(p.text)}</pre></section>`).join('')}</div>`;
+  dialog.showModal();
+  if(partId) requestAnimationFrame(()=>document.getElementById(`material-${partId}`)?.scrollIntoView({block:'center'}));
+}
 function briefHTML(brief) {
   return `<div class="planner-summary"><h3>AI 的初步理解</h3><p>${escape(brief.summary)}</p></div><dl class="planner-answers">${brief.answers.map(answer => `<div><dt>${escape(answer.question)}</dt><dd>${escape(answer.selected.join('、'))}${answer.detail ? `<p>${escape(answer.detail)}</p>` : ''}</dd></div>`).join('')}</dl>`;
 }
@@ -1327,7 +1353,7 @@ function renderPlanner() {
   const draft = plannerDraft, step = ['goal', 'questions', 'review'].indexOf(draft.step);
   let body;
   if (draft.step === 'goal') {
-    body = `<h2 id="planner-title">先说说，你想学什么？</h2><p>还没有明确方向也没关系。描述你的兴趣、遇到的难题，或想完成的事情，AI 会先帮你澄清需求。</p><form id="plan-form"><fieldset class="planner-fields" ${plannerBusy ? 'disabled' : ''}><label for="goal">我的学习需求</label><textarea id="goal" name="goal" maxlength="1000" required placeholder="例如：我想学 AI，但不知道从哪里开始；或我想让日常报表更省时间。">${escape(draft.goal)}</textarea><div class="form-row"><div><label for="level">目前的基础</label><select id="level" name="level">${['零基础', '有一点基础', '希望进阶'].map(level => `<option ${draft.level === level ? 'selected' : ''}>${level}</option>`).join('')}</select></div><div><label for="daily">每天投入</label><select id="daily" name="daily">${[15,25,45,60].map(minutes => `<option value="${minutes}" ${draft.daily === minutes ? 'selected' : ''}>${minutes} 分钟</option>`).join('')}</select></div><div><label for="days">计划周期</label><select id="days" name="days">${[[7,'1 周'],[14,'2 周'],[30,'1 个月'],[90,'3 个月']].map(([days,label]) => `<option value="${days}" ${draft.days === days ? 'selected' : ''}>${label}</option>`).join('')}</select></div></div><button class="btn primary full" type="submit" ${status.mode !== 'ai' ? 'disabled' : ''}>${plannerBusy ? '<span class="spinner"></span>AI 正在分析需求…' : `让 AI 帮我澄清需求 ${icon('spark')}`}</button></fieldset></form>`;
+    body = `<h2 id="planner-title">先说说，你想学什么？</h2><p>还没有明确方向也没关系。描述你的兴趣、遇到的难题，或想完成的事情，AI 会先帮你澄清需求。</p><form id="plan-form"><fieldset class="planner-fields" ${plannerBusy ? 'disabled' : ''}><label for="goal">我的学习需求</label><textarea id="goal" name="goal" maxlength="1000" required placeholder="例如：我想学 AI，但不知道从哪里开始；或我想让日常报表更省时间。">${escape(draft.goal)}</textarea>${plannerMaterialsHTML()}<div class="form-row"><div><label for="level">目前的基础</label><select id="level" name="level">${['零基础', '有一点基础', '希望进阶'].map(level => `<option ${draft.level === level ? 'selected' : ''}>${level}</option>`).join('')}</select></div><div><label for="daily">每天投入</label><select id="daily" name="daily">${[15,25,45,60].map(minutes => `<option value="${minutes}" ${draft.daily === minutes ? 'selected' : ''}>${minutes} 分钟</option>`).join('')}</select></div><div><label for="days">计划周期</label><select id="days" name="days">${[[7,'1 周'],[14,'2 周'],[30,'1 个月'],[90,'3 个月']].map(([days,label]) => `<option value="${days}" ${draft.days === days ? 'selected' : ''}>${label}</option>`).join('')}</select></div></div><button class="btn primary full" type="submit" ${status.mode !== 'ai' ? 'disabled' : ''}>${importingPlannerMaterials ? '<span class="spinner"></span>正在读取资料…' : plannerBusy ? '<span class="spinner"></span>AI 正在分析需求…' : `让 AI 帮我澄清需求 ${icon('spark')}`}</button></fieldset></form>`;
   } else if (draft.step === 'questions') {
     body = `<h2 id="planner-title">一起确定适合你的方向</h2><p>AI 根据尚未明确、又会影响路线的 ${draft.questionnaire.questions.length} 个问题来澄清需求。每题可以选择方向、自由补充，或让 AI 推荐。</p><div class="planner-summary"><h3>AI 的初步理解</h3><p>${escape(draft.questionnaire.summary)}</p></div><form id="clarification-form"><fieldset class="planner-fields" ${plannerBusy ? 'disabled' : ''}>${draft.questionnaire.questions.map((question, index) => {
       const answer = draft.answers.find(item => item.questionId === question.id) || { optionIds: [], detail: '' };
@@ -1337,6 +1363,7 @@ function renderPlanner() {
     const brief = learningBriefFrom({ questionnaire: draft.questionnaire, answers: draft.answers, notes: '' });
     body = `<h2 id="planner-title">确认需求，再规划课程</h2><p>AI 将按这些回答倒推学习成果、必要知识和实践任务。若理解有偏差，请返回修改，或在下方补充。</p><div class="planner-original"><strong>原始需求</strong><p>${escape(draft.goal)}</p><small>${escape(draft.level)} · 每天 ${draft.daily} 分钟 · ${draft.days} 天</small></div>${briefHTML(brief)}<form id="plan-confirm-form"><fieldset class="planner-fields" ${plannerBusy ? 'disabled' : ''}><label for="planner-notes">最后补充：想达成的成果、不想学的内容、工具限制等（可选）</label><textarea id="planner-notes" name="notes" maxlength="1000" rows="3" placeholder="例如：只学能用于工作的内容，不学习编程；最终希望独立完成一份分析报告。">${escape(draft.notes)}</textarea><div class="planner-actions"><button type="button" class="btn secondary" data-action="planner-back">${icon('back')}修改回答</button><button type="submit" class="btn primary">${plannerBusy ? '<span class="spinner"></span>正在定制学习路线…' : `确认并生成学习路线 ${icon('spark')}`}</button></div></fieldset></form>`;
   }
+  if(draft.step!=='goal' && draft.materials?.length) body=`<p class="notice">本次依据导入资料：${draft.materials.map(m=>escape(m.name)).join('、')}。相关原文片段会发送到当前模型。</p>`+body;
   $('#planner').innerHTML = `<div class="modal-heading"><span class="float-icon lavender">${icon('spark')}</span><button class="icon-button" data-action="close-planner" aria-label="关闭" ${plannerBusy ? 'disabled' : ''}>${icon('close')}</button></div><ol class="planner-steps" aria-label="学习规划进度">${['描述需求','澄清方向','确认并规划'].map((label,index) => `<li ${index === step ? 'aria-current="step"' : ''}>${index + 1} · ${label}</li>`).join('')}</ol><p id="plan-error" class="inline-error" role="alert">${escape(plannerError)}</p>${body}${status.mode !== 'ai' ? `<div class="notice">当前未配置 AI。自定义问卷与路线需要连接模型。</div>${button('体验 Python 示例课程','demo','secondary full','','arrow')}` : '<p class="field-hint">需求和回答将发送到已配置的模型服务；路线生成后，确认后的需求随学习数据保存在本地。生成可能需要一两分钟。</p>'}`;
 }
 function collectPlannerAnswers(values) {
@@ -1354,7 +1381,7 @@ async function submitPlanner(formId, values) {
     if (status.mode !== 'ai') throw new Error('请先连接 AI 模型，再生成澄清问卷或学习路线。');
     plannerBusy = true;
     if (formId === 'plan-form') {
-      const next = { goal: (values.get('goal') || '').trim(), level: values.get('level'), daily: Number(values.get('daily')), days: Number(values.get('days')), depth: values.get('depth') === 'deep' ? 'deep' : 'adaptive' };
+      const next = { ...(plannerDraft.materials?.length ? {materialIds:plannerDraft.materials.map(m=>m.id)} : {}), goal: (values.get('goal') || '').trim(), level: values.get('level'), daily: Number(values.get('daily')), days: Number(values.get('days')), depth: values.get('depth') === 'deep' ? 'deep' : 'adaptive' };
       if (!next.goal) throw new Error('请先描述你想学习的内容。');
       const unchanged = plannerDraft.questionnaireFor === JSON.stringify(next);
       Object.assign(plannerDraft, next);
@@ -1369,7 +1396,7 @@ async function submitPlanner(formId, values) {
       if (!validClarification(clarification)) throw new Error('需求回答不完整，请返回修改。');
       renderPlanner();
       const { goal, level, daily, days } = plannerDraft;
-      const p = await api('plan', { goal, level, daily, days, clarification });
+      const p = await api('plan', { goal, level, daily, days, clarification, ...(plannerDraft.materials?.length ? {materialIds:plannerDraft.materials.map(m=>m.id)} : {}) });
       await pendingSave;
       if (storageWarning) throw new Error('本地存储有错误，路线尚未保存：' + storageWarning);
       const nextState = { ...state, plans: [...state.plans, p], active: p.id };
@@ -1523,6 +1550,41 @@ async function download(name, content, type) {
 }
 function markdown(n) { return `# ${n.title}\n\n${n.summary.split('\n').map(line => '> ' + line).join('\n')}\n\n标签：${n.tags.join('、')}\n\n来源课程：${n.courseTitle}\n\n${n.content}\n`; }
 async function action(name, element) {
+  if(name==='close-material-preview') {$('#material-preview-dialog')?.close();return;}
+  if(name==='preview-planner-material') {previewMaterial(plannerDraft.materials?.find(m=>m.id===element.dataset.id));return;}
+  if(name==='remove-planner-material') {
+    if(plannerBusy) return;
+    const form=$('#plan-form');
+    if(form) Object.assign(plannerDraft,{goal:form.elements.goal.value,level:form.elements.level.value,daily:Number(form.elements.daily.value),days:Number(form.elements.days.value)});
+    await desktop?.discardMaterial?.(element.dataset.id);
+    plannerDraft.materials=(plannerDraft.materials||[]).filter(m=>m.id!==element.dataset.id);
+    plannerDraft.questionnaireFor=null;renderPlanner();return;
+  }
+  if(name==='import-planner-materials') {
+    if(plannerBusy || !desktop?.importMaterials) return;
+    const form=$('#plan-form');
+    if(form) Object.assign(plannerDraft,{goal:form.elements.goal.value,level:form.elements.level.value,daily:Number(form.elements.daily.value),days:Number(form.elements.days.value)});
+    plannerBusy=true;importingPlannerMaterials=true;plannerError='';renderPlanner();
+    const stopImportProgress=desktop.onMaterialImportProgress?.(progress=>{
+      const button=$('[data-action="import-planner-materials"]');
+      if(button) {button.textContent=`正在读取 ${progress.current}/${progress.total} 份资料…`;button.title=progress.name;}
+    });
+    try {
+      const imported=await desktop.importMaterials((plannerDraft.materials||[]).map(m=>m.id));
+      if(imported) {
+        const merged=[...new Map([...(plannerDraft.materials||[]),...imported].map(m=>[m.id,m])).values()];
+        if(!validMaterials(merged)) throw new Error(`每门课程最多 ${MATERIAL_LIMITS.files} 份资料，文字合计不超过 100 万字；原有资料已保留。`);
+        plannerDraft.materials=merged;plannerDraft.questionnaireFor=null;
+      }
+    } catch(error) {plannerError=error.message;}
+    finally {stopImportProgress?.();plannerBusy=false;importingPlannerMaterials=false;renderPlanner();}
+    return;
+  }
+  if(name==='open-material-source') {
+    const source=localMaterialSource(element.dataset.url);
+    const owner=state.plans.find(p=>p.lessons.some(l=>l.id===activeLesson)) || plan();
+    previewMaterial(owner?.materials?.find(m=>m.id===source?.materialId),element.dataset.part||'');return;
+  }
   if(name==='toggle-home-description') {
     const expanded=element.getAttribute('aria-expanded')!=='true';
     if(expanded)expandedHomeDescriptions.add(state.active);else expandedHomeDescriptions.delete(state.active);

@@ -1,6 +1,6 @@
 {
   "name": "learnflow",
-  "version": "1.3.6",
+  "version": "1.3.7",
   "main": "desktop/main.cjs",
   "private": true,
   "type": "module",
@@ -44,11 +44,13 @@
       "course-revision.mjs",
       "course-generation.mjs",
       "course-sources.mjs",
+      "course-materials.mjs",
       "course-claim-matching.mjs",
       "course-inline-citations.mjs",
       "course-quiz-sources.mjs",
       "course-citation-context.mjs",
       "test-support/audio.mjs",
+      "test-support/materials.mjs",
       "package.json"
     ],
     "asar": true,
@@ -70,9 +72,11 @@
     }
   },
   "dependencies": {
-    "dompurify": "3.4.16",
+    "dompurify": "3.4.17",
     "js-yaml": "4.3.2",
+    "mammoth": "1.13.0",
     "marked": "18.0.14",
-    "parse5": "8.0.1"
+    "parse5": "8.0.1",
+    "pdfjs-dist": "6.5.438"
   }
 }

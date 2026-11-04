@@ -16,6 +16,13 @@ contextBridge.exposeInMainWorld('learnflowDesktop', Object.freeze({
   setCourseSourceSearch: (id, enabled) => invoke('learnflow:set-course-source-search', id, enabled),
   openCourseSource: url => invoke('learnflow:open-course-source', url),
   savePlan: value => invoke('learnflow:save-plan', value),
+  importMaterials: ids => invoke('learnflow:import-materials',ids),
+  onMaterialImportProgress: callback => {
+    const listener=(_event,value)=>callback(value);
+    ipcRenderer.on('learnflow:material-import-progress',listener);
+    return ()=>ipcRenderer.removeListener('learnflow:material-import-progress',listener);
+  },
+  discardMaterial: id => invoke('learnflow:discard-material',id),
   setActivePlan: id => invoke('learnflow:set-active-plan', id),
   deletePlan: id => invoke('learnflow:delete-plan', id),
   saveLesson: (id, value) => invoke('learnflow:save-lesson', id, value),

@@ -736,6 +736,22 @@ input,textarea,select { accent-color:var(--purple); }
 }
 
 /* Home: a luminous knowledge constellation on a calm workspace. */
+.planner-materials { margin:18px 0; padding:15px; border:1px solid var(--line); border-radius:10px; background:#f8f7fc; }
+.planner-materials>.field-hint { margin:8px 0 12px; }
+.planner-material-list { max-height:260px; overflow:auto; overscroll-behavior:contain; }
+.course-material-list { max-width:100%; }
+.course-material-list summary { cursor:pointer; color:var(--purple); font-size:12px; }
+.course-material-list>div { display:flex; flex-wrap:wrap; gap:8px 14px; max-height:160px; overflow:auto; padding-top:8px; }
+.planner-material-item { display:flex; align-items:center; gap:10px; padding:10px 0; border-top:1px solid var(--line); margin-top:10px; }
+.planner-material-item>div { flex:1; min-width:0; overflow-wrap:anywhere; }
+.planner-material-item small { display:block; color:var(--muted); font-size:11px; margin-top:4px; }
+.planner-material-item .text-button { flex:none; }
+#material-preview-dialog { width:820px; }
+#material-preview-dialog h2 { font-size:20px; overflow-wrap:anywhere; }
+.material-part { padding:12px; border:1px solid var(--line); border-radius:8px; margin-bottom:12px; }
+.material-part h3 { font-size:12px; color:var(--muted); margin:0 0 8px; }
+.material-part pre { white-space:pre-wrap; overflow-wrap:anywhere; font-family:inherit; font-size:14px; line-height:1.9; margin:0; }
+.material-part-selected { border-color:var(--purple); background:#f6f2ff; }
 .page-home { --home-violet:#7856ed; --home-cyan:#80e7f4; }
 .page-home .page-intro { margin-bottom:24px; }
 .page-home .hero { min-height:370px; grid-template-columns:1.02fr 1fr; border:1px solid #333d5a; border-radius:20px; background:radial-gradient(ellipse at 81% 52%,#162347 0%,#0b1126 42%,#050916 85%); box-shadow:0 18px 45px -25px #060f3277,inset 0 0 80px #00000033; isolation:isolate; }
@@ -749,7 +765,12 @@ input,textarea,select { accent-color:var(--purple); }
 .space-stars-far { opacity:.8; animation:space-star-drift 95s ease-in-out infinite alternate; }
 .space-stars-near { transform:translate(calc(var(--pointer-x,0px) * -.5),calc(var(--pointer-y,0px) * -.5)); transition:transform .7s ease-out; }
 .space-glint { animation:space-star-glimmer 9s ease-in-out var(--star-delay,0s) infinite; }
-.space-meteor { position:absolute; top:11%; left:81%; width:100px; height:1px; background:linear-gradient(90deg,transparent,#d4e7ff); opacity:0; transform:rotate(-28deg); animation:space-meteor-pass 26s linear -7s infinite; }
+.space-meteor { --meteor-distance:clamp(160px,27vw,380px); position:absolute; top:12%; left:83%; width:clamp(85px,11vw,160px); height:1.5px; border-radius:50%; background:linear-gradient(90deg,#edf7ff,#b7c9ff99 15%,#98afff33 50%,transparent); opacity:0; transform:rotate(-28deg); transform-origin:left center; pointer-events:none; }
+.space-meteor::before { content:""; position:absolute; left:-1.5px; top:-1.25px; width:4px; height:4px; border-radius:50%; background:#f0f8ff; box-shadow:0 0 6px #b6d4ffb3,0 0 12px #9fb8ff55; }
+.space-meteor-two { --meteor-distance:clamp(140px,22vw,290px); --meteor-delay:3.4s; top:31%; left:96%; width:clamp(70px,8vw,120px); }
+@media(hover:hover) and (pointer:fine) {
+  .page-home .hero:hover .space-meteor { animation:space-meteor-pass 7.5s linear var(--meteor-delay,0s) infinite; }
+}
 .page-home .hero-copy { padding:36px 0 32px 38px; display:flex; flex-direction:column; align-items:flex-start; min-width:0; }
 .page-home .hero-pill { display:inline-flex; align-items:center; gap:8px; border:1px solid #c6b8ff33; background:#ae8eff0d; color:#dcd4fb; padding:6px 11px; font-size:11px; line-height:18px; border-radius:20px; }
 .page-home .hero-pill>span { width:5px; height:5px; background:#b5a0ff; box-shadow:0 0 9px #b5a0ffaa; border-radius:50%; }
@@ -857,7 +878,7 @@ input,textarea,select { accent-color:var(--purple); }
 @keyframes space-nebula-drift { from { transform:translate(-7px,3px) rotate(-3deg) scale(1); } to { transform:translate(12px,-7px) rotate(2deg) scale(1.06); } }
 @keyframes space-star-drift { from { transform:translate(0,0) scale(1); } to { transform:translate(-12px,5px) scale(1.035); } }
 @keyframes space-star-glimmer { 0%,100% { opacity:.35; } 50% { opacity:.9; } }
-@keyframes space-meteor-pass { 0%,76% { opacity:0; transform:translate(0,0) rotate(-28deg); } 78% { opacity:.65; } 82%,100% { opacity:0; transform:translate(-250px,135px) rotate(-28deg); } }
+@keyframes space-meteor-pass { 0% { opacity:0; transform:translate(0,0) rotate(-28deg); } 2% { opacity:.9; } 12% { opacity:.7; } 16%,100% { opacity:0; transform:translate(calc(var(--meteor-distance) * -1),calc(var(--meteor-distance) * .53)) rotate(-28deg); } }
 @keyframes constellation-core-float { 0%,100% { transform:translateY(0) rotateX(-12deg) rotateY(-24deg) rotateZ(-7deg); } 50% { transform:translateY(-9px) rotateX(-8deg) rotateY(-17deg) rotateZ(-5deg); } }
 @keyframes constellation-orbit-3d { from { transform:translate3d(-50%,-50%,0) rotateX(66deg) rotateZ(-22deg); } to { transform:translate3d(-50%,-50%,0) rotateX(66deg) rotateZ(338deg); } }
 @keyframes constellation-orbit-cross { from { transform:translate3d(-50%,-50%,-12px) rotateX(58deg) rotateY(47deg) rotateZ(35deg); } to { transform:translate3d(-50%,-50%,-12px) rotateX(58deg) rotateY(47deg) rotateZ(395deg); } }

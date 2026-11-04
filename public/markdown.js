@@ -1,4 +1,5 @@
-import { officialSource, validGrounding } from './course-sources.js';
+import { citationSource, validGrounding } from './course-sources.js';
+import { localMaterialSource } from './materials.js';
 
 const escapeHTML = value => String(value ?? '').replace(/[&<>"']/g, character => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[character]));
 
@@ -8,10 +9,10 @@ function linkCourseCitations(fragment, grounding, desktop) {
   const sources = new Map();
   for (const citation of grounding.citations) {
     const id = citation.excerptId || citation.sourceId;
-    const source = officialSource(citation.url);
+    const source = citationSource(citation.url);
     if (!source) continue;
     if (sources.has(id) && sources.get(id)?.url !== source.url) sources.set(id, null);
-    else if (!sources.has(id)) sources.set(id, { url: source.url, title: citation.title });
+    else if (!sources.has(id)) sources.set(id, { url: source.url, title: citation.title + (citation.location ? ' · '+citation.location : ''), partId:citation.partId });
   }
   const document = fragment.ownerDocument;
   const walker = document.createTreeWalker(fragment, 4);
@@ -29,13 +30,14 @@ function linkCourseCitations(fragment, grounding, desktop) {
       replacement.append(document.createTextNode(node.data.slice(offset, match.index)));
       const link = document.createElement('a');
       link.className = 'course-inline-citation';
-      link.href = source.url;
+      const local = localMaterialSource(source.url);
+      link.href = local ? '#material-source' : source.url;
       link.target = '_blank';
       link.rel = 'noopener noreferrer';
       link.title = `打开参考文档：${source.title}`;
       link.setAttribute('aria-label', `${match[0]} 打开参考文档：${source.title}`);
       link.textContent = match[0];
-      if (desktop) { link.dataset.action = 'open-course-source'; link.dataset.url = source.url; }
+      if (local || desktop) { link.dataset.action = local ? 'open-material-source' : 'open-course-source'; link.dataset.url = source.url; if(local && source.partId) link.dataset.part = source.partId; }
       replacement.append(link);
       offset = match.index + match[0].length;
     }

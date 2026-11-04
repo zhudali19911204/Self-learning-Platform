@@ -24,6 +24,7 @@ export function validState(v) {
   if (!object(v) || v.version !== 1 || !Array.isArray(v.plans) || !v.plans.length || v.plans.length > 1000 || !id(v.active)) return false;
   if (!v.plans.every(p => validPlan(p) && id(p.id) && string(p.goal, 1000) && string(p.level, 80) && Number.isInteger(p.daily) && Number.isInteger(p.days) && ['ai', 'demo'].includes(p.source) && p.lessons.every(l => id(l.id)))) return false;
   if (!v.plans.every(p => p.learningBrief === undefined || validLearningBrief(p.learningBrief))) return false;
+  if (!v.plans.every(p => p.materials === undefined || validMaterials(p.materials))) return false;
   const planIds = v.plans.map(p => p.id), lessonIds = v.plans.flatMap(p => p.lessons.map(l => l.id));
   if (v.studyPositions !== undefined && !validStudyPositions(v.studyPositions,v.plans)) return false;
   if (v.sourceSearch !== undefined && (!dict(v.sourceSearch, validSourceSearch) || Object.keys(v.sourceSearch).some(k => !lessonIds.includes(k)))) return false;
@@ -130,3 +131,4 @@ export function createLocalStore(directory, secrets, { filename = 'settings.json
     flush: () => queue
   };
 }
+import { validMaterials } from '../public/materials.js';

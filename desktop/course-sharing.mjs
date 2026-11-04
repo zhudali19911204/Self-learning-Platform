@@ -8,7 +8,7 @@ const question = value => ({ ...pick(value, ['prompt', 'answer', 'explanation'])
 function grounding(value) {
   const legacy = value.verification === 'quotes_checked';
   return { ...pick(value, legacy ? ['version', 'verification', 'revision'] : ['version']), citations: value.citations.map(c => pick(c,
-    legacy ? ['sourceId', 'url', 'title', 'hash', 'fetchedAt', 'quote', 'claim'] : ['excerptId', 'url', 'title', 'publisher', 'retrievedAt', 'quote', 'claim'])) };
+    legacy ? ['sourceId', 'url', 'title', 'hash', 'fetchedAt', 'quote', 'claim'] : ['excerptId', 'url', 'title', 'publisher', 'retrievedAt', 'quote', 'claim', 'materialId', 'partId', 'location'])) };
 }
 function content(value, type) {
   if (value === null) return null;
@@ -33,6 +33,7 @@ function cleanCourse(value, newIds = false) {
   try { valid = validState(stateFor(value)) && !Object.keys(value.lessons).some(id => !value.plan.lessons.some(l => l.id === id)); } catch { /* Invalid external shapes must not escape as implementation errors. */ }
   if (!valid) throw new Error('课程包内容格式无效，未修改现有课程。');
   const plan = { ...pick(value.plan, ['title', 'description', 'goal', 'level', 'daily', 'days', 'source']), id: newIds ? randomUUID() : 'shared-course', lessons: [] };
+  if(value.plan.materials?.length) plan.materials=value.plan.materials.map(m=>({...pick(m,['version','id','name','type','bytes','importedAt','warning']),parts:m.parts.map(p=>pick(p,['id','location','text']))}));
   const lessons = {}, blockCourses = {};
   value.plan.lessons.forEach((meta, index) => {
     const id = newIds ? randomUUID() : `lesson-${index + 1}`;

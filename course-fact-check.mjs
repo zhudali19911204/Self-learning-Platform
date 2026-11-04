@@ -2,7 +2,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { factCheckVersion, factContent, validFactCheck, sameFactContent } from './public/fact-check.js';
 import { validBlockContent } from './public/blocks.js';
 import { assertDistinctQualityModels } from './public/course-quality.js';
-import { validGrounding, groundedContent, officialSource } from './public/course-sources.js';
+import { validGrounding, groundedContent, citationSource } from './public/course-sources.js';
 import { withInlineCourseCitations } from './course-inline-citations.mjs';
 import { createCourseClaimMatcher } from './course-claim-matching.mjs';
 import { generationAwait, checkGenerationCancellation } from './generation-cancellation.mjs';
@@ -24,7 +24,7 @@ function sourcesFor(content) {
     const key = JSON.stringify([c.url, c.quote]);
     if (used.has(key)) continue;
     used.add(key);
-    sources.push({ id: `R${sources.length + 1}`, url: c.url, title: c.title, quote: c.quote, excerptId: c.excerptId || c.sourceId, retrievedAt: c.retrievedAt || c.fetchedAt });
+    sources.push({ id: `R${sources.length + 1}`, url: c.url, title: c.title, quote: c.quote, excerptId: c.excerptId || c.sourceId, retrievedAt: c.retrievedAt || c.fetchedAt, ...(c.partId ? {partId:c.partId,location:c.location} : {}) });
     if (sources.length === 24) break;
   }
   return sources;
@@ -133,10 +133,10 @@ const correctionInstruction = `按 confirmedIssues 对当前模块做一次最�
 function evidenceDocuments(content) {
   const docs = new Map();
   for (const c of content.grounding?.citations || []) {
-    if (!c.excerptId || !officialSource(c.url)) return [];
+    if (!c.excerptId || !citationSource(c.url)) return [];
     if (!docs.has(c.url)) docs.set(c.url, { url: c.url, title: c.title, publisher: c.publisher, retrievedAt: c.retrievedAt, excerpts: [] });
     const excerpts = docs.get(c.url).excerpts;
-    if (!excerpts.some(e => e.id === c.excerptId)) excerpts.push({ id: c.excerptId, text: c.quote });
+    if (!excerpts.some(e => e.id === c.excerptId)) excerpts.push({ id: c.excerptId, text: c.quote, ...(c.partId ? {partId:c.partId,location:c.location} : {}) });
   }
   const entries = [...docs.values()], ids = entries.flatMap(d => d.excerpts.map(e => e.id));
   return new Set(ids).size === ids.length ? entries : [];

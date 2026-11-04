@@ -90,7 +90,7 @@ async function start() {
   const modelFetch = (url, options) => { checkCancelled(); return cancellation.generationAwait(modelSession.fetch(url, { ...options, signal: cancellation.generationSignal(null, options?.signal), credentials: 'omit' })); };
   const speechService = createSpeechService(speechStore, modelFetch);
   let llm = createLLM({ ...store.getModelConfig(), fetchImpl: modelFetch });
-  const sourceFixture = smoke && process.argv.includes('--sources-only') ? (await import('./sources-fixture.mjs')).sourcesFixture() : null;
+  const sourceFixture = smoke && process.argv.includes('--materials-only') ? (await import('./materials-fixture.mjs')).materialsFixture() : smoke && process.argv.includes('--sources-only') ? (await import('./sources-fixture.mjs')).sourcesFixture() : null;
   if (sourceFixture) llm = sourceFixture.llm;
   const getQualityLLM = () => createLLM({ ...qualityStore.getModelConfig(), fetchImpl: modelFetch });
   const qualityStatus = () => {
@@ -115,13 +115,52 @@ async function start() {
     return;
   }
   const courseSources = sourceFixture?.courseSources || createCourseSources({ getConfig: () => store.getModelConfig(), fetchImpl: modelFetch });
+  const { readMaterialBuffer } = await import(pathToFileURL(path.join(__dirname,'material-reader.mjs')));
+  const { validMaterials, MATERIAL_LIMITS } = await import(pathToFileURL(path.join(__dirname,'..','public','materials.js')));
+  const stagedMaterials = new Map();
+  const planningMaterials = ids => {
+    if (!Array.isArray(ids) || ids.length > MATERIAL_LIMITS.files || new Set(ids).size !== ids.length) throw new Error('资料选择无效，请重新导入。');
+    const documents=ids.map(id=>stagedMaterials.get(id));
+    if(!validMaterials(documents)) throw new Error('导入资料已失效或文字总量超限，请重新导入。');
+    return documents;
+  };
+  let importingMaterials=false;
+  handle('learnflow:import-materials',async (existingIds=[]) => {
+    if(importingMaterials) throw new Error('正在解析资料，请稍候。');
+    importingMaterials=true;
+    try {
+      const existing=planningMaterials(existingIds);
+      const selection=await dialog.showOpenDialog(window,{title:'导入学习资料',properties:['openFile','multiSelections'],filters:[{name:'学习资料（PDF / Word / Markdown / 文本）',extensions:['pdf','docx','md','txt']}]});
+      if(selection.canceled) return null;
+      if(selection.filePaths.length > MATERIAL_LIMITS.files) throw new Error(`每门课程最多导入 ${MATERIAL_LIMITS.files} 份资料。`);
+      const result=[];
+      for(const [index,filename] of selection.filePaths.entries()) {
+        if(window && !window.isDestroyed()) window.webContents.send('learnflow:material-import-progress',{current:index+1,total:selection.filePaths.length,name:path.basename(filename)});
+        const info=await require('node:fs/promises').lstat(filename);
+        if(!info.isFile() || info.isSymbolicLink() || info.size > MATERIAL_LIMITS.bytes) throw new Error('请选择不超过 10 MB 的普通资料文件。');
+        result.push(await readMaterialBuffer(await readFile(filename),path.basename(filename)));
+      }
+      if(!validMaterials(result)) throw new Error('资料重复、单份文字超过 30 万字或文字合计超过 100 万字，请拆分后导入。');
+      const combined=[...new Map([...existing,...result].map(m=>[m.id,m])).values()];
+      if(!validMaterials(combined)) throw new Error(`每门课程最多 ${MATERIAL_LIMITS.files} 份资料，文字合计不超过 100 万字；原有资料已保留。`);
+      while(stagedMaterials.size + result.length > MATERIAL_LIMITS.files * 2) stagedMaterials.delete([...stagedMaterials.keys()].find(id=>!existingIds.includes(id)));
+      for(const document of result) stagedMaterials.set(document.id,document);
+      return result;
+    } finally { importingMaterials=false; }
+  });
+  handle('learnflow:discard-material', id => { stagedMaterials.delete(id); });
+  const courseMaterials = lessonId => {
+    const owner=learning.overview().plans.find(p=>p.lessons.some(l=>l.id===lessonId));
+    if(!owner) throw new Error('课程不存在，未读取资料。');
+    return owner.materials || [];
+  };
   const courseRequests = new Set();
   const fullGenerationRequests = new Set();
   const progressRequests = new Set();
   const onGenerationProgress = (requestId, stage) => {
     if (progressRequests.has(requestId) && window && !window.isDestroyed()) window.webContents.send('learnflow:generation-progress', { requestId, stage });
   };
-  server = createApp({ getLLM: () => llm, courseSources, onGenerationProgress, getGenerationSignal: id => generationTasks.signal(id), getCourseSourceSearch: id => learning.getLesson(id).sourceSearch, getCourseBlockCourse: id => learning.getLesson(id).blockCourse, apiToken: token, getImageSettings: () => imageStore.getSettings(), getImageAsset: async id => {
+  server = createApp({ getLLM: () => llm, courseSources, getPlanningMaterials:planningMaterials, getCourseMaterials:courseMaterials, onGenerationProgress, getGenerationSignal: id => generationTasks.signal(id), getCourseSourceSearch: id => learning.getLesson(id).sourceSearch, getCourseBlockCourse: id => learning.getLesson(id).blockCourse, apiToken: token, getImageSettings: () => imageStore.getSettings(), getImageAsset: async id => {
     try { return await imageStore.readAsset(id); } catch { return null; }
   }, getAudioAsset: async id => { try { return await speechStore.readAsset(id); } catch { return null; } } });
   await new Promise((resolve, reject) => { server.once('error', reject); server.listen(0, '127.0.0.1', resolve); });
@@ -179,7 +218,7 @@ async function start() {
   handle('learnflow:prepare-speech', value => speechService.prepare(speechForLesson(value)));
   handle('learnflow:generate-speech', value => speechService.generate(speechForLesson(value)));
   handle('learnflow:get-lesson', id => learning.getLesson(id));
-  handle('learnflow:save-plan', value => learning.savePlan(value));
+  handle('learnflow:save-plan', value => { const result=learning.savePlan(value);for(const m of value.materials||[])stagedMaterials.delete(m.id);return result; });
   handle('learnflow:set-active-plan', id => learning.setActivePlan(id));
   handle('learnflow:delete-plan', async id => {
     const preview = learning.planDeletionPreview(id);
@@ -460,7 +499,7 @@ async function start() {
     const plan = learning.overview().plans.find(p => p.id === planId);
     const course = createCoursePackage(plan, id => learning.getLesson(id));
     const confirm = await dialog.showMessageBox(window, { type: 'question', buttons: ['取消', '选择保存位置'], defaultId: 0, cancelId: 0,
-      message: `导出课程：${course.plan.title}`, detail: `${coursePackageSummary(course)}\n\n包含目录、已生成正文、练习答案、当前配图和参考文档；不包含笔记、成绩、聊天、定制问答、历史版本或模型配置。不会自动生成缺失内容，也不调用付费模型。\n\n请检查正文与标题中是否含个人信息，并确认有权分享配图和资料。` });
+      message: `导出课程：${course.plan.title}`, detail: `${coursePackageSummary(course)}\n\n包含目录、已生成正文、练习答案、当前配图和参考文档${plan.materials?.length ? '，以及导入资料的全部提取文字（请确认可以分享）' : ''}；不包含笔记、成绩、聊天、定制问答、历史版本或模型配置。不会自动生成缺失内容，也不调用付费模型。\n\n请检查正文与标题中是否含个人信息，并确认有权分享配图和资料。` });
     if (confirm.response !== 1) return false;
     const filename = course.plan.title.replace(/[<>:"/\\|?*\x00-\x1f]/g, '-').slice(0, 80) + '.learnflow-course.json';
     const selected = await dialog.showSaveDialog(window, { title: '导出课程包', defaultPath: filename, filters: [{ name: 'Learnflow 课程包', extensions: ['json'] }] });
@@ -481,7 +520,7 @@ async function start() {
     const course = readCoursePackage(value);
     const stageImages = await imageStore.prepareImport(course);
     const confirm = await dialog.showMessageBox(window, { type: 'question', buttons: ['取消', '新增课程'], defaultId: 0, cancelId: 0,
-      message: `导入课程：${course.plan.title}`, detail: `${coursePackageSummary(course)}\n\n将新增一份独立课程，学习进度从零开始，不覆盖原有课程。同名课程也会新增副本。\n仅从可信的人接收课程包。导入不代表知识已核验；不会执行课程代码、访问参考网址或调用模型。` });
+      message: `导入课程：${course.plan.title}`, detail: `${coursePackageSummary(course)}\n\n将新增一份独立课程，学习进度从零开始，不覆盖原有课程。同名课程也会新增副本。${course.plan.materials?.length ? '含导入资料的文字快照；不会打开原文件或执行文件内容。' : ''}\n仅从可信的人接收课程包。导入不代表知识已核验；不会执行课程代码、访问参考网址或调用模型。` });
     if (confirm.response !== 1) return null;
     await stageImages();
     return learning.importCoursePackage(course);
@@ -536,7 +575,8 @@ async function start() {
   if (!smoke) window.focus();
   if (development) { window.setTitle('知行 Learnflow · 开发测试版'); console.log('DESKTOP_DEV_READY'); }
   if (smoke) {
-    if (process.argv.includes('--resume-only')) await require('./resume-smoke.cjs').run(window,dataDirectory);
+    if (process.argv.includes('--materials-only')) await require('./materials-smoke.cjs').run(window,dataDirectory,sourceFixture);
+    else if (process.argv.includes('--resume-only')) await require('./resume-smoke.cjs').run(window,dataDirectory);
     else if (process.argv.includes('--ui-only')) await require('./ui-smoke.cjs').run(window,dataDirectory);
     else if (process.argv.includes('--cancel-only')) await require('./cancellation-smoke.cjs').run(window,dataDirectory);
     else if (process.argv.includes('--quiz-only')) await require('./quiz-smoke.cjs').run(window,dataDirectory);

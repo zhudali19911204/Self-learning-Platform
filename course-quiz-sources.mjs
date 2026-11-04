@@ -1,7 +1,7 @@
 import { cleanGenerationCitationContext } from './course-citation-context.mjs';
 export { withoutPriorCitationMarkers } from './course-citation-context.mjs';
 import { blockGenerationContext, validBlockCourse } from './public/blocks.js';
-import { officialSource, validGrounding } from './public/course-sources.js';
+import { citationSource, validGrounding } from './public/course-sources.js';
 const reject = message => { throw Object.assign(new Error(message), { status: 422 }); };
 
 // Only a server-owned saved course supplies evidence. Client-written URLs or
@@ -22,7 +22,7 @@ export function quizMaterials(requested, savedCourse = null) {
     for (const citation of block.content.grounding.citations) {
       // Omitted, future or edited passages cannot donate evidence to the quiz.
       if (!source.spans.some(span => span.text.includes(citation.claim))) continue;
-      const accepted = officialSource(citation.url);
+      const accepted = citationSource(citation.url);
       if (!accepted) continue;
       let document = byUrl.get(accepted.url);
       if (!document) {
@@ -33,7 +33,7 @@ export function quizMaterials(requested, savedCourse = null) {
         documents.push(document); byUrl.set(accepted.url, document);
       }
       if (document.excerpts.length === 8 || document.excerpts.some(e => e.text === citation.quote)) continue;
-      document.excerpts.push({ id: `${document.id}E${document.excerpts.length + 1}`, text: citation.quote });
+      document.excerpts.push({ id: `${document.id}E${document.excerpts.length + 1}`, text: citation.quote, ...(citation.partId ? {partId:citation.partId,location:citation.location} : {}) });
     }
   }
   return { context: cleanGenerationCitationContext(context, savedCourse), documents: documents.length ? documents : null };
