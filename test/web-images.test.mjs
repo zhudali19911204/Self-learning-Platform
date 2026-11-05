@@ -6,7 +6,7 @@ import tls from 'node:tls';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { createWebImageSearch, publicImageAddress, webImageUrl, downloadWebImage } from '../web-images.mjs';
+import { createWebImageSearch, publicImageAddress, webImageUrl, downloadWebImage } from '../src/media/web-images.mjs';
 import { createWebSearchStore } from '../desktop/web-search-store.mjs';
 import { validIllustration } from '../public/illustrations.js';
 const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=', 'base64');

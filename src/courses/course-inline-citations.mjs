@@ -1,5 +1,5 @@
 import { Lexer } from 'marked';
-import { MAX_COURSE_CITATIONS } from './public/course-sources.js';
+import { MAX_COURSE_CITATIONS } from '../../public/course-sources.js';
 
 const markerPattern = /\[(S\d+(?:E\d+)?)\]/g;
 const reject = message => { throw Object.assign(new Error(message), { status: 422 }); };

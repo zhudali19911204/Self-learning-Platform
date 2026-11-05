@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createApp } from '../server.mjs';
-import { createCourseSources } from '../course-sources.mjs';
+import { createApp } from '../src/server.mjs';
+import { createCourseSources } from '../src/courses/course-sources.mjs';
 
 const cfg = { provider: 'qwen', model: 'qwen3.8-max', baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1', apiKey: 'secret-never-echo', timeoutMs: 1000, localOnly: false };
 const input = { goal: '理解概念', level: '零基础', title: '课程示例', objective: '解释定义', intro: '导语', block: { type: 'reading', title: '概念讲解', objective: '解释概念' }, sourceSearch: { enabled: true, revision: 0 } };

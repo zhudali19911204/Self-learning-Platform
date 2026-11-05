@@ -92,7 +92,7 @@ exports.run=async(window,directory,fixture)=>{
   const targetLesson=independent.lessons[0].id;
   const outline=await evaluate(`window.learnflowDesktop.saveOutline(${JSON.stringify(targetLesson)},${JSON.stringify({intro:'按导入原文练习校准。',blocks:[{type:'reading',title:'校准规则',objective:'理解参考值和单位'},{type:'practice',title:'实操练习：校准并归类数据',objective:'使用教学示例练习核对与分类'},{type:'quiz',title:'校准小测',objective:'检验核对条件'}]})})`);
   const {groundedContent}=await import('../public/course-sources.js');
-  const {withInlineCourseCitations}=await import('../course-inline-citations.mjs');
+  const {withInlineCourseCitations}=await import('../src/courses/course-inline-citations.mjs');
   const reading=withInlineCourseCitations('reading',{text:'校准前应核对参考值与计量单位。[S1E1]'}),part=imported.parts[16];
   const docs=[{id:'S1',url:`learnflow-material:${imported.id}`,title:imported.name,publisher:'用户导入资料',retrievedAt:1000,excerpts:[{id:'S1E1',text:part.text,partId:part.id,location:part.location}]}];
   await evaluate(`window.learnflowDesktop.saveBlock(${JSON.stringify(targetLesson)},${JSON.stringify(outline.blocks[0].id)},${JSON.stringify({text:reading.text,grounding:groundedContent('reading',reading,docs)})})`);

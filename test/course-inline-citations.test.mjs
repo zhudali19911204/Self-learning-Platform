@@ -1,9 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { withInlineCourseCitations, normalizeCourseCitationLayout } from '../course-inline-citations.mjs';
+import { withInlineCourseCitations, normalizeCourseCitationLayout } from '../src/courses/course-inline-citations.mjs';
 import { Lexer } from 'marked';
 import { groundedContent, sourceCitationIssue, validGrounding, MAX_COURSE_CITATIONS, courseReferences } from '../public/course-sources.js';
-import { createApp } from '../server.mjs';
+import { createApp } from '../src/server.mjs';
 
 const documents = [{ id: 'S1', url: 'https://docs.example.org/guide', publisher: 'docs.example.org', title: 'Primary documentation', retrievedAt: 1000,
   excerpts: [{ id: 'S1E1', text: 'A real extracted passage.' }, { id: 'S1E2', text: 'Another real extracted passage.' }] }];

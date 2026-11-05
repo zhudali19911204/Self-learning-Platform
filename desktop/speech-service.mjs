@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { speechRequest } from '../public/speech.js';
-import { createSpeechModel } from '../speech-model.mjs';
-import { checkGenerationCancellation, currentGenerationSignal, generationCancelled } from '../generation-cancellation.mjs';
+import { createSpeechModel } from '../src/models/speech-model.mjs';
+import { checkGenerationCancellation, currentGenerationSignal, generationCancelled } from '../src/runtime/generation-cancellation.mjs';
 const digest = value => createHash('sha256').update(JSON.stringify(value)).digest('hex');
 export const speechCacheKey = (config, turn) => digest([config.baseUrl, config.model, turn.voice, turn.text, config.language, config.rate, 'wav', 24000]);
 

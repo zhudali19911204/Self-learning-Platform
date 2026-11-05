@@ -1,4 +1,4 @@
-import { generationAwait, generationSignal, checkGenerationCancellation } from './generation-cancellation.mjs';
+import { generationAwait, generationSignal, checkGenerationCancellation } from '../runtime/generation-cancellation.mjs';
 // Provider adapters are server-only. No API key or upstream error body is exposed.
 const presets = {
   ollama: { label: 'Ollama', protocol: 'ollama', baseUrl: 'http://127.0.0.1:11434', json: true },

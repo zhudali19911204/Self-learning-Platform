@@ -4,7 +4,7 @@ import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
-import { createImageModel, imageDefaults, normalizeImageSettings, imageMime, MAX_IMAGE_BYTES, BAILIAN_IMAGE_DOWNLOAD_HOSTS } from '../image-model.mjs';
+import { createImageModel, imageDefaults, normalizeImageSettings, imageMime, MAX_IMAGE_BYTES, BAILIAN_IMAGE_DOWNLOAD_HOSTS } from '../src/models/image-model.mjs';
 import { createPendingImageDownloads } from '../desktop/pending-images.mjs';
 import { createImageStore } from '../desktop/image-store.mjs';
 import { createSqliteStore } from '../desktop/sqlite-store.mjs';

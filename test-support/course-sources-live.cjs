@@ -20,11 +20,11 @@ app.whenReady().then(async () => {
     if (!lessonId || !/^[a-zA-Z0-9_-]{1,160}$/.test(lessonId)) throw new Error('An explicit lesson ID is required.');
     if (!safeStorage.isEncryptionAvailable()) throw new Error('System key decryption unavailable.');
     const { createLocalStore } = await imported('desktop/local-store.mjs');
-    const { createLLM, resolveConfig } = await imported('llm.mjs');
-    const { createApp } = await imported('server.mjs');
-    const { createCourseSources, readOfficialDocument } = await imported('course-sources.mjs');
+    const { createLLM, resolveConfig } = await imported('src/models/llm.mjs');
+    const { createApp } = await imported('src/server.mjs');
+    const { createCourseSources, readOfficialDocument } = await imported('src/courses/course-sources.mjs');
     const { blockGenerationContext } = await imported('public/blocks.js');
-    const { createCourseClaimMatcher } = await imported('course-claim-matching.mjs');
+    const { createCourseClaimMatcher } = await imported('src/courses/course-claim-matching.mjs');
     const { validGrounding } = await imported('public/course-sources.js');
     const store = createLocalStore(path.join(root, '.desktop-dev', 'data'), {
       decrypt: async value => safeStorage.decryptString(Buffer.from(value, 'base64')),

@@ -4,7 +4,7 @@ import { randomUUID, createHash } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
 import path from 'node:path';
 import { demoPlan, demoLessons } from '../public/demo.js';
-import { validLesson } from '../server.mjs';
+import { validLesson } from '../src/server.mjs';
 import { validState } from './local-store.mjs';
 import { validCategoryChanges } from '../public/course-categories.js';
 import { validFactCheck, factContent, sameFactContent } from '../public/fact-check.js';
@@ -16,7 +16,7 @@ import { validAnnotations } from '../public/annotations.js';
 import { validStudyPosition } from '../public/study-position.js';
 import { validQualityReport } from '../public/course-quality.js';
 import { validRevisionJob, validQualityDisposition, revisionContent, revisionSnapshot } from '../public/course-revision.js';
-import { qualitySnapshot, qualityFingerprint } from '../course-quality.mjs';
+import { qualitySnapshot, qualityFingerprint } from '../src/courses/course-quality.mjs';
 import { knowledgeCardMarkdown, knowledgeGeneration, knowledgeLayoutCurrent, normalizeKnowledgeCard, readKnowledgeCard, readKnowledgeCards, recoverKnowledgeCardSwap, refreshKnowledgeCatalog, removeKnowledgeCards, replaceKnowledgeCards, saveKnowledgeCard } from './knowledge-cards.mjs';
 
 const exists = async file => { try { await stat(file); return true; } catch (error) { if (error.code === 'ENOENT') return false; throw error; } };

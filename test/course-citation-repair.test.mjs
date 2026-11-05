@@ -1,10 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { citationPassages, completeMissingCourseCitations, needsCitationCompletion } from '../course-citation-repair.mjs';
-import { withInlineCourseCitations } from '../course-inline-citations.mjs';
+import { citationPassages, completeMissingCourseCitations, needsCitationCompletion } from '../src/courses/course-citation-repair.mjs';
+import { withInlineCourseCitations } from '../src/courses/course-inline-citations.mjs';
 import { validGrounding } from '../public/course-sources.js';
-import { createApp } from '../server.mjs';
-import { generationAwait, currentGenerationSignal } from '../generation-cancellation.mjs';
+import { createApp } from '../src/server.mjs';
+import { generationAwait, currentGenerationSignal } from '../src/runtime/generation-cancellation.mjs';
 
 const documents = [{ id: 'S1', url: 'https://docs.example.org/costs', title: '成本汇总说明', publisher: '示例资料', retrievedAt: 1000,
   excerpts: [{ id: 'S1E1', text: '先按相同口径归集仓储与运输成本，再将二者相加。' }, { id: 'S1E2', text: '汇总时应核对单位与期间。' }] }];

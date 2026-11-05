@@ -6,7 +6,7 @@ const http = require('node:http');
 exports.run = async (window, directory) => {
   const { speechDefaults } = await import('../public/speech.js');
   const { wavFixture } = await import('../test-support/audio.mjs');
-  const { normalizeAudio } = await import('../speech-model.mjs');
+  const { normalizeAudio } = await import('../src/models/speech-model.mjs');
   const evaluate = code => window.webContents.executeJavaScript(code, true);
   const wait = expression => evaluate(`new Promise((resolve,reject)=>{let n=0;const timer=setInterval(()=>{try{if(${expression}){clearInterval(timer);resolve(true);}else if(++n>150){clearInterval(timer);reject(new Error('Speech desktop check timed out'));}}catch(error){clearInterval(timer);reject(error);}},100);})`);
   let audio = wavFixture(3);

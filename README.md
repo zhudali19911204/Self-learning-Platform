@@ -2,7 +2,7 @@
 
 中文 AI 自学与个人知识管理工具：**学习目标 → 个性化路线 → 课程与实践 → 练习答疑 → 知识卡片**。以 Windows 桌面版为主要使用入口，保留 Web 开发模式，支持本机模型和云端模型。
 
-当前发布版本：`V-1.3.9.1`；npm 包版本使用兼容 SemVer 的 `1.3.9-1`，以 [package.json](package.json) 为准。本文介绍当前工作区功能；已有安装包需要重新构建，才会包含源码中的最新修改。
+当前发布版本：`V-1.3.9.2`；npm 包版本使用兼容 SemVer 的 `1.3.9-2`，以 [package.json](package.json) 为准。本文介绍当前工作区功能；已有安装包需要重新构建，才会包含源码中的最新修改。
 
 ## 主要功能
 
@@ -203,10 +203,15 @@ node desktop/start.cjs --smoke-test --ui-only
 | --- | --- |
 | `public/` | 页面、Markdown 渲染、学习状态与知识图谱 |
 | `desktop/` | Electron、受限 IPC、SQLite、资料解析及资源存储 |
-| `server.mjs`、`llm.mjs` | 本机 HTTP 服务、模型适配及输出校验 |
-| `course-*.mjs` | 课程生成、资料检索、引用、核查和评分逻辑 |
-| `image-model.mjs`、`speech-model.mjs` | 图片与语音服务适配 |
+| `server.mjs` | 兼容启动入口，保留原有 `npm start`、`npm run dev` 和直接运行命令 |
+| `src/server.mjs` | 本机 HTTP 服务、路由与请求校验 |
+| `src/courses/` | 课程生成、资料检索、引用、核查和评分 |
+| `src/models/` | 文字、图片与语音模型接口 |
+| `src/media/` | 网络图片与 Commons 图片来源 |
+| `src/runtime/` | 生成任务上下文、取消及运行控制 |
 | `test/`、`test-support/` | 自动化测试与模拟资料 |
+
+业务实现已按职责集中到 `src/`，前端和桌面端分别位于 `public/`、`desktop/`。启动方式和数据目录保持兼容；详细结构见[项目目录说明](docs/project-structure.md)。
 
 | 文档 | 内容 |
 | --- | --- |

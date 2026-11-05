@@ -3,9 +3,9 @@ import tls from 'node:tls';
 import { lookup } from 'node:dns/promises';
 import { isIP } from 'node:net';
 import { randomUUID } from 'node:crypto';
-import { imageMime, MAX_IMAGE_BYTES } from './image-model.mjs';
-import { resolveConfig } from './llm.mjs';
-import { generationAwait, generationSignal, checkGenerationCancellation, currentGenerationSignal, generationCancelled } from './generation-cancellation.mjs';
+import { imageMime, MAX_IMAGE_BYTES } from '../models/image-model.mjs';
+import { resolveConfig } from '../models/llm.mjs';
+import { generationAwait, generationSignal, checkGenerationCancellation, currentGenerationSignal, generationCancelled } from '../runtime/generation-cancellation.mjs';
 
 const fail = message => { throw new Error(message); };
 const imageDownloadError = message => Object.assign(new Error(message), { imageDownloadFailure: true });

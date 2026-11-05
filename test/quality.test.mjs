@@ -8,8 +8,8 @@ import { demoPlan } from '../public/demo.js';
 import { createLocalStore, defaults, validState } from '../desktop/local-store.mjs';
 import { createSqliteStore } from '../desktop/sqlite-store.mjs';
 import { assertDistinctQualityModels, validQualityReport } from '../public/course-quality.js';
-import { qualitySnapshot, qualityFingerprint, qualityRules, applicableQualityRubric, qualityReviewerInput, validQualityJudgment, qualityJudgmentProblems, normalizeQualityScoreJudgment, makeQualityReport, createQualityService } from '../course-quality.mjs';
-import { withGenerationSignal, isGenerationCancelled } from '../generation-cancellation.mjs';
+import { qualitySnapshot, qualityFingerprint, qualityRules, applicableQualityRubric, qualityReviewerInput, validQualityJudgment, qualityJudgmentProblems, normalizeQualityScoreJudgment, makeQualityReport, createQualityService } from '../src/courses/course-quality.mjs';
+import { withGenerationSignal, isGenerationCancelled } from '../src/runtime/generation-cancellation.mjs';
 
 const generator = { mode: 'ai', model: 'generator-a', provider: 'compatible' };
 const reviewerStatus = { mode: 'ai', model: 'reviewer-b', provider: 'compatible' };

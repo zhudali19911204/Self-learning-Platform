@@ -10,7 +10,7 @@ exports.run = async (window, store, directory) => {
   const wait = expression => evaluate(`new Promise((resolve, reject) => { let attempts = 0; const timer = setInterval(() => { try { if (${expression}) { clearInterval(timer); resolve(true); } else if (++attempts > 150) { clearInterval(timer); reject(new Error('Desktop check timed out')); } } catch (error) { clearInterval(timer); reject(error); } }, 100); })`);
   await wait("document.querySelector('main h1')");
   const localSettings = { provider: 'ollama', model: '', baseUrl: '', keyAction: 'clear', apiKey: '', localOnly: true, jsonMode: 'auto', timeoutMs: 120000, maxTokens: 8192 };
-  const { imageDefaults } = await import('../image-model.mjs');
+  const { imageDefaults } = await import('../src/models/image-model.mjs');
   const { speechDefaults } = await import('../public/speech.js');
   await evaluate(`window.learnflowDesktop.saveSpeechSettings(${JSON.stringify({...speechDefaults,keyAction:'clear',apiKey:''})})`);
   await evaluate(`window.learnflowDesktop.saveImageSettings(${JSON.stringify({...imageDefaults,keyAction:'clear',apiKey:''})})`);

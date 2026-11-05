@@ -1,9 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createApp } from '../server.mjs';
+import { createApp } from '../src/server.mjs';
 import { blockGenerationContext } from '../public/blocks.js';
 import { validTeachingContext } from '../public/teaching-context.js';
-import { cleanGenerationCitationContext, withoutPriorCitationMarkers } from '../course-citation-context.mjs';
+import { cleanGenerationCitationContext, withoutPriorCitationMarkers } from '../src/courses/course-citation-context.mjs';
 
 const documents = [{ id: 'S1', url: 'https://git-scm.com/docs/git-config', title: 'Git config', publisher: 'Git', retrievedAt: 1000,
   excerpts: [{ id: 'S1E1', text: 'The user.name and user.email variables determine the identity in commit objects, not remote authentication.' }] }];

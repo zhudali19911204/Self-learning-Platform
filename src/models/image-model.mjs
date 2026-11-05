@@ -1,4 +1,4 @@
-import { generationAwait, generationSignal, checkGenerationCancellation } from './generation-cancellation.mjs';
+import { generationAwait, generationSignal, checkGenerationCancellation } from '../runtime/generation-cancellation.mjs';
 export const imageDefaults = { enabled: false, protocol: 'compatible', model: '', baseUrl: '', size: '1024x1024', responseFormat: 'auto', timeoutMs: 180000, localOnly: true, downloadHosts: '' };
 const nativeModels = ['wan2.7-image-pro', 'wan2.7-image', 'qwen-image-3.0-pro', 'qwen-image-3.0'];
 // Official, exact image output domains (not all OSS buckets or *.aliyuncs.com).

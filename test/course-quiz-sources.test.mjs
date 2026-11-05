@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createApp } from '../server.mjs';
-import { quizMaterials, withoutPriorCitationMarkers } from '../course-quiz-sources.mjs';
+import { createApp } from '../src/server.mjs';
+import { quizMaterials, withoutPriorCitationMarkers } from '../src/courses/course-quiz-sources.mjs';
 import { blockGenerationContext } from '../public/blocks.js';
 import { validTeachingContext } from '../public/teaching-context.js';
 import { validGrounding } from '../public/course-sources.js';

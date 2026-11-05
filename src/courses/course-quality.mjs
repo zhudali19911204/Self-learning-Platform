@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { generationAwait, checkGenerationCancellation } from './generation-cancellation.mjs';
+import { generationAwait, checkGenerationCancellation } from '../runtime/generation-cancellation.mjs';
 import { createCourseClaimMatcher } from './course-claim-matching.mjs';
-import { qualityRubric, qualityRubricVersion, assertDistinctQualityModels, validQualityId, validQualityReport } from './public/course-quality.js';
+import { qualityRubric, qualityRubricVersion, assertDistinctQualityModels, validQualityId, validQualityReport } from '../../public/course-quality.js';
 
 export function qualitySnapshot(state, scope, targetId, lessonData = {}) {
   if (!['route', 'lesson'].includes(scope) || !validQualityId(targetId)) throw new Error('评价对象无效。');

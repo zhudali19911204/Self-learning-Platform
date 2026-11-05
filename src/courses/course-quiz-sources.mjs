@@ -1,7 +1,7 @@
 import { cleanGenerationCitationContext } from './course-citation-context.mjs';
 export { withoutPriorCitationMarkers } from './course-citation-context.mjs';
-import { blockGenerationContext, validBlockCourse } from './public/blocks.js';
-import { citationSource, validGrounding } from './public/course-sources.js';
+import { blockGenerationContext, validBlockCourse } from '../../public/blocks.js';
+import { citationSource, validGrounding } from '../../public/course-sources.js';
 const reject = message => { throw Object.assign(new Error(message), { status: 422 }); };
 
 // Only a server-owned saved course supplies evidence. Client-written URLs or

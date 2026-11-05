@@ -1,6 +1,6 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
-import { generationCancelled, checkGenerationSignal } from './public/task-cancellation.js';
-export { generationCancelled, isGenerationCancelled } from './public/task-cancellation.js';
+import { generationCancelled, checkGenerationSignal } from '../../public/task-cancellation.js';
+export { generationCancelled, isGenerationCancelled } from '../../public/task-cancellation.js';
 const operations = new AsyncLocalStorage();
 export const currentGenerationSignal = () => operations.getStore();
 export const withGenerationSignal = (signal, operation) => operations.run(signal, operation);

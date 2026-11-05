@@ -4,14 +4,14 @@ import { EventEmitter } from 'node:events';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { createCourseSources, readOfficialDocument, extractOfficialDocument, selectExcerpts, readSearchResponse } from '../course-sources.mjs';
+import { createCourseSources, readOfficialDocument, extractOfficialDocument, selectExcerpts, readSearchResponse } from '../src/courses/course-sources.mjs';
 import { officialSource, validGrounding, validLegacySourceBundle, sourceCitationIssue, groundedContent, courseReferences } from '../public/course-sources.js';
 import { revisedContent, restoredContent } from '../public/blocks.js';
-import { createApp } from '../server.mjs';
+import { createApp } from '../src/server.mjs';
 import { createSqliteStore } from '../desktop/sqlite-store.mjs';
 import { validState } from '../desktop/local-store.mjs';
-import { createCourseClaimMatcher } from '../course-claim-matching.mjs';
-import { withInlineCourseCitations } from '../course-inline-citations.mjs';
+import { createCourseClaimMatcher } from '../src/courses/course-claim-matching.mjs';
+import { withInlineCourseCitations } from '../src/courses/course-inline-citations.mjs';
 
 const url = 'https://git-scm.com/docs/git-config';
 const sourceText = 'The user.name and user.email variables determine what ends up in the author and committer fields of commit objects. These settings do not provide authentication to a remote repository.\n';

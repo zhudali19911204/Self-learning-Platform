@@ -1,6 +1,6 @@
 // Versioned generation prompts. Old course/import contracts remain in public/blocks.js.
-import { validOutline, validBlockContent, blockTypes } from './public/blocks.js';
-import { quizInitialCount, quizBatchLimit } from './public/quiz-progress.js';
+import { validOutline, validBlockContent, blockTypes } from '../../public/blocks.js';
+import { quizInitialCount, quizBatchLimit } from '../../public/quiz-progress.js';
 export const coursePromptVersion = 'course-generation-v2';
 export const blockCommonGuidance = `你是一位中文自学教师，只生成当前 block 指定的内容，不重写整节课。
 目标与难度：本课 objective 决定整体方向，block.objective 决定当前块需要实现的成果。只展开支撑当前成果的必要知识、理由和步骤。根据 level 与用户确认的 learningBrief 调整解释起点。必要的新术语首次出现时，用易懂的话定义并说明用途；不能用一串未解释的新术语定义另一个术语。优先讲清关键概念为什么成立、方法什么时候适用、结果如何判断。避免只有结论没有理由、只有步骤没有关键条件。

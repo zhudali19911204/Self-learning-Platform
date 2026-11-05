@@ -4,7 +4,7 @@
 
 ## 复现范围
 
-按用户要求使用已保存的付费模型 `qwen3.8-max`，沿用现有 `llm.mjs`、`server.mjs`、大纲提示词和校验逻辑。由于本地课程数据出站被自动审批拒绝，最终使用用户截图提供的“危险行动规则与胜负条件解析”标题及目标，补充现场编写的学习目标、零基础、25分钟参数测试；未读取课程数据库、真实 learningBrief、笔记或聊天。因此这是同主题、同错误的复现，不是历史请求逐字重放。
+按用户要求使用已保存的付费模型 `qwen3.8-max`，沿用现有 `src/models/llm.mjs`、`src/server.mjs`、大纲提示词和校验逻辑。由于本地课程数据出站被自动审批拒绝，最终使用用户截图提供的“危险行动规则与胜负条件解析”标题及目标，补充现场编写的学习目标、零基础、25分钟参数测试；未读取课程数据库、真实 learningBrief、笔记或聊天。因此这是同主题、同错误的复现，不是历史请求逐字重放。
 
 诊断入口：`test-support/outline-live.cjs`，需显式传入 `--confirm-paid --public-sample`。Key只用于向原配置服务认证，不输出。只有一次生成请求预算，禁止搜索和自动重试，不保存返回大纲。
 
@@ -33,7 +33,7 @@
 7. quiz：核心规则与决策逻辑检验。
 8. summary：生存法则提炼。
 
-`course-generation.mjs` 的 `validGeneratedOutline` 对每个 reading 要求下一项类型必须为 example。第5项后是 practice，触发 `block_5_reading_not_followed_by_example`。其他结构、必填字段、长度、重复项及测验前是否有讲解的检查均通过。
+`src/courses/course-generation.mjs` 的 `validGeneratedOutline` 对每个 reading 要求下一项类型必须为 example。第5项后是 practice，触发 `block_5_reading_not_followed_by_example`。其他结构、必填字段、长度、重复项及测验前是否有讲解的检查均通过。
 
 该次报错是教学模块顺序规则未满足，不是Key鉴权失败、网络失败、JSON解析失败或联网引用问题。提示词要求讲解后有案例，但真实模型没有完全遵守；布尔校验将具体原因合并成了通用格式错误。
 

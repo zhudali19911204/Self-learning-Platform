@@ -1,7 +1,7 @@
 import { Lexer } from 'marked';
 import { withInlineCourseCitations } from './course-inline-citations.mjs';
-import { MAX_COURSE_CITATIONS, sourceCitationIssue } from './public/course-sources.js';
-import { checkGenerationCancellation } from './generation-cancellation.mjs';
+import { MAX_COURSE_CITATIONS, sourceCitationIssue } from '../../public/course-sources.js';
+import { checkGenerationCancellation } from '../runtime/generation-cancellation.mjs';
 
 const fail = message => { throw Object.assign(new Error(message), { status: 422 }); };
 export const needsCitationCompletion = (type, value) => type !== 'quiz' && value?.sourceInsufficient !== true

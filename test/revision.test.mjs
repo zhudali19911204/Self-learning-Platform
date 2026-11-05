@@ -6,8 +6,8 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { createSqliteStore } from '../desktop/sqlite-store.mjs';
 import { validState } from '../desktop/local-store.mjs';
-import { qualitySnapshot, qualityFingerprint, applicableQualityRubric, makeQualityReport } from '../course-quality.mjs';
-import { createRevisionService } from '../course-revision.mjs';
+import { qualitySnapshot, qualityFingerprint, applicableQualityRubric, makeQualityReport } from '../src/courses/course-quality.mjs';
+import { createRevisionService } from '../src/courses/course-revision.mjs';
 import { revisionDiff, revisionSnapshot, validRevisionJob } from '../public/course-revision.js';
 import { demoPlan } from '../public/demo.js';
 

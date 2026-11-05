@@ -29,8 +29,8 @@ app.whenReady().then(async () => {
     try { budget = JSON.parse(await readFile(budgetPath, 'utf8')); } catch (error) { if (error.code !== 'ENOENT') throw error; }
     if (![budget.generations, budget.completions].every(Number.isInteger) || budget.generations < 0 || budget.completions < 0 || budget.generations >= 2 || budget.completions > 1) throw new Error('Diagnostic budget exhausted/invalid.');
     const { createLocalStore } = await imported('desktop/local-store.mjs');
-    const { resolveConfig, createLLM } = await imported('llm.mjs');
-    const { createApp } = await imported('server.mjs');
+    const { resolveConfig, createLLM } = await imported('src/models/llm.mjs');
+    const { createApp } = await imported('src/server.mjs');
     const { blockGenerationContext } = await imported('public/blocks.js');
     const { validGrounding } = await imported('public/course-sources.js');
     const store = createLocalStore(path.join(root, '.desktop-dev', 'data'), {

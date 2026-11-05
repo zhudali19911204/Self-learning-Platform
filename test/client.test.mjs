@@ -29,7 +29,7 @@ import { teachingContextNotice } from '../public/teaching-context.js';
 import { officialSource, validSourceSearch, courseReferences } from '../public/course-sources.js';
 import { validMaterials, localMaterialSource, MATERIAL_LIMITS } from '../public/materials.js';
 import { validMaterialCoverage } from '../public/material-coverage.js';
-import { directMaterialPlanning,savedMaterialCoverage } from '../course-material-planning.mjs';
+import { directMaterialPlanning,savedMaterialCoverage } from '../src/courses/course-material-planning.mjs';
 import { courseCategories, categoryFor, automaticCourseCategory, validCategoryChanges } from '../public/course-categories.js';
 import { revisionTypes, revisionStatuses, revisionCheckLabels, revisionContent, revisionText, revisionDiff } from '../public/course-revision.js';
 const DOMPurify = createDOMPurify(new JSDOM('').window);

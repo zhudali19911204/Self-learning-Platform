@@ -13,14 +13,14 @@ app.whenReady().then(async () => {
     if (!checkOnly && !process.argv.includes('--confirm-paid')) throw new Error('未明确确认真实计费测试。');
     if (!safeStorage.isEncryptionAvailable()) throw new Error('系统密钥解密不可用。');
     const { createLocalStore } = await import(pathToFileURL(path.join(root, 'desktop', 'local-store.mjs')));
-    const { createWebImageSearch } = await import(pathToFileURL(path.join(root, 'web-images.mjs')));
+    const { createWebImageSearch } = await import(pathToFileURL(path.join(root, 'src/media/web-images.mjs')));
     const store = createLocalStore(path.join(root, '.desktop-dev', 'data'), { decrypt: async value => safeStorage.decryptString(Buffer.from(value, 'base64')), encrypt: async () => { throw new Error('真实搜索测试不会写模型配置。'); } });
     await store.initialize();
     if (store.getSettings().error) throw new Error(store.getSettings().error);
     const config = store.getModelConfig();
     const network = session.fromPartition('learnflow-web-images-paid-diagnostic');
     if (checkOnly) {
-      const { resolveConfig } = await import(pathToFileURL(path.join(root, 'llm.mjs')));
+      const { resolveConfig } = await import(pathToFileURL(path.join(root, 'src/models/llm.mjs')));
       const resolved = resolveConfig(config, {});
       const response = await network.fetch(resolved.baseUrl + '/models', { method: 'GET', headers: { Authorization: `Bearer ${resolved.apiKey}` }, credentials: 'omit', redirect: 'error', signal: AbortSignal.timeout(10000) });
       console.log('WEB_IMAGE_CATALOG_CHECK', JSON.stringify({ status: response.status, posts: 0 }));

@@ -17,10 +17,10 @@ app.whenReady().then(async () => {
     if (!process.argv.includes('--confirm-paid')) throw new Error('Explicit --confirm-paid is required.');
     if (!process.argv.includes('--public-sample')) throw new Error('Only the public screenshot sample is supported.');
     const { createLocalStore } = await load('desktop/local-store.mjs');
-    const { resolveConfig, createLLM } = await load('llm.mjs');
-    const { createApp } = await load('server.mjs');
+    const { resolveConfig, createLLM } = await load('src/models/llm.mjs');
+    const { createApp } = await load('src/server.mjs');
     const { validOutline, validBlockSpec } = await load('public/blocks.js');
-    const { validGeneratedOutline } = await load('course-generation.mjs');
+    const { validGeneratedOutline } = await load('src/courses/course-generation.mjs');
     if (!safeStorage.isEncryptionAvailable()) throw new Error('System key decryption unavailable.');
     const store = createLocalStore(path.join(root, '.desktop-dev', 'data'), {
       decrypt: async value => safeStorage.decryptString(Buffer.from(value, 'base64')),

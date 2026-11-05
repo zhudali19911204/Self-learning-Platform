@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createLLM, resolveConfig } from '../llm.mjs';
+import { createLLM, resolveConfig } from '../src/models/llm.mjs';
 
 const ok = value => value?.ok === true;
 const output = (provider, content = '{"ok":true}', reason = 'stop') => provider === 'ollama'

@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { factCheckVersion, factContent, sameFactContent, validFactCheck } from './public/fact-check.js';
-import { validBlockContent } from './public/blocks.js';
-import { generationAwait, checkGenerationCancellation } from './generation-cancellation.mjs';
+import { factCheckVersion, factContent, sameFactContent, validFactCheck } from '../../public/fact-check.js';
+import { validBlockContent } from '../../public/blocks.js';
+import { generationAwait, checkGenerationCancellation } from '../runtime/generation-cancellation.mjs';
 
 const markers = /\[S\d+(?:E\d+)?\]/g;
 const questionText = q => [q.prompt, ...q.options, q.explanation].join('\n');

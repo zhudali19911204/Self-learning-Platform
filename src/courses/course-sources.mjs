@@ -2,10 +2,10 @@ import https from 'node:https';
 import tls from 'node:tls';
 import { lookup } from 'node:dns/promises';
 import { parse } from 'parse5';
-import { resolveConfig } from './llm.mjs';
-import { publicImageAddress } from './web-images.mjs';
-import { officialSource, excludedSourceDomains } from './public/course-sources.js';
-import { generationAwait, generationSignal, checkGenerationCancellation, currentGenerationSignal, generationCancelled } from './generation-cancellation.mjs';
+import { resolveConfig } from '../models/llm.mjs';
+import { publicImageAddress } from '../media/web-images.mjs';
+import { officialSource, excludedSourceDomains } from '../../public/course-sources.js';
+import { generationAwait, generationSignal, checkGenerationCancellation, currentGenerationSignal, generationCancelled } from '../runtime/generation-cancellation.mjs';
 
 export class CourseSourceError extends Error {
   constructor(message, { status = 502, code = 'COURSE_SEARCH_FAILED', stage = 'searching' } = {}) {

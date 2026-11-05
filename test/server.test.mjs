@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
 import { readFile } from 'node:fs/promises';
-import { createApp, validPlan, validLesson } from '../server.mjs';
+import { createApp, validPlan, validLesson } from '../src/server.mjs';
 import { demoPlan, demoLessons } from '../public/demo.js';
 import { validQuestionnaire, learningBriefFrom } from '../public/planning.js';
 import { questionnaire, clarification } from '../test-support/planning.mjs';

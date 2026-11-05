@@ -3,7 +3,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { DatabaseSync } from 'node:sqlite';
 import path from 'node:path';
 import { speechDefaults, validAudioId } from '../public/speech.js';
-import { normalizeSpeechSettings, audioMime, MAX_AUDIO_BYTES } from '../speech-model.mjs';
+import { normalizeSpeechSettings, audioMime, MAX_AUDIO_BYTES } from '../src/models/speech-model.mjs';
 const hash = bytes => createHash('sha256').update(bytes).digest('hex');
 const validLessonId = value => typeof value === 'string' && /^[a-zA-Z0-9_-]{1,160}$/.test(value);
 

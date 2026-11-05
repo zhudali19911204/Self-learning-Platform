@@ -1,5 +1,5 @@
-import { imageMime, MAX_IMAGE_BYTES } from './image-model.mjs';
-import { generationAwait, generationSignal, checkGenerationCancellation } from './generation-cancellation.mjs';
+import { imageMime, MAX_IMAGE_BYTES } from '../models/image-model.mjs';
+import { generationAwait, generationSignal, checkGenerationCancellation } from '../runtime/generation-cancellation.mjs';
 
 const API = 'https://commons.wikimedia.org/w/api.php';
 const mediaHosts = new Set(['upload.wikimedia.org', 'thumb.wikimedia.org']);

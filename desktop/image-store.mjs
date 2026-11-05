@@ -1,10 +1,10 @@
 import { mkdir, readFile, writeFile, rename, copyFile, stat, unlink } from 'node:fs/promises';
 import path from 'node:path';
 import { randomUUID, createHash } from 'node:crypto';
-import { imageDefaults, normalizeImageSettings, imageMime, MAX_IMAGE_BYTES } from '../image-model.mjs';
+import { imageDefaults, normalizeImageSettings, imageMime, MAX_IMAGE_BYTES } from '../src/models/image-model.mjs';
 import { validImageId, referencedImages } from '../public/illustrations.js';
 import { createModelProfiles } from './model-profiles.mjs';
-import { checkGenerationCancellation, isGenerationCancelled } from '../generation-cancellation.mjs';
+import { checkGenerationCancellation, isGenerationCancelled } from '../src/runtime/generation-cancellation.mjs';
 const digest = bytes => createHash('sha256').update(bytes).digest('hex');
 export function createImageStore(directory, secrets, validateBytes = () => {}) {
   let settings = { ...imageDefaults, apiKey: '' }, settingsError = '', queue = Promise.resolve();

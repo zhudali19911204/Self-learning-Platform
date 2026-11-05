@@ -1,9 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createApp } from '../server.mjs';
+import { createApp } from '../src/server.mjs';
 import { buildTeachingContext, validTeachingContext, cleanTeachingContext, teachingContextLimits, teachingContextNotice } from '../public/teaching-context.js';
 import { blockGenerationContext, validOutline, validBlockContent } from '../public/blocks.js';
-import { validGeneratedOutline, validGeneratedBlock, coursePromptVersion, blockTypeGuidance } from '../course-generation.mjs';
+import { validGeneratedOutline, validGeneratedBlock, coursePromptVersion, blockTypeGuidance } from '../src/courses/course-generation.mjs';
 
 const block = (id,type,text=null) => ({id,type,title:`${id} 的主题`,objective:`能完成 ${id} 的任务`,content:text===null?null:{text}});
 const course = () => ({intro:'课程目标',blocks:[block('r1','reading','基础定义\n操作前提\n关键方法在结尾。'),block('e1','example','对应案例\n必要输入\n预期结果。'),block('r2','reading','条件和边界。'),block('e2','example','条件变化的案例。'),block('p1','practice','独立操作与核对。'),block('q1','quiz'),block('s1','summary')]});

@@ -1,11 +1,11 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { factCheckVersion, factContent, validFactCheck, sameFactContent } from './public/fact-check.js';
-import { validBlockContent } from './public/blocks.js';
-import { assertDistinctQualityModels } from './public/course-quality.js';
-import { validGrounding, groundedContent, citationSource } from './public/course-sources.js';
+import { factCheckVersion, factContent, validFactCheck, sameFactContent } from '../../public/fact-check.js';
+import { validBlockContent } from '../../public/blocks.js';
+import { assertDistinctQualityModels } from '../../public/course-quality.js';
+import { validGrounding, groundedContent, citationSource } from '../../public/course-sources.js';
 import { withInlineCourseCitations } from './course-inline-citations.mjs';
 import { createCourseClaimMatcher } from './course-claim-matching.mjs';
-import { generationAwait, checkGenerationCancellation } from './generation-cancellation.mjs';
+import { generationAwait, checkGenerationCancellation } from '../runtime/generation-cancellation.mjs';
 
 const digest = value => createHash('sha256').update(JSON.stringify(value)).digest('hex');
 const str = (s, max) => typeof s === 'string' && s.trim().length > 0 && s.length <= max;

@@ -1,5 +1,5 @@
 // Loaded only by the explicit isolated --smoke-test --sources-only mode.
-import { createCourseSources } from '../course-sources.mjs';
+import { createCourseSources } from '../src/courses/course-sources.mjs';
 export function sourcesFixture() {
   const counts = { searches: 0, reads: 0, generations: 0 };
   let tableCitations=false, missingCitations=false, fencedCitations=false;

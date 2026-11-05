@@ -1,8 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createApp } from '../server.mjs';
+import { createApp } from '../src/server.mjs';
 import { blockGenerationContext } from '../public/blocks.js';
-import { validGeneratedBlock } from '../course-generation.mjs';
+import { validGeneratedBlock } from '../src/courses/course-generation.mjs';
 const question = n => ({ prompt: `如何判断情境${n}？`, options: ['核对任务与条件', '跳过条件', '只看题目长度', '忽略实际材料'], answer: 0, explanation: '按已讲方法核对任务与条件。' });
 const course = () => ({ intro: '仅依据已讲内容出题。', blocks: [
   { id: 'r1', type: 'reading', title: '判断方法', objective: '核对任务与条件', content: { text: '先核对任务和条件，再判断方法是否适用。' } },

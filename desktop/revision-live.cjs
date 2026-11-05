@@ -5,8 +5,8 @@ const { randomUUID } = require('node:crypto');
 exports.run = async ({learning,getGenerator,getReviewer}) => {
   const { demoPlan } = await import('../public/demo.js');
   const { assertDistinctQualityModels } = await import('../public/course-quality.js');
-  const { qualitySnapshot,qualityFingerprint,applicableQualityRubric,makeQualityReport } = await import('../course-quality.mjs');
-  const { createRevisionService } = await import('../course-revision.mjs');
+  const { qualitySnapshot,qualityFingerprint,applicableQualityRubric,makeQualityReport } = await import('../src/courses/course-quality.mjs');
+  const { createRevisionService } = await import('../src/courses/course-revision.mjs');
   const generator=getGenerator().status(),reviewer=getReviewer().status();
   assertDistinctQualityModels(generator,reviewer);
   if(generator.mode!=='ai'||reviewer.mode!=='ai') throw new Error('生成或评审模型尚未配置成功；未发起真实调用。');

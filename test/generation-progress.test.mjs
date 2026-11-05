@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { JSDOM } from 'jsdom';
 import { createGenerationProgress } from '../public/generation-progress.js';
-import { createApp } from '../server.mjs';
+import { createApp } from '../src/server.mjs';
 
 function fixture(t) {
   const dom = new JSDOM('<div id="app"></div><aside id="generation-progress" popover="manual" hidden></aside><dialog id="tools"></dialog>');

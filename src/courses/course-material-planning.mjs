@@ -1,6 +1,6 @@
 import { checkedMaterials } from './course-materials.mjs';
-import { checkGenerationCancellation, generationAwait } from './generation-cancellation.mjs';
-import { materialPartRequiresTeaching } from './public/material-coverage.js';
+import { checkGenerationCancellation, generationAwait } from '../runtime/generation-cancellation.mjs';
+import { materialPartRequiresTeaching } from '../../public/material-coverage.js';
 import { createHash } from 'node:crypto';
 const fail=message=>{throw Object.assign(new Error(message),{status:422});};
 export const MATERIAL_PLANNING_BATCH_CHARACTERS=16000;

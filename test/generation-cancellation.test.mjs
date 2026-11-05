@@ -1,12 +1,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { JSDOM } from 'jsdom';
-import { createGenerationTasks, generationAwait, withGenerationSignal, currentGenerationSignal, checkGenerationCancellation, isGenerationCancelled } from '../generation-cancellation.mjs';
+import { createGenerationTasks, generationAwait, withGenerationSignal, currentGenerationSignal, checkGenerationCancellation, isGenerationCancelled } from '../src/runtime/generation-cancellation.mjs';
 import { createGenerationProgress } from '../public/generation-progress.js';
-import { createLLM } from '../llm.mjs';
-import { createApp } from '../server.mjs';
+import { createLLM } from '../src/models/llm.mjs';
+import { createApp } from '../src/server.mjs';
 import { EventEmitter } from 'node:events';
-import { readOfficialDocument, createCourseSources } from '../course-sources.mjs';
+import { readOfficialDocument, createCourseSources } from '../src/courses/course-sources.mjs';
 const deferred = () => { let resolve, reject; const promise = new Promise((yes, no) => { resolve = yes; reject = no; }); return { promise, resolve, reject }; };
 const turn = () => new Promise(resolve => setImmediate(resolve));
 const cancelled = error => isGenerationCancelled(error) && error.name === 'AbortError';

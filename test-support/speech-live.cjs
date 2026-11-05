@@ -25,7 +25,7 @@ app.whenReady().then(async () => {
     const { createSpeechStore } = await import(pathToFileURL(path.join(root, 'desktop', 'speech-store.mjs')));
     const { createSpeechService } = await import(pathToFileURL(path.join(root, 'desktop', 'speech-service.mjs')));
     const { speechCacheKey } = await import(pathToFileURL(path.join(root, 'desktop', 'speech-service.mjs')));
-    const { normalizeAudio } = await import(pathToFileURL(path.join(root, 'speech-model.mjs')));
+    const { normalizeAudio } = await import(pathToFileURL(path.join(root, 'src/models/speech-model.mjs')));
     const secrets = { encrypt: async key => safeStorage.encryptString(key).toString('base64'), decrypt: async key => safeStorage.decryptString(Buffer.from(key, 'base64')) };
     const diagnosticDirectory = path.join(root, '.desktop-test', 'tts-live', 'data');
     store = createSpeechStore(diagnosticDirectory, secrets); await store.initialize();

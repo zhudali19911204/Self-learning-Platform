@@ -1,8 +1,8 @@
 import { mkdir, readFile, writeFile, rename, copyFile } from 'node:fs/promises';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
-import { resolveConfig } from '../llm.mjs';
-import { validPlan, validLesson } from '../server.mjs';
+import { resolveConfig } from '../src/models/llm.mjs';
+import { validPlan, validLesson } from '../src/server.mjs';
 import { validBlockCourse } from '../public/blocks.js';
 import { validLearningBrief } from '../public/planning.js';
 import { createModelProfiles } from './model-profiles.mjs';

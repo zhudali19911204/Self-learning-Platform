@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { createCommonsImages, commonsMediaUrl } from '../commons-images.mjs';
+import { createCommonsImages, commonsMediaUrl } from '../src/media/commons-images.mjs';
 import { validIllustration } from '../public/illustrations.js';
 import { validBlockContent } from '../public/blocks.js';
 

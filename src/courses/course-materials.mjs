@@ -1,6 +1,6 @@
-import { validMaterials, materialGuidance, MATERIAL_CONTEXT_LIMITS, localMaterialSource } from './public/materials.js';
-import { blockGenerationContext, validBlockCourse } from './public/blocks.js';
-import { validGrounding } from './public/course-sources.js';
+import { validMaterials, materialGuidance, MATERIAL_CONTEXT_LIMITS, localMaterialSource } from '../../public/materials.js';
+import { blockGenerationContext, validBlockCourse } from '../../public/blocks.js';
+import { validGrounding } from '../../public/course-sources.js';
 export { materialGuidance };
 const fail = message => { throw Object.assign(new Error(message),{status:422}); };
 export function checkedMaterials(value) {

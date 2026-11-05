@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createApp } from '../server.mjs';
-import { withoutPriorCitationMarkers, cleanGenerationCitationContext } from '../course-citation-context.mjs';
+import { createApp } from '../src/server.mjs';
+import { withoutPriorCitationMarkers, cleanGenerationCitationContext } from '../src/courses/course-citation-context.mjs';
 import { blockGenerationContext } from '../public/blocks.js';
 import { validTeachingContext } from '../public/teaching-context.js';
 

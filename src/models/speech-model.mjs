@@ -1,5 +1,5 @@
-import { speechDefaults, validSpeechVoice } from './public/speech.js';
-import { generationAwait, generationSignal, checkGenerationCancellation } from './generation-cancellation.mjs';
+import { speechDefaults, validSpeechVoice } from '../../public/speech.js';
+import { generationAwait, generationSignal, checkGenerationCancellation } from '../runtime/generation-cancellation.mjs';
 import { BAILIAN_IMAGE_DOWNLOAD_HOSTS } from './image-model.mjs';
 const loopback = host => ['localhost', '127.0.0.1', '[::1]'].includes(host);
 const official = host => ['dashscope.aliyuncs.com', 'dashscope-intl.aliyuncs.com'].includes(host) || /^[a-z0-9-]+\.(?:cn-beijing|ap-southeast-1)\.maas\.aliyuncs\.com$/.test(host);

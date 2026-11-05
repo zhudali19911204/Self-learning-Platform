@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createApp } from '../server.mjs';
-import { normalizeOutline, inspectOutline, mergeOutlineExamples, validGeneratedOutline } from '../course-generation.mjs';
+import { createApp } from '../src/server.mjs';
+import { normalizeOutline, inspectOutline, mergeOutlineExamples, validGeneratedOutline } from '../src/courses/course-generation.mjs';
 
 const spec = (type, title) => ({ type, title, objective: `能解释或完成：${title}` });
 // Same structural failure as the paid diagnostic: the fifth reading precedes practice.

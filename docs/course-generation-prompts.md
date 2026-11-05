@@ -19,20 +19,20 @@ user = JSON.stringify(本次课程与学习者数据)
 
 | 想优化的结果 | 主要代码位置 |
 | --- | --- |
-| 所有请求的通用行为 | llm.mjs:63 |
-| 需求澄清 | server.mjs:109、121 |
-| 整条学习路线 | server.mjs:140 |
-| 一节课的大纲 | server.mjs:161 |
-| 各内容块的共同规则 | server.mjs:172 |
-| 五类内容块的区别 | server.mjs:56–62 |
+| 所有请求的通用行为 | src/models/llm.mjs:63 |
+| 需求澄清 | src/server.mjs:109、121 |
+| 整条学习路线 | src/server.mjs:140 |
+| 一节课的大纲 | src/server.mjs:161 |
+| 各内容块的共同规则 | src/server.mjs:172 |
+| 五类内容块的区别 | src/server.mjs:56–62 |
 | 前文与大纲的取样范围 | public/blocks.js:26 |
-| 质量评价与修订 | course-quality.mjs:69、course-revision.mjs:6–7 |
+| 质量评价与修订 | src/courses/course-quality.mjs:69、src/courses/course-revision.mjs:6–7 |
 
 建议先读第 1、2、5、6、7 节，再看第 12、13 节的优化建议与草案。
 
 ## 1. 公共系统规则
 
-来源：llm.mjs:63；所有文字生成调用都会附加
+来源：src/models/llm.mjs:63；所有文字生成调用都会附加
 
 ```text
 你是一位严谨的中文学习教练。
@@ -44,7 +44,7 @@ user = JSON.stringify(本次课程与学习者数据)
 
 ## 2. 学习需求优先级规则
 
-来源：server.mjs:34、97
+来源：src/server.mjs:34、97
 
 ```text
 learningBrief 是用户确认的学习需求：优先遵循 answers 中的选择、自由补充 detail 与 notes；summary 只是 AI 初步理解，不能覆盖用户回答。
@@ -55,7 +55,7 @@ learningBrief 是用户确认的学习需求：优先遵循 answers 中的选择
 
 ## 3. 需求缺口分析
 
-来源：server.mjs:109
+来源：src/server.mjs:109
 
 ```text
 你是学习需求访谈顾问。
@@ -72,7 +72,7 @@ known 最多 8 项，每项最多 160 字；gaps 需符合 scope 对应数量，
 
 ## 4. 澄清问卷
 
-来源：server.mjs:121
+来源：src/server.mjs:121
 
 ```text
 你是一位自学课程顾问。
@@ -89,7 +89,7 @@ summary 最多 1000 字，每题 question 最多 200 字、why 最多 300 字，
 
 ## 5. 学习路线规划
 
-来源：server.mjs:140
+来源：src/server.mjs:140
 
 ```text
 你是以学习成果为导向的课程设计师。
@@ -111,7 +111,7 @@ days 表示整个学习周期，不等于课程数量；如果目标涉及更多
 
 ## 6. 单课大纲
 
-来源：server.mjs:161
+来源：src/server.mjs:161
 
 ```text
 请为这一节自学课程设计清晰、循序渐进的大纲。
@@ -130,7 +130,7 @@ intro 用 2–3 句说明本课价值、前置知识和达成目标。
 
 ## 7. 内容块共同教学规则
 
-来源：server.mjs:172；先拼接此段，再拼接类型规则
+来源：src/server.mjs:172；先拼接此段，再拼接类型规则
 
 ```text
 你只负责生成当前内容块，不要重写整节课。
@@ -142,7 +142,7 @@ related 是已保存的配套案例，应保持概念、术语与案例一致，
 
 ## 7.1 知识讲解（reading）
 
-来源：server.mjs:56–62
+来源：src/server.mjs:56–62
 
 ```text
 讲解块：先用一句易懂的话回答“这是什么、为什么要学”，再从学习者已有基础出发分 2–5 个小节逐步解释。
@@ -155,7 +155,7 @@ related 是已保存的配套案例，应保持概念、术语与案例一致，
 
 ## 7.2 配套案例（example）
 
-来源：server.mjs:56–62
+来源：src/server.mjs:56–62
 
 ```text
 示例块：给一个与课程目标直接相关、可复现的完整例子。
@@ -166,7 +166,7 @@ related 是已保存的配套案例，应保持概念、术语与案例一致，
 
 ## 7.3 动手实践（practice）
 
-来源：server.mjs:56–62
+来源：src/server.mjs:56–62
 
 ```text
 实践块：给学习者一个可以独立完成的小任务，写清起点、操作步骤、完成标准和两个由浅入深的提示。
@@ -176,7 +176,7 @@ related 是已保存的配套案例，应保持概念、术语与案例一致，
 
 ## 7.4 随堂测验（quiz）
 
-来源：server.mjs:56–62
+来源：src/server.mjs:56–62
 
 ```text
 测验块：生成 2–4 道四选一单选题，覆盖概念理解与情境应用，不只考术语记忆。
@@ -186,7 +186,7 @@ answer 必须是正确选项的 0–3 整数下标；explanation 要说明正确
 
 ## 7.5 课程总结（summary）
 
-来源：server.mjs:56–62
+来源：src/server.mjs:56–62
 
 ```text
 总结块：用 3–5 条简短结论提炼本课已讲的知识，包含一个易错点和一个能迁移到新情境的判断方法。
@@ -195,7 +195,7 @@ answer 必须是正确选项的 0–3 整数下标；explanation 要说明正确
 
 ## 7.6 图示与外部链接规则
 
-来源：server.mjs:53
+来源：src/server.mjs:53
 
 ```text
 正文不支持图示代码绘制。
@@ -206,7 +206,7 @@ answer 必须是正确选项的 0–3 整数下标；explanation 要说明正确
 
 ## 7.7 测验输出格式
 
-来源：server.mjs:172；quiz 分支
+来源：src/server.mjs:172；quiz 分支
 
 ```text
 返回 JSON：{"questions":[{"prompt":"题目","options":["选项A","选项B","选项C","选项D"],"answer":0,"explanation":"正确原因与易错点"}]}。
@@ -214,7 +214,7 @@ answer 必须是正确选项的 0–3 整数下标；explanation 要说明正确
 
 ## 7.8 其他内容块输出格式
 
-来源：server.mjs:172；其他四类内容块
+来源：src/server.mjs:172；其他四类内容块
 
 ```text
 text 字段内使用 Markdown 文档格式：小节用 ##，细分内容用 ###，重点使用少量 **加粗**，并列信息和步骤使用列表，提示使用 > 引用块；表格按需使用。
@@ -227,7 +227,7 @@ text 字段内使用 Markdown 文档格式：小节用 ##，细分内容用 ###�
 
 ## 8. 换个讲法、例子或任务时追加的规则
 
-来源：server.mjs:172；首次生成不拼接
+来源：src/server.mjs:172；首次生成不拼接
 
 ```text
 这是重新生成请求：currentExcerpt 是原文，revisionRequest 是学习者针对讲解方式的反馈。
@@ -240,7 +240,7 @@ text 字段内使用 Markdown 文档格式：小节用 ##，细分内容用 ###�
 
 ## 8.1 实践任务重生成的额外规则
 
-来源：server.mjs:174
+来源：src/server.mjs:174
 
 ```text
 这是实践任务调整，不是单纯重新讲解：保持 block.objective，按用户要求调整任务场景、材料、操作步骤或难度，提供明确的完成标准和自查提示，不直接给出完整答案。
@@ -249,7 +249,7 @@ text 字段内使用 Markdown 文档格式：小节用 ##，细分内容用 ###�
 
 ## 8.2 启用图片模型时的额外规则
 
-来源：server.mjs:54、175；讲解、案例、实践可能附加
+来源：src/server.mjs:54、175；讲解、案例、实践可能附加
 
 ```text
 你是一位教学配图编辑。
@@ -265,7 +265,7 @@ prompt 描述画面主体、视角、对比、布局和教育意图，最多 400
 
 ## 9. 旧版整课生成接口
 
-来源：server.mjs:179；当前新课程界面走大纲与内容块分支
+来源：src/server.mjs:179；当前新课程界面走大纲与内容块分支
 
 ```text
 生成充分且可自学的课程，包含 2–8 段讲解、一个完整示例、动手任务、2–5 道四选一单选题和总结。
@@ -276,7 +276,7 @@ prompt 描述画面主体、视角、对比、布局和教育意图，最多 400
 
 ## 9.1 旧版 lessonShape
 
-来源：server.mjs:52
+来源：src/server.mjs:52
 
 ```text
 {"intro":"引言","sections":[{"heading":"小标题","body":"详细讲解"}],"example":"完整示例（代码或具体情境）","challenge":"可独立完成的实践任务","questions":[{"prompt":"单选题","options":["选项A","选项B","选项C","选项D"],"answer":0,"explanation":"答案解析"}],"takeaways":["要点"]}
@@ -303,13 +303,13 @@ prompt 描述画面主体、视角、对比、布局和教育意图，最多 400
 - 测验提示要求 2–4 题，但校验接受 1–5 题；校验确认字段完整与下标范围，不证明唯一正确答案。
 - 非测验正文 text 最多 12000 字符；现行正文生成提示没有显式告知模型这个上限。
 
-llm.mjs 的调用参数：temperature 固定 0.3；maxTokens 默认 8192，可配置，允许范围 128–32768；连接测试单独用 128。Ollama 请求 think=false；千问请求 enable_thinking=false；DeepSeek 请求 thinking.type=disabled。JSON 模式按配置启用。输出因长度被截断时会报错，没有自动续写。
+src/models/llm.mjs 的调用参数：temperature 固定 0.3；maxTokens 默认 8192，可配置，允许范围 128–32768；连接测试单独用 128。Ollama 请求 think=false；千问请求 enable_thinking=false；DeepSeek 请求 thinking.type=disabled。JSON 模式按配置启用。输出因长度被截断时会报错，没有自动续写。
 
 这些输入与参数同样影响生成质量，提示词无法补回没发给模型的材料。
 
 ## 11. 独立质量评审
 
-来源：course-quality.mjs:69；单独评价阶段
+来源：src/courses/course-quality.mjs:69；单独评价阶段
 
 ```text
 你是独立的中文课程评审员。
@@ -331,7 +331,7 @@ kind 只能是 fact/missing/clarity/practice/quiz/coherence/workload。
 
 ## 11.1 按问题局部修订
 
-来源：course-revision.mjs:6；单独修订阶段
+来源：src/courses/course-revision.mjs:6；单独修订阶段
 
 ```text
 你负责局部修订中文课程。
@@ -347,7 +347,7 @@ quiz 模块 content 改为 {"questions":[{"prompt":"题干","options":["A","B","
 
 ## 11.2 独立复核追加规则
 
-来源：course-revision.mjs:7；拼接在 qualityReviewInstruction 之后
+来源：src/courses/course-revision.mjs:7；拼接在 qualityReviewInstruction 之后
 
 ```text
 另返回 checks 数组，逐一核对 selectedIssues 中的 issueIndex：{"issueIndex":0,"status":"not_found","reason":"具体依据"}。

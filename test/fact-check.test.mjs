@@ -3,12 +3,12 @@ import assert from 'node:assert/strict';
 import { mkdtemp, rm, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { createFactCheckService, validFactJudgment, normalizeFactJudgment, normalizeFactQuotes, normalizeFactEvidence, factJudgmentProblems, factReviewInstructionFor } from '../course-fact-check.mjs';
+import { createFactCheckService, validFactJudgment, normalizeFactJudgment, normalizeFactQuotes, normalizeFactEvidence, factJudgmentProblems, factReviewInstructionFor } from '../src/courses/course-fact-check.mjs';
 import { factContent, sameFactContent, validFactCheck } from '../public/fact-check.js';
 import { createSqliteStore } from '../desktop/sqlite-store.mjs';
 import { createFactCheckSettings } from '../desktop/fact-check-settings.mjs';
 import { validState } from '../desktop/local-store.mjs';
-import { withGenerationSignal, isGenerationCancelled } from '../generation-cancellation.mjs';
+import { withGenerationSignal, isGenerationCancelled } from '../src/runtime/generation-cancellation.mjs';
 
 const quote = '标准大气压下，水的沸点为100°C。';
 const original = () => ({ text: '水的沸点为90°C。[S1E1]', grounding: { version: 1, citations: [{ excerptId: 'S1E1', url: 'https://docs.example.org/water', title: '沸点说明', publisher: 'docs.example.org', retrievedAt: 1000, quote, claim: '水的沸点为90°C。' }] } });

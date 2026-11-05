@@ -19,8 +19,8 @@ app.whenReady().then(async () => {
     const lessonId = option('lesson'), blockId = option('block');
     if (![lessonId, blockId].every(v => typeof v === 'string' && /^[a-zA-Z0-9_-]{1,160}$/.test(v))) throw new Error('Explicit lesson/block IDs required.');
     const { createLocalStore } = await load('desktop/local-store.mjs');
-    const { createLLM, resolveConfig } = await load('llm.mjs');
-    const { createFactCheckService, validFactJudgment, normalizeFactJudgment, normalizeFactEvidence, factJudgmentProblems } = await load('course-fact-check.mjs');
+    const { createLLM, resolveConfig } = await load('src/models/llm.mjs');
+    const { createFactCheckService, validFactJudgment, normalizeFactJudgment, normalizeFactEvidence, factJudgmentProblems } = await load('src/courses/course-fact-check.mjs');
     const { sameFactContent } = await load('public/fact-check.js');
     const store = createLocalStore(path.join(root, '.desktop-dev', 'data'), {
       decrypt: async value => safeStorage.decryptString(Buffer.from(value, 'base64')),

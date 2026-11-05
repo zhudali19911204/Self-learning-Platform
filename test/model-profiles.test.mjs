@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { createLocalStore, defaults } from '../desktop/local-store.mjs';
 import { createImageStore } from '../desktop/image-store.mjs';
-import { imageDefaults } from '../image-model.mjs';
+import { imageDefaults } from '../src/models/image-model.mjs';
 
 const secrets = { encrypt: async key => Buffer.from(key).toString('base64'), decrypt: async encrypted => Buffer.from(encrypted, 'base64').toString() };
 const qwen = { ...defaults, provider: 'qwen', model: 'qwen-test', baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1', localOnly: false, jsonMode: 'off', timeoutMs: 90000, maxTokens: 4096 };
