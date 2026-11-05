@@ -43,6 +43,30 @@ test('plain text and line breaks stay readable without rewriting stored content'
   assert.ok(source.includes('\n剩余现金'), 'the renderer accepts a source string and never rewrites persisted records');
 });
 
+test('only a leading heading matching the supplied module title is hidden, with annotation text retained',()=>{
+  const title='自制材料转移价格总公式与年度固定原则';
+  for(const heading of [`## ${title}`,`# **${title}**`,`${title}\n---`,`### 自制材料转移价格总公式 与 年度固定原则`]){
+    const source=heading+'\n\n正文内容。\n\n### 计算步骤\n\n保留小标题。',element=window.document.createElement('div');
+    element.innerHTML=render(source,{moduleTitle:title});
+    assert.equal(element.querySelector('.course-duplicate-heading').hidden,true);
+    assert.equal(element.querySelectorAll('h3:not([hidden]),h4:not([hidden])').length,1);
+    assert.equal(element.textContent,documentFor(source).textContent,'hidden heading text retains historical annotation coordinates');
+    assert.match(element.textContent,/保留小标题/);
+  }
+  for(const source of [`## ${title}的适用边界\n\n正文。`,`前言。\n\n## ${title}\n\n正文。`,`> ## ${title}\n> 引用段落`,`\`\`\`text\n${title}\n\`\`\``,`**${title}**是本课要理解的内容。`]){
+    const element=window.document.createElement('div');element.innerHTML=render(source,{moduleTitle:title});assert.equal(element.querySelector('[hidden]'),null,source);
+  }
+  assert.equal(documentFor(`## ${title}`).querySelector('[hidden]'),null,'other Markdown contexts do not opt into title suppression');
+});
+
+test('deduplicating the module title preserves real citation links, literal code and the original visible-text offsets',()=>{
+  const title='教学示例：按总公式计算价格',source=`## ${title}\n\n按同一口径汇总成本。[S1E1]\n\n### 核对结果\n\n\`\`\`text\n${title}\n\`\`\``;
+  const grounding={version:1,citations:[{excerptId:'S1E1',claim:'按同一口径汇总成本。',quote:'Use a consistent cost basis.',url:'https://docs.example.org/costs',title:'Cost basis',publisher:'Example',retrievedAt:1000}]};
+  const element=window.document.createElement('div');element.innerHTML=render(source,{moduleTitle:title,grounding,desktop:true});
+  assert.equal(element.querySelector('.course-duplicate-heading').hidden,true);assert.equal(element.querySelector('.course-inline-citation').href,'https://docs.example.org/costs');
+  assert.equal(element.querySelector('pre code').textContent,title);assert.equal(element.textContent,documentFor(source).textContent);
+});
+
 test('model HTML, JavaScript URLs, tracking images and delegated actions cannot become active DOM', () => {
   const attacks = [
     '<script>window.stolen = true</script>',

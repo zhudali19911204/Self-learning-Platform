@@ -73,6 +73,7 @@ function replaceAll(db, state) {
       planStatement.run(plan.id, position, plan.title, plan.description, plan.goal, plan.level, plan.daily, plan.days, plan.source);
       if (plan.learningBrief) db.prepare('INSERT INTO meta VALUES (?, ?)').run(`plan_brief:${plan.id}`, JSON.stringify(plan.learningBrief));
       if (plan.materials?.length) db.prepare('INSERT INTO meta VALUES (?, ?)').run(`plan_materials:${plan.id}`, JSON.stringify(plan.materials));
+      if (plan.materialCoverage) db.prepare('INSERT INTO meta VALUES (?, ?)').run(`plan_material_coverage:${plan.id}`, JSON.stringify(plan.materialCoverage));
       if (plan.category) db.prepare('INSERT INTO meta VALUES (?, ?)').run(`plan_category:${plan.id}`, JSON.stringify(plan.category));
       for (const [lessonPosition, lesson] of plan.lessons.entries()) {
         const content = state.lessons[lesson.id] || (plan.source === 'demo' ? demoLessons[lesson.id] : null);
@@ -115,6 +116,9 @@ function readOverview(db) {
   for (const row of db.prepare("SELECT key, value FROM meta WHERE key GLOB 'plan_materials:*'").all()) {
     const plan = byId.get(row.key.slice('plan_materials:'.length));
     if(plan) plan.materials=fromJSON(row.value);
+  }
+  for (const row of db.prepare("SELECT key, value FROM meta WHERE key GLOB 'plan_material_coverage:*'").all()) {
+    const plan=byId.get(row.key.slice('plan_material_coverage:'.length));if(plan)plan.materialCoverage=fromJSON(row.value);
   }
   for (const row of db.prepare("SELECT key, value FROM meta WHERE key GLOB 'plan_category:*'").all()) {
     const plan=byId.get(row.key.slice('plan_category:'.length));
@@ -392,6 +396,7 @@ export async function createSqliteStore(directory) {
         db.prepare('INSERT INTO plans VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)').run(plan.id, db.prepare('SELECT COUNT(*) AS count FROM plans').get().count, plan.title, plan.description, plan.goal, plan.level, plan.daily, plan.days, plan.source);
         if (plan.learningBrief) db.prepare('INSERT INTO meta VALUES (?, ?)').run(`plan_brief:${plan.id}`, JSON.stringify(plan.learningBrief));
         if (plan.materials?.length) db.prepare('INSERT INTO meta VALUES (?, ?)').run(`plan_materials:${plan.id}`, JSON.stringify(plan.materials));
+        if (plan.materialCoverage) db.prepare('INSERT INTO meta VALUES (?, ?)').run(`plan_material_coverage:${plan.id}`, JSON.stringify(plan.materialCoverage));
         if (plan.category) db.prepare('INSERT INTO meta VALUES (?, ?)').run(`plan_category:${plan.id}`, JSON.stringify(plan.category));
         const statement = db.prepare('INSERT INTO lessons VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL)');
         for (const [position, lesson] of plan.lessons.entries()) statement.run(lesson.id, plan.id, position, lesson.title, lesson.objective, lesson.phase, lesson.minutes, JSON.stringify(lesson.tags));
@@ -406,6 +411,7 @@ export async function createSqliteStore(directory) {
         db.prepare('INSERT INTO plans VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)').run(plan.id, db.prepare('SELECT COUNT(*) AS count FROM plans').get().count, plan.title, plan.description, plan.goal, plan.level, plan.daily, plan.days, plan.source);
         if(plan.category) db.prepare('INSERT INTO meta VALUES (?, ?)').run(`plan_category:${plan.id}`,JSON.stringify(plan.category));
         if(plan.materials?.length) db.prepare('INSERT INTO meta VALUES (?, ?)').run(`plan_materials:${plan.id}`,JSON.stringify(plan.materials));
+        if(plan.materialCoverage) db.prepare('INSERT INTO meta VALUES (?, ?)').run(`plan_material_coverage:${plan.id}`,JSON.stringify(plan.materialCoverage));
         const lessonStatement = db.prepare('INSERT INTO lessons VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)');
         const blockStatement = db.prepare('INSERT INTO lesson_blocks VALUES (?, ?, ?, ?, ?, ?, ?)');
         for (const [position, lesson] of plan.lessons.entries()) {
@@ -446,6 +452,7 @@ export async function createSqliteStore(directory) {
         db.prepare('DELETE FROM plans WHERE id = ?').run(planId);
         db.prepare('DELETE FROM meta WHERE key = ?').run(`plan_brief:${planId}`);
         db.prepare('DELETE FROM meta WHERE key = ?').run(`plan_materials:${planId}`);
+        db.prepare('DELETE FROM meta WHERE key = ?').run(`plan_material_coverage:${planId}`);
         db.prepare('DELETE FROM meta WHERE key = ?').run(`plan_category:${planId}`);
         db.prepare('DELETE FROM meta WHERE key = ?').run(`studyPositions:${planId}`);
         for (const row of db.prepare("SELECT key, value FROM meta WHERE key GLOB 'quality:*'").all()) if (fromJSON(row.value).planId === planId) db.prepare('DELETE FROM meta WHERE key = ?').run(row.key);

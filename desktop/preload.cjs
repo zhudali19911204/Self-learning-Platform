@@ -75,7 +75,7 @@ contextBridge.exposeInMainWorld('learnflowDesktop', Object.freeze({
   onGenerationProgress: listener => {
     if (typeof listener !== 'function') return () => {};
     const receive = (_event, value) => {
-      if (typeof value?.requestId === 'string' && ['preparing', 'searching', 'generating', 'validating', 'fact_checking', 'fact_correcting', 'fact_rechecking'].includes(value.stage)) listener({ requestId: value.requestId, stage: value.stage });
+      if (typeof value?.requestId === 'string' && ['preparing', 'searching', 'reading_materials', 'materials_ready', 'generating', 'validating', 'citing', 'fact_checking', 'fact_correcting', 'fact_rechecking'].includes(value.stage)) listener({ requestId: value.requestId, stage: value.stage });
     };
     ipcRenderer.on('learnflow:generation-progress', receive);
     return () => ipcRenderer.removeListener('learnflow:generation-progress', receive);

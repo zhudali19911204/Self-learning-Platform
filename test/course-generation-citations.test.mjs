@@ -22,6 +22,7 @@ async function serve(t) {
   const sent = []; let searches = 0, forced, materials = documents;
   const server = createApp({ getLLM: () => ({ generate: async (instruction, input, validate) => {
     sent.push({ instruction, input: structuredClone(input) });
+    if (input.task === 'complete-course-citations') { const result = { sourceInsufficient: true }; validate(result); return result; }
     // Reproduce a model copying stale context IDs when both generations' IDs
     // are present. No repair or retry is simulated by this mock.
     const stale = input.currentExcerpt?.split('\n\n')[0].match(/\[(S\d+E\d+)\]/)?.[1]
@@ -76,18 +77,18 @@ test('task revision isolates current-excerpt citations too, while offline genera
   assert.equal(f.sent.length, 2); assert.equal(f.searches(), 1);
 });
 
-test('practice still rejects fabricated IDs, uncited online claims and excluded source URLs without retries', async t => {
+test('practice rejects fabricated IDs and excluded URLs immediately; unsupported uncited drafts fail one citation completion', async t => {
   const f = await serve(t), input = { ...inputFor('practice'), sourceSearch: { enabled: true, revision: 1 } };
   for (const text of ['提交身份与远程认证不同。[S3E7]', '提交身份与远程认证不同。[S1E1][S9E9]', '提交身份与远程认证不同。']) {
     f.output({ text }); const response = await f.post(input);
     assert.equal(response.status, 422); assert.match((await response.json()).error, /引用|资料/);
   }
-  assert.equal(f.sent.length, 3); assert.equal(f.searches(), 3);
+  assert.equal(f.sent.length, 4); assert.equal(f.searches(), 3);
   f.materials([{ ...documents[0], url: 'https://zhihu.com/unreliable' }]);
   f.output({ text: '提交身份与远程认证不同。[S1E1]' });
   const excluded = await f.post(input);
   assert.equal(excluded.status, 422); assert.match((await excluded.json()).error, /排除/);
-  assert.equal(f.sent.length, 4); assert.equal(f.searches(), 4);
+  assert.equal(f.sent.length, 5); assert.equal(f.searches(), 4);
 });
 
 test('shared citation masking preserves nested literal blocks, related context, CRLF and original revision text', () => {

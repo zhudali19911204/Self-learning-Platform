@@ -1,6 +1,6 @@
 {
   "name": "learnflow",
-  "version": "1.3.8",
+  "version": "1.3.9",
   "main": "desktop/main.cjs",
   "private": true,
   "type": "module",
@@ -45,8 +45,10 @@
       "course-generation.mjs",
       "course-sources.mjs",
       "course-materials.mjs",
+      "course-material-planning.mjs",
       "course-claim-matching.mjs",
       "course-inline-citations.mjs",
+      "course-citation-repair.mjs",
       "course-quiz-sources.mjs",
       "course-citation-context.mjs",
       "test-support/audio.mjs",

@@ -6,7 +6,8 @@ import path from 'node:path';
 import { readMaterialBuffer } from '../desktop/material-reader.mjs';
 import { wordFixture,pdfFixture } from '../test-support/materials.mjs';
 import { validMaterial,validMaterials,localMaterialSource,MATERIAL_CONTEXT_LIMITS } from '../public/materials.js';
-import { materialDocuments,materialCatalog } from '../course-materials.mjs';
+import { materialDocuments,materialCatalog,materialContextParts } from '../course-materials.mjs';
+import { blockGenerationContext,validBlockCourse } from '../public/blocks.js';
 import { validGrounding,groundedContent,officialSource,sourceCitationIssue } from '../public/course-sources.js';
 import { withInlineCourseCitations } from '../course-inline-citations.mjs';
 import { createApp } from '../server.mjs';
@@ -17,6 +18,58 @@ import { factContent } from '../public/fact-check.js';
 const material={version:1,id:'a'.repeat(64),name:'操作手册.md',type:'md',bytes:100,importedAt:1700000000000,parts:[{id:'part-1',location:'第 1–3 行',text:'保存文件后应重新打开文件，确认文件名、保存位置与内容正确。'}]};
 const makePlan=()=>({...structuredClone(demoPlan),id:'material-course',materials:[structuredClone(material)],lessons:demoPlan.lessons.slice(0,3).map((l,i)=>({...l,id:`material-lesson-${i}`,minutes:20}))});
 const library=()=>Array.from({length:20},(_,i)=>({...structuredClone(material),id:(i+1).toString(16).padStart(64,'0'),name:`资料-${i+1}.md`,parts:[{id:'part-1',location:`第 ${i+1} 页`,text:i===19?'sensor_zx9 的校准温度阈值为37摄氏度，校准失败时应重新采样。':`背景记录 ${i+1}：保存文件后需要重新打开核对文件名、目录与内容。`}]}));
+
+function crossLanguageFixture() {
+ const imported={...structuredClone(material),name:'Calibration guide.md',parts:Array.from({length:19},(_,i)=>({id:`part-${i+1}`,location:`第 ${i+1} 页`,text:i===9?'Calibration uses the provided reference value; confirm the measurement unit before classifying samples.':`Appendix entry ${i+1}: background and navigation.`}))};
+ const part=imported.parts[9],docs=[{id:'S1',url:`learnflow-material:${imported.id}`,title:imported.name,publisher:'用户导入资料',retrievedAt:imported.importedAt,excerpts:[{id:'S1E1',text:part.text,partId:part.id,location:part.location}]}];
+ const draft=withInlineCourseCitations('reading',{text:'校准与分类前，应核对给定参考值和计量单位。[S1E1]'});
+ const course={intro:'依据导入资料练习校准。',blocks:[{id:'source-reading',type:'reading',title:'校准与分类规则',objective:'核对参考值及单位',content:{text:draft.text,grounding:groundedContent('reading',draft,docs)}},{id:'target-practice',type:'practice',title:'实操练习：校准并归类测量数据',objective:'使用教学示例数据练习校准与分类',content:null},{id:'target-quiz',type:'quiz',title:'检验校准',objective:'判断校准前提',content:null}]};
+ const block=course.blocks[1],request={lessonId:'local-lesson',goal:'学习校准',level:'零基础',title:'仪器校准',objective:'核对参考值与计量单位',intro:course.intro,block:{type:block.type,title:block.title,objective:block.objective},...blockGenerationContext(course,block.id)};
+ assert.equal(validBlockCourse(course),true);
+ return {imported,course,request};
+}
+
+test('Chinese practice requests retain verified English source parts and adjacent split-page definitions',()=>{
+ const {imported,course,request}=crossLanguageFixture(),original=structuredClone({imported,course,request});
+ const preferred=materialContextParts([imported],request,course);assert.deepEqual(preferred,[{materialId:imported.id,partId:'part-10'}]);
+ const docs=materialDocuments([imported],'校准并归类测量数据',{preferredParts:preferred}),parts=docs[0].excerpts.map(e=>e.partId);
+ for(const id of ['part-9','part-10','part-11'])assert.ok(parts.includes(id),id);
+ assert.ok(parts.length<=8);for(const e of docs[0].excerpts)assert.equal(e.text,imported.parts.find(p=>p.id===e.partId).text);
+ assert.deepEqual({imported,course,request},original,'retrieval does not edit course text, source snapshots or requests');
+ const all=[...library().slice(0,19),imported];
+ const selected=materialDocuments(all,'保存文件',{preferredParts:preferred});assert.equal(selected[0].url,`learnflow-material:${imported.id}`);assert.ok(selected.length<=3);
+});
+
+test('material evidence priorities never trust client contexts, future blocks, edited claims or mismatched source files',()=>{
+ const {imported,course,request}=crossLanguageFixture();
+ assert.deepEqual(materialContextParts([imported],request),[]);
+ assert.deepEqual(materialContextParts([imported],{...request,block:{...request.block,title:'另一个目标'}},course),[]);
+ const modified=structuredClone(course);modified.blocks[0].content.text='原来知识已经被编辑删除，不能再提供旧引用。';
+ assert.deepEqual(materialContextParts([imported],request,modified),[]);
+ const changed=structuredClone(imported);changed.parts[9].text='The imported evidence was changed.';assert.deepEqual(materialContextParts([changed],request,course),[]);
+ assert.deepEqual(materialContextParts([{...imported,id:'b'.repeat(64)}],request,course),[]);
+ const future=structuredClone(course);future.blocks[0].content=null;future.blocks.push({...structuredClone(course.blocks[0]),id:'future-reading'});
+ assert.deepEqual(materialContextParts([imported],request,future),[]);
+ const forged=structuredClone(request);forged.teachingContext.sources[0].spans[0].text='用户伪造的来源文本';
+ assert.deepEqual(materialContextParts([imported],forged,course),[{materialId:imported.id,partId:'part-10'}],'only server-owned spans determine evidence');
+});
+
+test('no-match fallback samples a long foreign-language document instead of only its first eight parts',()=>{
+ const {imported}=crossLanguageFixture(),docs=materialDocuments([imported],'完全没有匹配词的中文目标'),parts=docs[0].excerpts.map(e=>e.partId);
+ assert.ok(parts.includes('part-1'));assert.ok(parts.includes('part-10'));assert.ok(parts.includes('part-19'));assert.equal(parts.length,8);
+});
+
+test('practice generation sends the verified late source once, keeps search off and still rejects genuine insufficiency',async t=>{
+ const {imported,course,request}=crossLanguageFixture();let calls=0,searches=0,insufficient=false;
+ const server=createApp({getCourseMaterials:()=>[imported],getCourseBlockCourse:()=>course,courseSources:{prepare:async()=>{searches++;throw Error('must not search');}},getLLM:()=>({generate:async(_prompt,input,validate)=>{
+   calls++;const part=input.officialDocuments[0].excerpts.find(e=>e.partId==='part-10');assert.ok(part,'the actual reference page must reach the model');assert.ok(input.officialDocuments[0].excerpts.length<=8);
+   const result=insufficient?{sourceInsufficient:true}:{text:`教学示例：请核对参考值与计量单位后归类测量数据。[${part.id}]`};assert.equal(validate(result),true);return result;
+ }})});
+ await new Promise(r=>server.listen(0,'127.0.0.1',r));t.after(()=>{server.closeAllConnections();return new Promise(r=>server.close(r));});
+ const post=()=>fetch(`http://127.0.0.1:${server.address().port}/api/lesson-block`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({...request,sourceSearch:{enabled:true,revision:0}})});
+ const response=await post();assert.equal(response.status,200);const result=await response.json();assert.equal(result.grounding.citations[0].partId,'part-10');assert.equal(result.grounding.citations[0].location,'第 10 页');
+ insufficient=true;assert.equal((await post()).status,422);assert.equal(calls,2);assert.equal(searches,0);
+});
 test('a 20-file library retrieves relevant late files, reassigns citation IDs and rejects unused library IDs',()=>{
  const all=library();assert.equal(validMaterials(all),true);assert.equal(validMaterials([...all,{...material,id:'f'.repeat(64)}]),false);
  const docs=materialDocuments(all,'sensor_zx9 校准温度阈值');
@@ -91,7 +144,7 @@ test('saved documents ground generation with search on or off; forged IDs and in
 });
 test('planning supplies bounded extracted text and binds all 20 originals to the returned course',async t=> {
  const all=library();
- const server=createApp({getPlanningMaterials:ids=>{assert.deepEqual(ids,all.map(m=>m.id));return all;},getLLM:()=>({generate:async(prompt,input,validate)=>{assert.match(prompt,/知识范围/);assert.equal(input.learningMaterialCatalog.length,20);assert.ok(input.learningMaterials.length<=3);const result=makePlan();assert.equal(validate(result),true);return result;}})});
+ const server=createApp({getPlanningMaterials:ids=>{assert.deepEqual(ids,all.map(m=>m.id));return all;},getLLM:()=>({generate:async(prompt,input,validate)=>{assert.match(prompt,/知识范围/);assert.equal(input.learningMaterialCatalog.length,20);assert.ok(input.learningMaterials.length<=3);assert.equal(input.materialUnits.length,20);const result={...makePlan(),materialAssignments:input.materialUnits.map(u=>({unitId:u.id,lessonIndexes:[1]}))};assert.equal(validate(result),true);return result;}})});
  await new Promise(r=>server.listen(0,'127.0.0.1',r));t.after(()=>{server.closeAllConnections();server.close();});
  const response=await fetch(`http://127.0.0.1:${server.address().port}/api/plan`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({goal:'学习文件管理',level:'零基础',daily:25,days:7,materialIds:all.map(m=>m.id)})});
  assert.equal(response.status,200);assert.deepEqual((await response.json()).materials,all);

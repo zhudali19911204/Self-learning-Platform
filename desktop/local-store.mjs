@@ -14,6 +14,7 @@ import { validRevisionJob, validQualityDisposition, validQuizRecord } from '../p
 import { validFactCheck } from '../public/fact-check.js';
 import { validStudyPositions } from '../public/study-position.js';
 import { validCourseCategory } from '../public/course-categories.js';
+import { validMaterialCoverage } from '../public/material-coverage.js';
 
 export const defaults = { provider: 'ollama', model: '', baseUrl: '', jsonMode: 'auto', thinkingMode: 'auto', timeoutMs: 120000, maxTokens: 8192, localOnly: true };
 const id = v => typeof v === 'string' && /^[a-zA-Z0-9_-]{1,160}$/.test(v) && !['__proto__', 'constructor', 'prototype'].includes(v);
@@ -26,6 +27,7 @@ export function validState(v) {
   if (!v.plans.every(p => validPlan(p) && id(p.id) && string(p.goal, 1000) && string(p.level, 80) && Number.isInteger(p.daily) && Number.isInteger(p.days) && ['ai', 'demo'].includes(p.source) && p.lessons.every(l => id(l.id)))) return false;
   if (!v.plans.every(p => p.learningBrief === undefined || validLearningBrief(p.learningBrief))) return false;
   if (!v.plans.every(p => p.materials === undefined || validMaterials(p.materials))) return false;
+  if (!v.plans.every(p => p.materialCoverage === undefined || validMaterialCoverage(p.materialCoverage,p.materials,p.lessons.length))) return false;
   if (!v.plans.every(p => p.category === undefined || validCourseCategory(p.category))) return false;
   const planIds = v.plans.map(p => p.id), lessonIds = v.plans.flatMap(p => p.lessons.map(l => l.id));
   if (v.studyPositions !== undefined && !validStudyPositions(v.studyPositions,v.plans)) return false;

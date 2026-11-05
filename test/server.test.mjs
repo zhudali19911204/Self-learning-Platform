@@ -153,6 +153,31 @@ test('personalized plans prioritize confirmed answers, preserve original goals, 
   assert.equal((await app.post('/api/plan',{...input,clarification:{...clarification,notes:'x'.repeat(1001)}})).status,400);
   assert.equal(calls,1);
 });
+
+test('unsaved outline previews can be revised repeatedly using latest answers, without a saved-course lookup or importing private fields',async t=>{
+  const calls=[];const app=await serve(t,{getPlanForAdjustment:()=>{throw Error('unsaved preview must not look up a saved route');},getLLM:()=>({generate:async(prompt,input,validate)=>{calls.push({prompt,input});assert.equal(validate(demoPlan),true);return demoPlan;}})});
+  let previousPlan={...demoPlan,...input,learningBrief:learningBriefFrom(clarification),notes:'private note',chats:['private chat']};
+  const changed=structuredClone(clarification);changed.answers[0].optionIds=['o2'];changed.notes='以报表为主要场景';
+  for(const requirement of ['减少术语，增加案例','把实践安排在综合检验之前']) {
+    const response=await app.post('/api/plan',{...input,clarification:changed,previewRevision:{previousPlan,requirement}});
+    assert.equal(response.status,200);previousPlan=await response.json();assert.ok(!previousPlan.title.endsWith('（调整版）'));
+    assert.equal(previousPlan.learningBrief.adjustments.at(-1),requirement);assert.equal(previousPlan.learningBrief.answers[0].selected[0],'处理报表');
+  }
+  assert.equal(previousPlan.learningBrief.adjustments.length,2);assert.equal(calls.length,2);
+  assert.equal(calls[0].input.previousPlan.notes,undefined);assert.equal(calls[0].input.previousPlan.chats,undefined);assert.match(calls[0].prompt,/本轮最新澄清回答/);
+  for(const previewRevision of [{previousPlan,requirement:''},{previousPlan,requirement:'x'.repeat(1001)},{previousPlan:{},requirement:'增加案例'}])assert.equal((await app.post('/api/plan',{...input,clarification:changed,previewRevision})).status,400);
+  assert.equal(calls.length,2);
+});
+
+test('clarifying again after preview uses the prior outline and feedback while rejecting incomplete context before model calls',async t=>{
+  const calls=[],assessment={scope:'focused',known:['用户已选择处理报表'],gaps:[{dimension:'案例素材',reason:'决定实践用什么数据'},{dimension:'验收重点',reason:'决定检验什么能力'}]};
+  const app=await serve(t,{getLLM:()=>({generate:async(prompt,input,validate)=>{calls.push({prompt,input});const value=input.assessment?questionnaire:assessment;assert.equal(validate(value),true);return value;}})});
+  const previewContext={previousPlan:{...demoPlan,notes:'private notes'},clarification,feedback:'当前理论太多，希望更多完整案例'};
+  const response=await app.post('/api/plan-clarify',{...input,previewContext});assert.equal(response.status,200);assert.equal(calls.length,2);
+  assert.equal(calls[0].input.previewContext.feedback,previewContext.feedback);assert.deepEqual(calls[0].input.previewContext.learningBrief.answers,learningBriefFrom(clarification).answers);
+  assert.equal(calls[0].input.previewContext.previousPlan.notes,undefined);assert.match(calls[0].prompt,/避免重复已确认的问题/);
+  assert.equal((await app.post('/api/plan-clarify',{...input,previewContext:{...previewContext,clarification:{}}})).status,400);assert.equal(calls.length,2);
+});
 test('duplicate learning outcomes are diagnosed and repaired instead of accepted', async t => {
   let calls=0,repair;
   const app=await serve(t,{model:'test',fetchImpl:async (_url,init) => {
@@ -171,10 +196,10 @@ test('later course generation carries the confirmed learning brief without requi
     const payload=JSON.parse(init.body); sent.push(payload);
     return Response.json({message:{content:JSON.stringify(JSON.parse(payload.messages[1].content).block ? {text:'安全预览步骤'} : outline)}});
   }});
-  const context={goal:input.goal,level:input.level,title:'文件整理',objective:'独立整理',learningBrief:learningBriefFrom(clarification)};
+  const context={goal:input.goal,level:input.level,title:'文件整理',objective:'独立整理',learningBrief:{...learningBriefFrom(clarification),adjustments:['先演示完整案例，再解释术语']}};
   assert.equal((await app.post('/api/lesson-outline',context)).status,200);
   assert.equal((await app.post('/api/lesson-block',{...context,intro:'预览再执行',block:outline.blocks[0]})).status,200);
-  for(const payload of sent){assert.deepEqual(JSON.parse(payload.messages[1].content).learningBrief,context.learningBrief);assert.match(payload.messages[0].content,/用户确认的学习需求/);}
+  for(const payload of sent){assert.deepEqual(JSON.parse(payload.messages[1].content).learningBrief,context.learningBrief);assert.match(payload.messages[0].content,/用户确认的学习需求/);assert.match(payload.messages[0].content,/最新一项优先/);}
   assert.equal((await app.post('/api/lesson-outline',{...context,learningBrief:{}})).status,400);
 });
 
@@ -297,6 +322,31 @@ test('AI planning uses user constraints and assigns application-owned IDs', asyn
   assert.notEqual(result.lessons[0].id, demoPlan.lessons[0].id);
   assert.equal(sent.stream, false); assert.equal(sent.format, 'json'); assert.equal(sent.model, 'test-model');
   assert.deepEqual(JSON.parse(sent.messages[1].content), input);
+});
+
+test('directory adjustment uses confirmed requirements and current catalog, returns new IDs and never re-interviews or exposes unrelated data',async t=>{
+  const calls=[],original={...structuredClone(demoPlan),...input,learningBrief:learningBriefFrom(clarification),notes:'private notes',chats:['private chat']};
+  const before=structuredClone(original);
+  const app=await serve(t,{getLLM:()=>({generate:async(instruction,request,validate)=>{calls.push({instruction,request});assert.equal(validate(demoPlan),true);return {...demoPlan,id:'model-owned',goal:'model changed goal'};}})});
+  const response=await app.post('/api/plan-adjust',{planId:demoPlan.id,previousPlan:original,requirement:'先讲文件预览，再讲执行，并增加完整案例'});
+  assert.equal(response.status,200);const result=await response.json();
+  assert.equal(calls.length,1);assert.match(calls[0].instruction,/不重新发问卷/);assert.match(calls[0].instruction,/本轮最新澄清回答/);
+  assert.deepEqual(calls[0].request.learningBrief.answers,original.learningBrief.answers);
+  assert.equal(calls[0].request.previousPlan.notes,undefined);assert.equal(calls[0].request.previousPlan.chats,undefined);
+  assert.equal(result.learningBrief.adjustments.at(-1),'先讲文件预览，再讲执行，并增加完整案例');
+  assert.equal(result.goal,input.goal);assert.match(result.title,/（调整版）$/);assert.notEqual(result.id,'model-owned');assert.notEqual(result.id,demoPlan.id);
+  assert.ok(result.lessons.every(l=>!demoPlan.lessons.some(old=>old.id===l.id)));assert.deepEqual(original,before);
+  for(const patch of [{requirement:''},{requirement:'x'.repeat(1001)},{planId:'../private'},{previousPlan:{}}])assert.equal((await app.post('/api/plan-adjust',{planId:demoPlan.id,previousPlan:original,requirement:'增加实践',...patch})).status,400);
+  assert.equal(calls.length,1);
+});
+
+test('directory adjustment retrieves saved material courses after restart and ignores forged client metadata without searching',async t=>{
+  const material={version:1,id:'a'.repeat(64),name:'操作手册.md',type:'md',bytes:100,importedAt:Date.now(),parts:[{id:'part-1',location:'第 1 行',text:'保存文件之后必须重新打开，核对目录、文件名和内容是否正确。'}]};
+  const original={...structuredClone(demoPlan),...input,materials:[material]};let calls=0;
+  const app=await serve(t,{getPlanForAdjustment:id=>id===original.id?original:undefined,getPlanningMaterials:()=>{throw Error('must not read staged material IDs');},getLLM:()=>({generate:async(instruction,request,validate)=>{calls++;assert.match(instruction,/用户导入/);assert.equal(request.goal,input.goal);assert.equal(request.learningMaterialCatalog[0].name,material.name);assert.equal(request.materialUnits[0].materialId,material.id);const value={...demoPlan,materialAssignments:request.materialUnits.map(u=>({unitId:u.id,lessonIndexes:[1]}))};assert.equal(validate(value),true);return value;}})});
+  const response=await app.post('/api/plan-adjust',{planId:original.id,previousPlan:{goal:'forged'},materialIds:['forged'],requirement:'增加保存后核对的实践'});
+  assert.equal(response.status,200);assert.deepEqual((await response.json()).materials,[material]);assert.equal(calls,1);
+  assert.equal((await app.post('/api/plan-adjust',{planId:'deleted',requirement:'增加实践'})).status,400);assert.equal(calls,1);
 });
 test('planning repairs one structurally invalid model response and explains repeated budget failures', async t => {
   let calls = 0, repairPrompt = '', repairData;

@@ -3,6 +3,17 @@ import { localMaterialSource } from './materials.js';
 
 const escapeHTML = value => String(value ?? '').replace(/[&<>"']/g, character => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[character]));
 
+function hideLeadingDuplicateHeading(fragment, moduleTitle) {
+  const first = [...fragment.childNodes].find(node => node.nodeType === 1 || (node.nodeType === 3 && node.textContent.trim()));
+  if (!first || !/^H[3-6]$/.test(first.nodeName)) return;
+  const titleKey = text => text.normalize('NFKC').replace(/\s+/gu, '');
+  if (titleKey(first.textContent) !== titleKey(moduleTitle)) return;
+  // Preserve the exact DOM text for existing annotation offsets. Only the
+  // redundant visual heading is hidden; no saved Markdown or evidence changes.
+  first.classList.add('course-duplicate-heading');
+  first.hidden = true;
+}
+
 // Only link IDs recorded in this module's saved evidence. Keep visible text
 // unchanged so existing annotations retain their offsets into the reading view.
 function linkCourseCitations(fragment, grounding, desktop) {
@@ -73,16 +84,22 @@ export function createMarkdownRenderer(Marked, purifier) {
       }
     }
   });
-  return (source, { grounding, desktop = false } = {}) => {
+  return (source, { grounding, desktop = false, moduleTitle = '' } = {}) => {
     const text = String(source ?? '');
     try {
       const hasCitations = validGrounding(grounding);
+      const hasModuleTitle = typeof moduleTitle === 'string' && moduleTitle.trim().length > 0;
       const sanitized = purifier.sanitize(parser.parse(text), {
         ALLOWED_TAGS: ['p', 'h3', 'h4', 'h5', 'h6', 'strong', 'em', 'del', 'ul', 'ol', 'li', 'blockquote', 'pre', 'code', 'br', 'hr', 'table', 'thead', 'tbody', 'tr', 'th', 'td'],
         ALLOWED_ATTR: ['class', 'start', 'align', 'role', 'aria-label'], ALLOW_DATA_ATTR: false, ALLOW_ARIA_ATTR: true,
-        ...(hasCitations ? { RETURN_DOM_FRAGMENT: true } : {})
+        ...(hasCitations || hasModuleTitle ? { RETURN_DOM_FRAGMENT: true } : {})
       });
-      return hasCitations ? linkCourseCitations(sanitized, grounding, desktop) : sanitized;
+      if (hasModuleTitle) hideLeadingDuplicateHeading(sanitized, moduleTitle);
+      if (hasCitations) return linkCourseCitations(sanitized, grounding, desktop);
+      if (!hasModuleTitle) return sanitized;
+      const container = sanitized.ownerDocument.createElement('div');
+      container.append(sanitized);
+      return container.innerHTML;
     } catch {
       // A renderer failure must not hide a saved lesson or expose unsanitized HTML.
       return `<p>${escapeHTML(text).replace(/\r\n?|\n/g, '<br>')}</p>`;

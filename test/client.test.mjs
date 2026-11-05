@@ -15,7 +15,7 @@ import { Marked } from 'marked';
 import createDOMPurify from 'dompurify';
 import { JSDOM } from 'jsdom';
 import { createMarkdownRenderer } from '../public/markdown.js';
-import { validQuestionnaire, validClarification, learningBriefFrom } from '../public/planning.js';
+import { validQuestionnaire, validClarification, learningBriefFrom, validPlanOutline, planAdjustmentSnapshot, learningBriefWithAdjustment } from '../public/planning.js';
 import { questionnaire, clarification } from '../test-support/planning.mjs';
 import { validIllustration, validImageProposal } from '../public/illustrations.js';
 import { speechDefaults, speechVoices, listeningText, speechTurns, speechRequest, validAudioId } from '../public/speech.js';
@@ -28,10 +28,22 @@ import { qualityRubric, qualityLabels, qualityModelId } from '../public/course-q
 import { teachingContextNotice } from '../public/teaching-context.js';
 import { officialSource, validSourceSearch, courseReferences } from '../public/course-sources.js';
 import { validMaterials, localMaterialSource, MATERIAL_LIMITS } from '../public/materials.js';
+import { validMaterialCoverage } from '../public/material-coverage.js';
+import { directMaterialPlanning,savedMaterialCoverage } from '../course-material-planning.mjs';
 import { courseCategories, categoryFor, automaticCourseCategory, validCategoryChanges } from '../public/course-categories.js';
 import { revisionTypes, revisionStatuses, revisionCheckLabels, revisionContent, revisionText, revisionDiff } from '../public/course-revision.js';
 const DOMPurify = createDOMPurify(new JSDOM('').window);
 const source = (await readFile(new URL('../public/app.js', import.meta.url), 'utf8')).replace(/^import .* from '\.\/[^']+';$/gm, '');
+
+test('material coverage is collapsed by default, links each source to its lesson titles and escapes document text',async t=>{
+  const app=realSettingsHarness({load:async()=>({status:{mode:'ai'}})});t.after(()=>app.close());await app.ready();
+  const material={version:1,id:'a'.repeat(64),name:'规则手册.md',type:'md',bytes:100,importedAt:1000,parts:[{id:'part-1',location:'第 6 页',text:'## <img src=x onerror=alert(1)>\n计算规则与适用条件。'}]};
+  const context=directMaterialPlanning([material]),p={...structuredClone(demoPlan),source:'ai',materials:[material],materialCoverage:savedMaterialCoverage({...demoPlan,materialAssignments:[{unitId:'U1',lessonIndexes:[1,2]}]},context)};
+  app.run(`document.querySelector('#planner').innerHTML=plannerOutlineHTML(${JSON.stringify(p)})`);
+  const details=app.document.querySelector('.planner-material-coverage');assert.equal(details.open,false);assert.match(details.textContent,/已处理全部 1 段原文/);assert.match(details.textContent,/第 6 页/);assert.match(details.textContent,new RegExp(p.lessons[1].title));assert.equal(details.querySelector('img'),null);
+  app.run(`state.plans.push(${JSON.stringify({...p,id:'covered-course'})});state.active='covered-course';navigate('routes')`);
+  assert.equal(app.document.querySelector('.route-design .planner-material-coverage').open,false);
+});
 
 test('sidebar uses the local company wordmark on every page and keeps its home navigation accessible', () => {
   const app = harness();
@@ -748,18 +760,18 @@ test('quiz progress describes prior teaching reuse instead of a new search even 
 
 // Keyless-form regressions need real elements.namedItem() and actual FormData.
 function realSettingsHarness(bridge) {
-  const dom = new JSDOM('<div id="app"></div><div id="toast"></div><aside id="generation-progress" popover="manual" hidden></aside><button id="annotation-quick-add" data-action="add-annotation" hidden></button><dialog id="annotation-dialog"></dialog><dialog id="knowledge-draft-dialog"></dialog><dialog id="knowledge-organize-dialog"></dialog><dialog id="quality-dialog"></dialog><dialog id="course-category-dialog"></dialog>', { url: 'http://localhost' });
+  const dom = new JSDOM('<div id="app"></div><div id="toast"></div><aside id="generation-progress" popover="manual" hidden></aside><button id="annotation-quick-add" data-action="add-annotation" hidden></button><dialog id="annotation-dialog"></dialog><dialog id="knowledge-draft-dialog"></dialog><dialog id="knowledge-organize-dialog"></dialog><dialog id="quality-dialog"></dialog><dialog id="course-category-dialog"></dialog><dialog id="plan-adjustment-dialog"></dialog><dialog id="planner"></dialog>', { url: 'http://localhost' });
   const document = dom.window.document, listeners = new Map();
   document.querySelector('#knowledge-organize-dialog').showModal = function () { this.open = true; };
   document.querySelector('#knowledge-organize-dialog').close = function () { this.open = false; };
-  for (const id of ['annotation-dialog', 'knowledge-draft-dialog', 'quality-dialog', 'course-category-dialog']) {
+  for (const id of ['annotation-dialog', 'knowledge-draft-dialog', 'quality-dialog', 'course-category-dialog', 'plan-adjustment-dialog', 'planner']) {
     document.querySelector(`#${id}`).showModal = function () { this.open = true; };
     document.querySelector(`#${id}`).close = function () { this.open = false; };
   }
   document.addEventListener = (name, listener) => { const group = listeners.get(name) || []; group.push(listener); listeners.set(name, group); };
   dom.window.learnflowDesktop = bridge; dom.window.scrollTo = () => {};
-  const context = vm.createContext({ courseCategories, categoryFor, automaticCourseCategory, validCategoryChanges, generationCancelled, isGenerationCancelled, masteredQuizQuestions, quizRecordAfterChange, quizQuestionKey, quizInitialCount, quizBatchLimit, quizQuestionLimit, createGenerationProgress, factCheckLabels, sameFactContent, MATERIAL_LIMITS, validMaterials, localMaterialSource, officialSource, validSourceSearch, courseReferences, teachingContextNotice, qualityRubric, qualityLabels, qualityModelId, revisionTypes, revisionStatuses, revisionCheckLabels, revisionContent, revisionText, revisionDiff,
-    demoPlan, demoLessons, lessonFromBlocks, validOutline, validBlockContent, validBlockSpec, blockGenerationContext, revisedContent, restoredContent, assistedBlockTypes, Marked, DOMPurify, createMarkdownRenderer, validQuestionnaire, validClarification, learningBriefFrom, validIllustration, validImageProposal, speechDefaults, speechVoices, listeningText, speechTurns, speechRequest, validAudioId, validKnowledgeSource, validKnowledgeDraft, localKnowledgeDraft, knowledgeTags, knowledgeConditions, validAnnotations, personalNotesForSource, personalNotesMarkdown, knowledgeCatalog, knowledgeDomain, knowledgeDomainColors, knowledgeTopic, retrieveKnowledge, validKnowledgeOrganization, courseKnowledgeTree, knowledgeTree, knowledgeGraph, filterKnowledgeGraph, createGraphMotion, stepGraphMotion, structuredClone, crypto: webcrypto, AbortSignal,
+  const context = vm.createContext({ courseCategories, categoryFor, automaticCourseCategory, validCategoryChanges, generationCancelled, isGenerationCancelled, masteredQuizQuestions, quizRecordAfterChange, quizQuestionKey, quizInitialCount, quizBatchLimit, quizQuestionLimit, createGenerationProgress, factCheckLabels, sameFactContent, MATERIAL_LIMITS, validMaterials, validMaterialCoverage, localMaterialSource, officialSource, validSourceSearch, courseReferences, teachingContextNotice, qualityRubric, qualityLabels, qualityModelId, revisionTypes, revisionStatuses, revisionCheckLabels, revisionContent, revisionText, revisionDiff,
+    demoPlan, demoLessons, lessonFromBlocks, validOutline, validBlockContent, validBlockSpec, blockGenerationContext, revisedContent, restoredContent, assistedBlockTypes, Marked, DOMPurify, createMarkdownRenderer, validQuestionnaire, validClarification, learningBriefFrom, validPlanOutline, planAdjustmentSnapshot, validIllustration, validImageProposal, speechDefaults, speechVoices, listeningText, speechTurns, speechRequest, validAudioId, validKnowledgeSource, validKnowledgeDraft, localKnowledgeDraft, knowledgeTags, knowledgeConditions, validAnnotations, personalNotesForSource, personalNotesMarkdown, knowledgeCatalog, knowledgeDomain, knowledgeDomainColors, knowledgeTopic, retrieveKnowledge, validKnowledgeOrganization, courseKnowledgeTree, knowledgeTree, knowledgeGraph, filterKnowledgeGraph, createGraphMotion, stepGraphMotion, structuredClone, crypto: webcrypto, AbortSignal,
     document, window: dom.window, localStorage:dom.window.localStorage, fetch:async()=>({ok:true,json:async()=>({mode:'demo'})}), FormData: dom.window.FormData, createStudyPositionTracker, studyPositionFor, startHomeMotion, setTimeout: () => 1, clearTimeout() {}
   });
   vm.runInContext(source, context);
@@ -775,8 +787,8 @@ function harness(saved, fetchImpl, desktopBridge) {
     if (!nodes.has(selector)) nodes.set(selector, { innerHTML: '', textContent: '', open: false, attributes: {}, setAttribute(name, value) { this.attributes[name] = value; }, classList: { add() {}, remove() {} }, scrollIntoView() {}, focus() {}, showModal() { this.open = true; }, close() { this.open = false; } });
     return nodes.get(selector);
   };
-  const context = vm.createContext({ courseCategories, categoryFor, automaticCourseCategory, validCategoryChanges, createStudyPositionTracker, studyPositionFor, startHomeMotion, generationCancelled, isGenerationCancelled, masteredQuizQuestions, quizRecordAfterChange, quizQuestionKey, quizInitialCount, quizBatchLimit, quizQuestionLimit, createGenerationProgress, factCheckLabels, sameFactContent, MATERIAL_LIMITS, validMaterials, localMaterialSource, officialSource, validSourceSearch, courseReferences, teachingContextNotice, qualityRubric, qualityLabels, qualityModelId, revisionTypes, revisionStatuses, revisionCheckLabels, revisionContent, revisionText, revisionDiff,
-    demoPlan, demoLessons, lessonFromBlocks, validOutline, validBlockContent, validBlockSpec, blockGenerationContext, revisedContent, restoredContent, assistedBlockTypes, Marked, DOMPurify, createMarkdownRenderer, validQuestionnaire, validClarification, learningBriefFrom, validIllustration, validImageProposal, speechDefaults, speechVoices, listeningText, speechTurns, speechRequest, validAudioId, validKnowledgeSource, validKnowledgeDraft, localKnowledgeDraft, knowledgeTags, knowledgeConditions, validAnnotations, personalNotesForSource, personalNotesMarkdown, knowledgeCatalog, knowledgeDomain, knowledgeDomainColors, knowledgeTopic, retrieveKnowledge, validKnowledgeOrganization, courseKnowledgeTree, knowledgeTree, knowledgeGraph, filterKnowledgeGraph, createGraphMotion, stepGraphMotion, structuredClone, crypto: webcrypto, AbortSignal,
+  const context = vm.createContext({ courseCategories, categoryFor, automaticCourseCategory, validCategoryChanges, createStudyPositionTracker, studyPositionFor, startHomeMotion, generationCancelled, isGenerationCancelled, masteredQuizQuestions, quizRecordAfterChange, quizQuestionKey, quizInitialCount, quizBatchLimit, quizQuestionLimit, createGenerationProgress, factCheckLabels, sameFactContent, MATERIAL_LIMITS, validMaterials, validMaterialCoverage, localMaterialSource, officialSource, validSourceSearch, courseReferences, teachingContextNotice, qualityRubric, qualityLabels, qualityModelId, revisionTypes, revisionStatuses, revisionCheckLabels, revisionContent, revisionText, revisionDiff,
+    demoPlan, demoLessons, lessonFromBlocks, validOutline, validBlockContent, validBlockSpec, blockGenerationContext, revisedContent, restoredContent, assistedBlockTypes, Marked, DOMPurify, createMarkdownRenderer, validQuestionnaire, validClarification, learningBriefFrom, validPlanOutline, planAdjustmentSnapshot, validIllustration, validImageProposal, speechDefaults, speechVoices, listeningText, speechTurns, speechRequest, validAudioId, validKnowledgeSource, validKnowledgeDraft, localKnowledgeDraft, knowledgeTags, knowledgeConditions, validAnnotations, personalNotesForSource, personalNotesMarkdown, knowledgeCatalog, knowledgeDomain, knowledgeDomainColors, knowledgeTopic, retrieveKnowledge, validKnowledgeOrganization, courseKnowledgeTree, knowledgeTree, knowledgeGraph, filterKnowledgeGraph, createGraphMotion, stepGraphMotion, structuredClone, crypto: webcrypto, AbortSignal,
     document: { querySelector: node, addEventListener(name, listener) { const group = listeners.get(name) || []; group.push(listener); listeners.set(name, group); } },
     localStorage: { get length() { return storage.size; }, key: index => [...storage.keys()][index] ?? null, getItem: key => storage.get(key) ?? null, setItem: (key, value) => storage.set(key, value), removeItem: key => storage.delete(key) },
     window: { learnflowDesktop: desktopBridge, scrollY: 0, scrollTo({ top }) { this.scrollY = top; }, confirm: () => true }, setTimeout: () => 1, clearTimeout() {},
@@ -1318,6 +1330,27 @@ test('block lessons omit the duplicate top tools and keep example revision visib
   assert.equal(exampleTools.open, false, 'Escape closes the dropdown');
 });
 
+test('all teaching block types suppress repeated leading titles without changing saved content, citations or existing note anchors',async t=>{
+  const app=realSettingsHarness({load:async()=>({status:{mode:'demo'}})});t.after(()=>app.close());await app.ready();
+  const title='自制材料转移价格总公式与年度固定原则',text=`## ${title}\n\n这是保留正文。[S1E1]\n\n### 三层递进的计算公式\n\n新增笔记原文。`;
+  const grounding={version:1,citations:[{excerptId:'S1E1',claim:'这是保留正文。',quote:'Original source passage.',url:'https://docs.example.org/formula',title:'规则说明',publisher:'Example',retrievedAt:1000}]};
+  const course={intro:'课程导语',blocks:['reading','example','practice','summary'].map((type,i)=>({id:`title-${i}`,type,title,objective:'理解并应用对应规则',content:{text,grounding}}))};
+  const baseline=app.document.createElement('div');baseline.innerHTML=createMarkdownRenderer(Marked,DOMPurify)(text);
+  const originalText=baseline.textContent,bodyOffset=originalText.indexOf('这是保留正文。');
+  const annotations=[{id:'title-note',source:'block:title-0',offset:0,quote:title,text:'标题处的旧笔记',created:1},{id:'body-note',source:'block:title-0',offset:bodyOffset,quote:'这是保留正文。',text:'正文旧笔记',created:2}];
+  app.run(`state.blockCourses.p1=${JSON.stringify(course)};state.annotations={p1:${JSON.stringify(annotations)}};activeLesson='p1';page='study';lessonTab='read';render()`);
+  const doc=app.document;
+  assert.equal(doc.querySelectorAll('.block-title').length,4);assert.equal(doc.querySelectorAll('.block-text .course-duplicate-heading[hidden]').length,4);
+  assert.equal(doc.querySelectorAll('.block-text h4:not([hidden])').length,4);assert.equal(doc.querySelectorAll('.block-text .course-inline-citation').length,4);
+  const root=doc.querySelector('[data-block-id="title-0"] .block-text'),titleNote=root.querySelector('[data-id="title-note"]');
+  assert.ok(titleNote);assert.equal(titleNote.closest('[hidden]'),null,'notes on the old duplicate heading remain accessible');
+  assert.equal(app.run("annotationPlainText(document.querySelector('[data-block-id=title-0] .block-text'))"),originalText);
+  assert.equal(app.run("(()=>{const root=document.querySelector('[data-block-id=title-0] .block-text'),marker=root.querySelector('[data-id=body-note]');return annotationOffset(root,marker.parentNode,[...marker.parentNode.childNodes].indexOf(marker));})()"),bodyOffset);
+  const paragraph=root.querySelectorAll('p')[1],range=doc.createRange();range.selectNodeContents(paragraph);doc.defaultView.getSelection().removeAllRanges();doc.defaultView.getSelection().addRange(range);
+  const selection=app.run('annotationSelection()');assert.equal(selection.offset,originalText.indexOf('新增笔记原文。'));assert.equal(selection.quote,'新增笔记原文。');
+  assert.equal(app.run('JSON.stringify(state.blockCourses.p1)'),JSON.stringify(course));assert.equal(app.run('JSON.stringify(state.annotations.p1)'),JSON.stringify(annotations));
+});
+
 test('practice and summary use independent reading-style collapse controls without changing course content', async t => {
   const app = realSettingsHarness({ load: async () => ({ status: { mode: 'demo' } }) });
   t.after(() => app.close()); await app.ready();
@@ -1378,6 +1411,44 @@ test('block knowledge source uses the selected generated block and rejects pendi
   assert.match(app.run("knowledgeSource('p1', 'one').sourceText"), /变量保存值/);
   assert.throws(() => app.run("knowledgeSource('p1', 'two')"), /尚未生成/);
 });
+test('directory adjustment previews before saving, rejects stale requirements and preserves the learned original on model or storage failure',async t=>{
+  const calls=[],saved=[];let failGenerate=false,failSave=true;
+  const preview={...structuredClone(demoPlan),id:'adjusted-course',title:'文件整理实战（调整版）',source:'ai',learningBrief:learningBriefWithAdjustment(demoPlan,'增加完整案例'),lessons:demoPlan.lessons.map((l,i)=>({...l,id:`adjusted-${i}`}))};
+  const app=realSettingsHarness({load:async()=>({status:{mode:'ai'}}),request:async(endpoint,data)=>{assert.equal(endpoint,'plan-adjust');calls.push(structuredClone(data));if(failGenerate)throw Error('模型暂不可用');return structuredClone(preview);},savePlan:async plan=>{saved.push(structuredClone(plan));if(failSave)throw Error('磁盘写入失败');}});
+  t.after(()=>app.close());await app.ready();
+  app.run("state.lessons.p1=structuredClone(demoLessons.p1);state.progress.p1={completed:true,attempts:1};state.plans[0].category='办公与自动化';navigate('routes')");
+  const doc=app.document,before=app.run('JSON.stringify(state)');
+  await app.fire('click',doc.querySelector('[data-action=open-plan-adjustment]'));assert.equal(calls.length,0);
+  const input=()=>doc.querySelector('#plan-adjustment-requirement');
+  input().value='增加完整案例';await app.fire('input',input());await app.fire('submit',doc.querySelector('#plan-adjustment-form'));
+  assert.equal(app.run('JSON.stringify(state)'),before);assert.equal(saved.length,0);assert.equal(doc.querySelectorAll('.plan-adjustment-columns>section').length,2);
+  assert.equal(calls[0].previousPlan.progress,undefined);assert.equal(calls[0].previousPlan.lessons[0].content,undefined);
+  input().value='先讲完整案例';await app.fire('input',input());assert.equal(doc.querySelector('[data-action=save-plan-adjustment]').disabled,true);
+  failGenerate=true;await app.fire('submit',doc.querySelector('#plan-adjustment-form'));assert.match(doc.querySelector('#plan-adjustment-error').textContent,/模型暂不可用/);assert.equal(app.run('JSON.stringify(state)'),before);
+  failGenerate=false;await app.fire('submit',doc.querySelector('#plan-adjustment-form'));
+  await app.fire('click',doc.querySelector('[data-action=save-plan-adjustment]'));assert.match(doc.querySelector('#plan-adjustment-error').textContent,/磁盘写入失败/);assert.equal(app.run('JSON.stringify(state)'),before);
+  failSave=false;await app.fire('click',doc.querySelector('[data-action=save-plan-adjustment]'));
+  assert.equal(app.run('state.plans.length'),2);assert.equal(app.run('state.active'),'adjusted-course');assert.equal(app.run('state.plans[1].category'),'办公与自动化');
+  assert.equal(app.run('JSON.stringify(state.plans[0])'),JSON.stringify(JSON.parse(before).plans[0]));assert.equal(app.run('state.progress.p1.completed'),true);assert.equal(app.run('JSON.stringify(state.lessons.p1)'),JSON.stringify(demoLessons.p1));
+  assert.equal(calls.length,3);assert.equal(saved.length,2);assert.equal(doc.querySelector('#plan-adjustment-dialog').open,false);
+});
+
+test('Web directory previews can be discarded, cancellation saves nothing and quota failures retain a retryable preview',async t=>{
+  const app=realSettingsHarness();t.after(()=>app.close());await app.ready();await new Promise(resolve=>setImmediate(resolve));
+  const preview={...structuredClone(demoPlan),id:'web-adjusted',title:'目录调整版',source:'ai',learningBrief:learningBriefWithAdjustment(demoPlan,'增加实践'),lessons:demoPlan.lessons.map((l,i)=>({...l,id:`web-adjusted-${i}`}))};
+  app.run(`status={mode:'ai'};globalThis.testPlanPreview=${JSON.stringify(preview)};globalThis.cancelAdjustment=true;globalThis.fetch=async()=>{if(cancelAdjustment)throw Object.assign(Error('已取消生成'),{code:'GENERATION_CANCELLED'});return {ok:true,json:async()=>testPlanPreview};};navigate('routes')`);
+  const doc=app.document,before=app.run('JSON.stringify(state)');
+  const generate=async()=>{await app.fire('click',doc.querySelector('[data-action=open-plan-adjustment]'));doc.querySelector('#plan-adjustment-requirement').value='增加实践';await app.fire('submit',doc.querySelector('#plan-adjustment-form'));};
+  await generate();assert.match(doc.querySelector('#plan-adjustment-error').textContent,/取消/);assert.equal(app.run('JSON.stringify(state)'),before);
+  app.run('cancelAdjustment=false');await app.fire('submit',doc.querySelector('#plan-adjustment-form'));
+  await app.fire('click',doc.querySelector('[data-action=close-plan-adjustment]'));assert.equal(app.run('JSON.stringify(state)'),before);
+  await generate();app.run("globalThis.oldPlanStorage=localStorage;globalThis.localStorage={setItem(){throw Error('quota')}}");
+  await app.fire('click',doc.querySelector('[data-action=save-plan-adjustment]'));assert.match(doc.querySelector('#plan-adjustment-error').textContent,/尚未保存/);assert.equal(app.run('JSON.stringify(state)'),before);
+  assert.equal(doc.querySelector('#plan-adjustment-dialog').open,true);app.run('globalThis.localStorage=oldPlanStorage');
+  await app.fire('click',doc.querySelector('[data-action=save-plan-adjustment]'));assert.equal(app.run("JSON.parse(localStorage.getItem('learnflow.v1')).plans.length"),2);
+  assert.equal(app.run('state.active'),'web-adjusted');
+});
+
 test('new learning clarifies before planning, preserves answers on failure, and persists the confirmed brief', async () => {
   const calls = [];
   let failPlan = true;
@@ -1397,16 +1468,17 @@ test('new learning clarifies before planning, preserves answers on failure, and 
   await app.submit('clarification-form', {q1:'o1'});
   assert.equal(app.run('plannerDraft.step'), 'questions');
   assert.match(app.node('#planner').innerHTML, /请回答每个问题/);
-  await app.submit('clarification-form', {q1:'o1',q2:['o1','o2'],'detail-q1':'先预览，再执行'});
-  assert.equal(app.run('plannerDraft.step'), 'review');
-  assert.equal(calls.length, 1, 'review itself must not call the model');
-  await app.submit('plan-confirm-form', {notes:'不学习网页开发'});
-  assert.equal(app.run('plannerDraft.step'), 'review');
+  await app.submit('clarification-form', {q1:'o1',q2:['o1','o2'],'detail-q1':'先预览，再执行',notes:'不学习网页开发'});
+  assert.equal(app.run('plannerDraft.step'), 'questions');
+  assert.equal(calls.length, 2, 'clarification now generates the first outline preview');
   assert.equal(app.run('plannerDraft.notes'), '不学习网页开发');
   assert.match(app.node('#planner').innerHTML, /测试模型暂时不可用/);
   assert.equal(app.run('plannerBusy'), false);
   failPlan = false;
-  await app.submit('plan-confirm-form', {notes:'不学习网页开发'});
+  await app.submit('clarification-form', {q1:'o1',q2:['o1','o2'],'detail-q1':'先预览，再执行',notes:'不学习网页开发'});
+  assert.equal(app.run('plannerDraft.step'),'preview');assert.equal(app.run('state.plans.length'),1);
+  await app.run("action('planner-accept-outline',{dataset:{}})");assert.equal(app.run('plannerDraft.step'),'confirm');
+  const beforeConfirm=calls.length;await app.submit('plan-confirm-form', {});assert.equal(calls.length,beforeConfirm,'final confirmation must not regenerate the accepted outline');
   assert.equal(app.run('page'), 'routes');
   assert.equal(app.node('#planner').open, false);
   assert.equal(app.run('state.plans.length'), 2);
@@ -1414,6 +1486,60 @@ test('new learning clarifies before planning, preserves answers on failure, and 
   const restored = harness(app.storage.get('learnflow.v1'));
   assert.equal(restored.run('plan().learningBrief.notes'), '不学习网页开发');
   assert.match(app.node('#app').innerHTML, /查看定制需求与回答/);
+});
+
+test('new-course planning loops through feedback and reclarification, then saves exactly the approved preview without another model call',async t=>{
+  const calls=[],saved=[];let failPreview=false,failSave=true,round=0;
+  const app=realSettingsHarness({load:async()=>({status:{mode:'ai'}}),request:async(endpoint,data)=>{
+    calls.push({endpoint,data:structuredClone(data)});
+    if(endpoint==='plan-clarify')return structuredClone(questionnaire);
+    assert.equal(endpoint,'plan');if(failPreview)throw Error('预览生成暂时失败');round++;
+    let brief=learningBriefFrom(data.clarification);
+    if(data.previewRevision)brief=learningBriefWithAdjustment({...data.previewRevision.previousPlan,learningBrief:{...brief,adjustments:data.previewRevision.previousPlan.learningBrief?.adjustments}},data.previewRevision.requirement);
+    return {...structuredClone(demoPlan),id:`preview-${round}`,title:`第 ${round} 版文件整理课`,source:'ai',goal:data.goal,level:data.level,daily:data.daily,days:data.days,learningBrief:brief,lessons:demoPlan.lessons.map((l,i)=>({...l,id:`preview-${round}-${i}`}))};
+  },savePlan:async plan=>{saved.push(structuredClone(plan));if(failSave)throw Error('保存失败，可重试');}});
+  t.after(()=>app.close());await app.ready();app.run('window.confirm=()=>true;planner()');
+  const doc=app.document;doc.querySelector('#goal').value='学习文件整理';await app.fire('submit',doc.querySelector('#plan-form'));
+  const answer=()=>doc.querySelectorAll('.clarification-question').forEach(q=>q.querySelector('input').checked=true);
+  answer();doc.querySelector('#planner-notes').value='只用示例数据';await app.fire('submit',doc.querySelector('#clarification-form'));
+  assert.equal(app.run('plannerDraft.step'),'preview');assert.equal(doc.querySelectorAll('.planner-steps li').length,4);assert.equal(app.run('state.plans.length'),1);assert.equal(saved.length,0);
+  doc.querySelector('#planner-feedback').value='增加完整案例';await app.fire('input',doc.querySelector('#planner-feedback'));
+  assert.equal(doc.querySelector('[data-action=planner-accept-outline]').disabled,true);
+  failPreview=true;await app.fire('submit',doc.querySelector('#planner-feedback-form'));assert.match(doc.querySelector('#plan-error').textContent,/预览生成暂时失败/);assert.equal(app.run('plannerDraft.preview.id'),'preview-1');assert.equal(app.run('state.plans.length'),1);
+  failPreview=false;await app.fire('submit',doc.querySelector('#planner-feedback-form'));assert.equal(app.run('plannerDraft.preview.id'),'preview-2');assert.equal(doc.querySelector('#planner-feedback').value,'');
+  await app.fire('click',doc.querySelector('[data-action=planner-clarify-again]'));assert.equal(app.run('plannerDraft.step'),'questions');assert.equal(doc.querySelector('[name=q1][value=o1]').checked,true);
+  doc.querySelector('#planner-feedback').value='实践步骤再详细一些';await app.fire('input',doc.querySelector('#planner-feedback'));
+  await app.fire('click',doc.querySelector('[data-action=planner-regenerate]'));
+  const clarified=calls.at(-1);assert.equal(clarified.endpoint,'plan-clarify');assert.equal(clarified.data.previewContext.feedback,'实践步骤再详细一些');assert.equal(clarified.data.previewContext.previousPlan.title,'第 2 版文件整理课');
+  assert.equal(doc.querySelectorAll('#clarification-form input:checked').length,0);answer();doc.querySelector('[name=q1][value=o2]').checked=true;
+  await app.fire('submit',doc.querySelector('#clarification-form'));assert.equal(app.run('plannerDraft.preview.id'),'preview-3');assert.equal(calls.at(-1).data.clarification.answers[0].optionIds[0],'o2');
+  const approved=app.run('JSON.stringify(plannerDraft.preview)'),modelCalls=calls.length;
+  await app.fire('click',doc.querySelector('[data-action=planner-accept-outline]'));assert.equal(app.run('plannerDraft.step'),'confirm');assert.equal(app.run('state.plans.length'),1);
+  await app.fire('submit',doc.querySelector('#plan-confirm-form'));assert.match(doc.querySelector('#plan-error').textContent,/保存失败/);assert.equal(app.run('plannerDraft.step'),'confirm');assert.equal(app.run('JSON.stringify(plannerDraft.preview)'),approved);
+  failSave=false;await app.fire('submit',doc.querySelector('#plan-confirm-form'));assert.equal(app.run('state.plans.length'),2);assert.equal(app.run('state.active'),'preview-3');assert.equal(calls.length,modelCalls);assert.equal(JSON.stringify(saved.at(-1)),approved);
+});
+
+test('closing an unsaved planner keeps its draft, and pending preview calls cannot be duplicated or confirmed',async t=>{
+  let resolvePreview,requests=0;const app=realSettingsHarness({load:async()=>({status:{mode:'ai'}}),request:async(endpoint)=>{requests++;if(endpoint==='plan-clarify')return questionnaire;return new Promise(resolve=>{resolvePreview=resolve;});}});
+  t.after(()=>app.close());await app.ready();app.run('planner()');const doc=app.document;
+  doc.querySelector('#goal').value='练习文件整理';await app.fire('submit',doc.querySelector('#plan-form'));
+  doc.querySelectorAll('.clarification-question').forEach(q=>q.querySelector('input').checked=true);
+  const pending=app.fire('submit',doc.querySelector('#clarification-form'));await Promise.resolve();
+  assert.equal(app.run('plannerBusy'),true);assert.equal(doc.querySelector('#clarification-form fieldset').disabled,true);
+  await app.run("action('close-planner',{dataset:{}})");await app.fire('submit',doc.querySelector('#clarification-form'));assert.equal(requests,2);assert.equal(doc.querySelector('#planner').open,true);
+  resolvePreview({...structuredClone(demoPlan),id:'only-preview',source:'ai',lessons:demoPlan.lessons.map((l,i)=>({...l,id:`only-${i}`}))});await pending;
+  await app.run("action('close-planner',{dataset:{}})");assert.equal(app.run('state.plans.length'),1);app.run('planner()');assert.equal(app.run('plannerDraft.preview.id'),'only-preview');
+  await app.run("submitPlanner('plan-confirm-form',new Map())");assert.equal(app.run('state.plans.length'),1);assert.match(doc.querySelector('#plan-error').textContent,/先预览并确认/);
+});
+
+test('Web final confirmation keeps an approved outline on quota failure and saves it on retry without contacting a model',async t=>{
+  const app=realSettingsHarness();t.after(()=>app.close());await app.ready();await new Promise(resolve=>setImmediate(resolve));
+  const preview={...structuredClone(demoPlan),id:'approved-web-course',source:'ai',learningBrief:learningBriefFrom(clarification),lessons:demoPlan.lessons.map((l,i)=>({...l,id:`approved-web-${i}`}))};
+  app.run(`globalThis.modelCalls=0;globalThis.fetch=async()=>{modelCalls++;throw Error('confirmation must not generate again')};plannerDraft={step:'confirm',goal:${JSON.stringify(preview.goal)},level:${JSON.stringify(preview.level)},daily:${preview.daily},days:${preview.days},questionnaire:${JSON.stringify(questionnaire)},answers:${JSON.stringify(clarification.answers)},notes:${JSON.stringify(clarification.notes)},feedback:'',preview:${JSON.stringify(preview)}};plannerDraft.previewFor=plannerPreviewKey();planner();globalThis.savedPlannerStorage=localStorage;globalThis.localStorage={setItem(){throw Error('quota')}}`);
+  const doc=app.document;await app.fire('submit',doc.querySelector('#plan-confirm-form'));
+  assert.equal(app.run('state.plans.length'),1);assert.equal(app.run('plannerDraft.preview.id'),'approved-web-course');assert.match(doc.querySelector('#plan-error').textContent,/大纲保留/);
+  app.run('globalThis.localStorage=savedPlannerStorage');await app.fire('submit',doc.querySelector('#plan-confirm-form'));
+  assert.equal(app.run('modelCalls'),0);assert.equal(app.run('state.active'),'approved-web-course');assert.equal(app.run("JSON.parse(localStorage.getItem('learnflow.v1')).plans.length"),2);
 });
 
 test('regenerating a questionnaire keeps the previous questions and answers if analysis fails', async () => {

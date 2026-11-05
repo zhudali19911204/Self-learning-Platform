@@ -4,6 +4,8 @@ const path = require('node:path');
 const { writeFile } = require('node:fs/promises');
 exports.run = async (window, directory, fixture) => {
   const evaluate = code => window.webContents.executeJavaScript(code);
+  window.webContents.setBackgroundThrottling(false);
+  const frames=()=>evaluate('new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))');
   const wait = expression => evaluate(`new Promise((resolve,reject)=>{let n=0;const timer=setInterval(()=>{if(${expression}){clearInterval(timer);resolve(true);}else if(++n>100){clearInterval(timer);reject(new Error('Sources smoke timed out: '+document.querySelector('#toast')?.textContent));}},100);})`);
   const reload = async () => { const ready = new Promise(resolve => window.webContents.once('did-finish-load', resolve)); window.webContents.reload(); await ready; await wait("document.querySelector('main h1')"); };
   const { demoPlan } = await import('../public/demo.js');
@@ -88,5 +90,56 @@ exports.run = async (window, directory, fixture) => {
   await wait(`document.querySelector('[data-block-id="${practice.blocks[1].id}"] .block-text')`);
   assert.equal((await evaluate(`window.learnflowDesktop.getLesson(${JSON.stringify(practiceId)})`)).blockCourse.blocks[1].content.text, revisedPractice.blockCourse.blocks[1].content.text);
   assert.deepEqual(fixture.counts, { searches: 3, reads: 3, generations: 6 });
-  console.log('COURSE_SOURCES_SMOKE', JSON.stringify({ passed: true, ...fixture.counts, realKeyCalls: 0, checks: ['single-switch', 'persist-reload', 'excluded-sources-filtered', 'inline-citation-derived-and-linked', 'references-collapsible', 'automatic-search-and-generation', 'off-skips-search', 'references-footer', 'old-citations-preserved', 'quiz-reuses-saved-references-without-search', 'quiz-mixed-references-saved-and-reloaded', 'quiz-without-evidence-never-searches', 'practice-isolates-historical-citations', 'task-revision-hides-old-excerpt-ids', 'practice-revision-history-and-reload'] }));
+  // Reproduce the reported generation error through the full renderer/IPC/
+  // search/model/storage path, with a citation-only table column and bold IDs.
+  const tableLessonId=plan.lessons.at(-1).id;
+  await evaluate(`window.learnflowDesktop.saveOutline(${JSON.stringify(tableLessonId)},${JSON.stringify({intro:'区分提交配置与远程认证。',blocks:[{type:'reading',title:'配置与认证对照',objective:'按表格区分两种用途'},{type:'example',title:'配置示例',objective:'核对实际配置'},{type:'quiz',title:'检验理解',objective:'检验两者区别'}]})})`);
+  await evaluate(`window.learnflowDesktop.setCourseSourceSearch(${JSON.stringify(tableLessonId)},true)`);
+  fixture.setTableCitations(true);await reload();
+  await evaluate(`document.querySelector('[data-page=routes]').click();document.querySelector('[data-action=open-lesson][data-id="${tableLessonId}"]').click()`);
+  await wait("document.querySelector('[data-action=generate-block]')");await evaluate("document.querySelector('[data-action=generate-block]').click()");
+  await wait("document.querySelector('.block-text table .course-inline-citation')");
+  const tableDetail=await evaluate(`window.learnflowDesktop.getLesson(${JSON.stringify(tableLessonId)})`),tableContent=tableDetail.blockCourse.blocks[0].content;
+  assert.equal(await evaluate("document.querySelector('.block-text .course-duplicate-heading').hidden"),true);
+  assert.equal(await evaluate("document.querySelector('.block-text .course-duplicate-heading').getBoundingClientRect().height"),0);
+  assert.equal(tableContent.grounding.citations.length,2);assert.match(tableContent.grounding.citations[0].claim,/user.name.*user.email/);assert.match(tableContent.grounding.citations[1].claim,/提交身份与远程认证/);
+  assert.ok(tableContent.grounding.citations.every(c=>tableContent.text.includes(c.claim)&&c.url==='https://git-scm.com/docs/git-config'));
+  assert.equal(await evaluate("document.querySelectorAll('.block-text table .course-inline-citation').length"),3);
+  assert.deepEqual(fixture.counts,{searches:4,reads:4,generations:7});
+  await evaluate("(()=>{const table=document.querySelector('.block-text table');if(table.closest('.block-collapsible-body')?.hidden)table.closest('[data-block-id]').querySelector('[data-action=toggle-block-collapse]').click();table.scrollIntoView({block:'center'});})()");
+  await frames();assert.equal(await evaluate("document.querySelector('.block-text table').getBoundingClientRect().height>0"),true);
+  await writeFile(path.join(directory,'..','table-citations-smoke.png'),(await window.webContents.capturePage()).toPNG());
+  await reload();assert.deepEqual((await evaluate(`window.learnflowDesktop.getLesson(${JSON.stringify(tableLessonId)})`)).blockCourse.blocks[0].content,tableContent);
+  fixture.setTableCitations(false);
+  // An otherwise valid draft with no markers gets one citation-only request,
+  // retains its wording and is persisted with the actual supplied source.
+  const completedBlock=tableDetail.blockCourse.blocks[1];fixture.setMissingCitations(true);
+  await evaluate(`document.querySelector('[data-page=routes]').click();document.querySelector('[data-action=open-lesson][data-id="${tableLessonId}"]').click()`);
+  await wait(`document.querySelector('[data-action=generate-block][data-block="${completedBlock.id}"]')`);
+  await evaluate(`document.querySelector('[data-action=generate-block][data-block="${completedBlock.id}"]').click()`);
+  await wait(`document.querySelector('[data-block-id="${completedBlock.id}"] .course-inline-citation')`);
+  const completedDetail=await evaluate(`window.learnflowDesktop.getLesson(${JSON.stringify(tableLessonId)})`),completedContent=completedDetail.blockCourse.blocks[1].content;
+  assert.equal(completedContent.text.replace('[S1E1]',''),'## 配置与认证\n\n提交身份与远程认证不同，提交作者配置不能代替远程仓库认证。\n\n教学示例：先检查身份配置，再独立检查认证方式。');
+  assert.equal(completedContent.grounding.citations.length,1);assert.equal(completedContent.grounding.citations[0].url,'https://git-scm.com/docs/git-config');
+  assert.equal(await evaluate(`document.querySelector('[data-block-id="${completedBlock.id}"] .course-inline-citation').getAttribute('href')`),'https://git-scm.com/docs/git-config');
+  assert.deepEqual(fixture.counts,{searches:5,reads:5,generations:9});await reload();
+  assert.deepEqual((await evaluate(`window.learnflowDesktop.getLesson(${JSON.stringify(tableLessonId)})`)).blockCourse.blocks[1].content,completedContent);
+  fixture.setMissingCitations(false);
+  // Actual-provider failure shape, with public synthetic content: a citation
+  // appended to a closing fence must not swallow the rest of the lesson.
+  fixture.setFencedCitations(true);
+  await evaluate(`document.querySelector('[data-page=routes]').click();document.querySelector('[data-action=open-lesson][data-id="${tableLessonId}"]').click()`);
+  await wait(`document.querySelector('[data-block-id="${completedBlock.id}"] .revision-actions > [data-action=request-revision]')`);
+  await evaluate(`document.querySelector('[data-block-id="${completedBlock.id}"] .revision-actions > [data-action=request-revision]').click();document.querySelector('#revision-request').value='用代码展示核对方法。';document.querySelector('#revision-form').requestSubmit()`);
+  await wait("!document.querySelector('#revise-block-dialog').open");
+  const fencedDetail=await evaluate(`window.learnflowDesktop.getLesson(${JSON.stringify(tableLessonId)})`),fencedContent=fencedDetail.blockCourse.blocks[1].content;
+  assert.equal(fencedContent.grounding.citations.length,2);assert.ok(fencedContent.text.includes('```\n\n[S1E1]'));
+  assert.equal(fencedContent.revisions.at(-1).text,completedContent.text);
+  assert.equal(await evaluate(`document.querySelector('[data-block-id="${completedBlock.id}"] pre code').textContent`),'git config --get user.name\ngit config --get user.email');
+  assert.equal(await evaluate(`document.querySelectorAll('[data-block-id="${completedBlock.id}"] .course-inline-citation').length`),2);
+  assert.equal(await evaluate(`document.querySelectorAll('[data-block-id="${completedBlock.id}"] .block-text h3').length`),2);
+  assert.deepEqual(fixture.counts,{searches:6,reads:6,generations:10});await reload();
+  assert.deepEqual((await evaluate(`window.learnflowDesktop.getLesson(${JSON.stringify(tableLessonId)})`)).blockCourse.blocks[1].content,fencedContent);
+  fixture.setFencedCitations(false);
+  console.log('COURSE_SOURCES_SMOKE', JSON.stringify({ passed: true, ...fixture.counts, realKeyCalls: 0, checks: ['single-switch', 'persist-reload', 'excluded-sources-filtered', 'inline-citation-derived-and-linked', 'references-collapsible', 'automatic-search-and-generation', 'off-skips-search', 'references-footer', 'old-citations-preserved', 'quiz-reuses-saved-references-without-search', 'quiz-mixed-references-saved-and-reloaded', 'quiz-without-evidence-never-searches', 'practice-isolates-historical-citations', 'task-revision-hides-old-excerpt-ids', 'practice-revision-history-and-reload', 'table-source-column-and-bold-adjacent-citations', 'table-citations-saved-linked-and-reloaded'] }));
 };

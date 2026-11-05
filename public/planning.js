@@ -37,7 +37,25 @@ export function learningBriefFrom(value) {
 }
 
 export function validLearningBrief(value) {
-  return object(value) && text(value.summary, 1000) && text(value.notes, 1000, true) && Array.isArray(value.answers) && value.answers.length >= 2 && value.answers.length <= 6
+  return object(value) && text(value.summary, 1000) && text(value.notes, 1000, true) && Array.isArray(value.answers) && (value.answers.length >= 2 || (value.answers.length === 0 && value.adjustments?.length > 0)) && value.answers.length <= 6
+    && (value.adjustments === undefined || (Array.isArray(value.adjustments) && value.adjustments.length > 0 && value.adjustments.length <= 10 && value.adjustments.every(item => text(item, 1000))))
     && value.answers.every(answer => object(answer) && text(answer.question, 200) && Array.isArray(answer.selected) && answer.selected.length <= 5 && answer.selected.every(item => text(item, 120))
       && text(answer.detail, 500, true) && (answer.selected.length || answer.detail.trim().length));
+}
+
+export function validPlanOutline(value) {
+  return object(value) && text(value.title,160) && text(value.description,2000) && Array.isArray(value.lessons) && value.lessons.length >= 3 && value.lessons.length <= 12
+    && value.lessons.every(l => object(l) && text(l.title,160) && text(l.objective,1000) && text(l.phase,80) && Number.isInteger(l.minutes) && l.minutes >= 5 && l.minutes <= 180 && Array.isArray(l.tags) && l.tags.length > 0 && l.tags.length <= 6 && l.tags.every(t => text(t,40)));
+}
+export function planAdjustmentSnapshot(plan) {
+  return { title:plan.title, description:plan.description, goal:plan.goal, level:plan.level, daily:plan.daily, days:plan.days,
+    ...(plan.learningBrief ? {learningBrief:structuredClone(plan.learningBrief)} : {}),
+    lessons:plan.lessons.map(({title,objective,phase,minutes,tags})=>({title,objective,phase,minutes,tags:[...tags]})) };
+}
+export function learningBriefWithAdjustment(plan,requirement) {
+  if (!text(requirement,1000)) throw new Error('请填写不超过 1000 字的目录调整要求。');
+  const brief=plan.learningBrief ? structuredClone(plan.learningBrief) : {summary:plan.goal,answers:[],notes:''};
+  brief.adjustments=[...(brief.adjustments || []).slice(-9),requirement.trim()];
+  if (!validLearningBrief(brief)) throw new Error('原学习需求无效，无法调整目录。');
+  return brief;
 }

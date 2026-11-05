@@ -55,7 +55,7 @@ async function start() {
   const { createSpeechModel } = await import(pathToFileURL(path.join(__dirname, '..', 'speech-model.mjs')));
   const { assistedBlockTypes } = await import(pathToFileURL(path.join(__dirname, '..', 'public', 'blocks.js')));
   const { validImageSuggestion, validImageProposal } = await import(pathToFileURL(path.join(__dirname, '..', 'public', 'illustrations.js')));
-  const isolatedTest = smoke && (process.argv.includes('--categories-only') ? 'category-tests' : process.argv.includes('--resume-only') ? 'resume-tests' : process.argv.includes('--ui-only') ? 'ui-tests' : process.argv.includes('--cancel-only') ? 'cancel-tests' : process.argv.includes('--quiz-only') ? 'quiz-tests' : process.argv.includes('--facts-only') ? 'fact-tests' : process.argv.includes('--sources-only') ? 'source-tests' : process.argv.includes('--quality-only') || process.argv.includes('--revision-only') ? 'score-tests' : process.argv.includes('--sharing-only') ? 'sharing-tests' : '');
+  const isolatedTest = smoke && (process.argv.includes('--planning-only') ? 'planning-loop-tests' : process.argv.includes('--plan-adjust-only') ? 'plan-adjustment-tests' : process.argv.includes('--categories-only') ? 'category-tests' : process.argv.includes('--resume-only') ? 'resume-tests' : process.argv.includes('--ui-only') ? 'ui-tests' : process.argv.includes('--cancel-only') ? 'cancel-tests' : process.argv.includes('--quiz-only') ? 'quiz-tests' : process.argv.includes('--facts-only') ? 'fact-tests' : process.argv.includes('--sources-only') ? 'source-tests' : process.argv.includes('--quality-only') || process.argv.includes('--revision-only') ? 'score-tests' : process.argv.includes('--sharing-only') ? 'sharing-tests' : '');
   const dataDirectory = isolatedTest ? path.join(app.getPath('userData'), isolatedTest, randomBytes(8).toString('hex')) : path.join(app.getPath('userData'), 'data');
   await mkdir(dataDirectory, { recursive: true });
   settingsLayoutStore = createSettingsLayoutStore(dataDirectory);
@@ -90,7 +90,7 @@ async function start() {
   const modelFetch = (url, options) => { checkCancelled(); return cancellation.generationAwait(modelSession.fetch(url, { ...options, signal: cancellation.generationSignal(null, options?.signal), credentials: 'omit' })); };
   const speechService = createSpeechService(speechStore, modelFetch);
   let llm = createLLM({ ...store.getModelConfig(), fetchImpl: modelFetch });
-  const sourceFixture = smoke && process.argv.includes('--materials-only') ? (await import('./materials-fixture.mjs')).materialsFixture() : smoke && process.argv.includes('--sources-only') ? (await import('./sources-fixture.mjs')).sourcesFixture() : null;
+  const sourceFixture = smoke && process.argv.includes('--planning-only') ? (await import('./planning-loop-fixture.mjs')).planningLoopFixture() : smoke && process.argv.includes('--plan-adjust-only') ? (await import('./plan-adjustment-fixture.mjs')).planAdjustmentFixture() : smoke && process.argv.includes('--materials-only') ? (await import('./materials-fixture.mjs')).materialsFixture() : smoke && process.argv.includes('--sources-only') ? (await import('./sources-fixture.mjs')).sourcesFixture() : null;
   if (sourceFixture) llm = sourceFixture.llm;
   const getQualityLLM = () => createLLM({ ...qualityStore.getModelConfig(), fetchImpl: modelFetch });
   const qualityStatus = () => {
@@ -154,13 +154,16 @@ async function start() {
     if(!owner) throw new Error('课程不存在，未读取资料。');
     return owner.materials || [];
   };
+  const { materialCoverageParts } = await import(pathToFileURL(path.join(__dirname, '..', 'public', 'material-coverage.js')));
+  const { materialPlanningCallCount } = await import(pathToFileURL(path.join(__dirname, '..', 'course-material-planning.mjs')));
+  const courseMaterialParts = lessonId => materialCoverageParts(learning.overview().plans.find(p=>p.lessons.some(l=>l.id===lessonId)),lessonId);
   const courseRequests = new Set();
   const fullGenerationRequests = new Set();
   const progressRequests = new Set();
   const onGenerationProgress = (requestId, stage) => {
     if (progressRequests.has(requestId) && window && !window.isDestroyed()) window.webContents.send('learnflow:generation-progress', { requestId, stage });
   };
-  server = createApp({ getLLM: () => llm, courseSources, getPlanningMaterials:planningMaterials, getCourseMaterials:courseMaterials, onGenerationProgress, getGenerationSignal: id => generationTasks.signal(id), getCourseSourceSearch: id => learning.getLesson(id).sourceSearch, getCourseBlockCourse: id => learning.getLesson(id).blockCourse, apiToken: token, getImageSettings: () => imageStore.getSettings(), getImageAsset: async id => {
+  server = createApp({ getLLM: () => llm, courseSources, getPlanningMaterials:planningMaterials, getPlanForAdjustment:id=>learning.overview().plans.find(p=>p.id===id), getCourseMaterials:courseMaterials, getCourseMaterialParts:courseMaterialParts, onGenerationProgress, getGenerationSignal: id => generationTasks.signal(id), getCourseSourceSearch: id => learning.getLesson(id).sourceSearch, getCourseBlockCourse: id => learning.getLesson(id).blockCourse, apiToken: token, getImageSettings: () => imageStore.getSettings(), getImageAsset: async id => {
     try { return await imageStore.readAsset(id); } catch { return null; }
   }, getAudioAsset: async id => { try { return await speechStore.readAsset(id); } catch { return null; } } });
   await new Promise((resolve, reject) => { server.once('error', reject); server.listen(0, '127.0.0.1', resolve); });
@@ -427,18 +430,23 @@ async function start() {
   }));
   const modelRequest = async (endpoint, data, progressId) => {
     checkCancelled();
-    if (!['status', 'plan-clarify', 'plan', 'lesson', 'lesson-outline', 'lesson-block', 'lesson-ask', 'wiki', 'wiki-draft', 'knowledge-organize', 'ask', 'test-connection'].includes(endpoint)) throw new Error('接口不存在。');
+    if (!['status', 'plan-clarify', 'plan', 'plan-adjust', 'lesson', 'lesson-outline', 'lesson-block', 'lesson-ask', 'wiki', 'wiki-draft', 'knowledge-organize', 'ask', 'test-connection'].includes(endpoint)) throw new Error('接口不存在。');
     const courseId = endpoint === 'lesson-block' ? data?.lessonId : null;
     if (courseId && courseRequests.has(courseId)) throw new Error('本课正在生成，请稍候。');
     if (courseId) { learning.getLesson(courseId); courseRequests.add(courseId); }
     const requestId = typeof progressId === 'string' && /^generation-[a-z0-9-]{1,80}$/.test(progressId) ? progressId : '';
     if (requestId) { progressRequests.add(requestId); onGenerationProgress(requestId, 'preparing'); }
     try {
+    let requestTimeout=(llm.status().timeoutMs || 120000) * (endpoint === 'lesson-block' ? 2 : 1) + (endpoint === 'lesson-block' ? 120000 : 10000);
+    if(endpoint==='plan'||endpoint==='plan-adjust'){
+      const materials=endpoint==='plan'?(data?.materialIds?.length?planningMaterials(data.materialIds):[]):learning.overview().plans.find(p=>p.id===data?.planId)?.materials||[];
+      if(materials.length)requestTimeout=materialPlanningCallCount(materials)*(llm.status().timeoutMs||120000)+10000;
+    }
     const response = await fetch(`${base}/api/${endpoint}`, {
       method: endpoint === 'status' ? 'GET' : 'POST',
       headers: { 'Content-Type': 'application/json', 'X-Learnflow-Token': token, ...(requestId ? { 'X-Learnflow-Progress': requestId } : {}) },
       ...(endpoint === 'status' ? {} : { body: JSON.stringify(data) }),
-      signal: cancellation.generationSignal((llm.status().timeoutMs || 120000) * (endpoint === 'lesson-block' ? 2 : 1) + (endpoint === 'lesson-block' ? 120000 : 10000))
+      signal: cancellation.generationSignal(requestTimeout)
     });
     const value = await response.json();
     checkCancelled();
@@ -576,7 +584,9 @@ async function start() {
   if (!smoke) window.focus();
   if (development) { window.setTitle('知行 Learnflow · 开发测试版'); console.log('DESKTOP_DEV_READY'); }
   if (smoke) {
-    if (process.argv.includes('--categories-only')) await require('./categories-smoke.cjs').run(window,dataDirectory);
+    if (process.argv.includes('--planning-only')) await require('./planning-loop-smoke.cjs').run(window,dataDirectory,sourceFixture);
+    else if (process.argv.includes('--plan-adjust-only')) await require('./plan-adjustment-smoke.cjs').run(window,dataDirectory,sourceFixture);
+    else if (process.argv.includes('--categories-only')) await require('./categories-smoke.cjs').run(window,dataDirectory);
     else if (process.argv.includes('--materials-only')) await require('./materials-smoke.cjs').run(window,dataDirectory,sourceFixture);
     else if (process.argv.includes('--resume-only')) await require('./resume-smoke.cjs').run(window,dataDirectory);
     else if (process.argv.includes('--ui-only')) await require('./ui-smoke.cjs').run(window,dataDirectory);
