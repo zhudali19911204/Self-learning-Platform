@@ -1632,7 +1632,7 @@ function renderKnowledgeDraft() {
       <label for="draft-title">知识点标题</label><input id="draft-title" name="title" maxlength="160" required value="${escape(result.title)}">
       <label for="draft-summary">知识描述</label><textarea id="draft-summary" name="summary" maxlength="500" required>${escape(result.summary)}</textarea>
       <label for="draft-topic">主题目录 <small>例如：编程/Python</small></label><input id="draft-topic" name="topic" maxlength="160" required value="${escape(result.topic || result.tags[0] || '未分类')}">
-      <label for="draft-content">正文 · Markdown</label><textarea id="draft-content" name="content" maxlength="20000" required>${escape(result.content)}</textarea>
+      <label for="draft-content">正文 · Markdown</label><textarea id="draft-content" name="content" rows="16" maxlength="20000" required>${escape(result.content)}</textarea>
       <div class="knowledge-draft-columns"><div><label for="draft-use">什么时候使用 · 每行一项</label><textarea id="draft-use" name="useWhen" maxlength="6011" placeholder="资料不足可留空">${escape(result.useWhen.join('\n'))}</textarea></div><div><label for="draft-avoid">什么时候不能用 · 每行一项</label><textarea id="draft-avoid" name="avoidWhen" maxlength="6011" placeholder="资料不足可留空">${escape(result.avoidWhen.join('\n'))}</textarea></div></div>
       <label for="draft-tags">标签 · 逗号分隔</label><input id="draft-tags" name="tags" maxlength="245" required value="${escape(result.tags.join('，'))}">
       ${matches.length ? `<div class="notice">本课已有相近卡片：${matches.map(note => escape(note.title)).join('、')}。请确认没有重复后再保存。</div>` : ''}

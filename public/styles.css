@@ -493,6 +493,12 @@ main:has(.knowledge-graph) .wiki-toolbar{display:none}
 .annotation-quote{max-height:110px;overflow:auto;white-space:pre-wrap;background:#f7f4fc;border-left:3px solid #a88adf;border-radius:5px;padding:12px 14px;color:#5f5377;font-size:12px}
 .annotation-dialog-actions{display:flex;justify-content:flex-end;gap:10px;flex-wrap:wrap}
 .annotation-dialog-actions .danger{margin-right:auto}
+#knowledge-draft-dialog { width:min(1040px,calc(100vw - 40px)); }
+#knowledge-draft-form #draft-content { height:clamp(340px,52vh,640px); min-height:300px; line-height:1.8; resize:vertical; }
+@media(max-width:560px) {
+  #knowledge-draft-dialog { width:calc(100vw - 24px); max-width:calc(100vw - 24px); }
+  #knowledge-draft-form #draft-content { height:48vh; min-height:240px; }
+}
 
 /* Knowledge exploration and Q&A are separate full-width tabs. */
 html{scrollbar-gutter:stable}
