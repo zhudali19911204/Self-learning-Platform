@@ -15,7 +15,7 @@ import { Marked } from 'marked';
 import createDOMPurify from 'dompurify';
 import { JSDOM } from 'jsdom';
 import { createMarkdownRenderer } from '../public/markdown.js';
-import { validQuestionnaire, validClarification, learningBriefFrom, validPlanOutline, planAdjustmentSnapshot, learningBriefWithAdjustment } from '../public/planning.js';
+import { validQuestionnaire, validClarification, learningBriefFrom, validPlanOutline, planAdjustmentSnapshot, learningBriefWithAdjustment, isPlanGeneration } from '../public/planning.js';
 import { questionnaire, clarification } from '../test-support/planning.mjs';
 import { validIllustration, validImageProposal } from '../public/illustrations.js';
 import { speechDefaults, speechVoices, listeningText, speechTurns, speechRequest, validAudioId } from '../public/speech.js';
@@ -759,6 +759,32 @@ test('quiz progress describes prior teaching reuse instead of a new search even 
 });
 
 // Keyless-form regressions need real elements.namedItem() and actual FormData.
+test('material index repair progress discloses its bounded extra model call',async t=>{
+  let update;
+  const app=realSettingsHarness({load:async()=>({status:{mode:'ai'}}),onGenerationProgress:listener=>{update=listener;}});
+  t.after(()=>app.close());await app.ready();
+  const id=app.run("generationProgress.start({title:'生成课程大纲预览'}).id");
+  update({requestId:id,stage:'repairing_materials'});
+  assert.match(app.document.querySelector('.generation-progress-message').textContent,/修正当前资料批次.*最多一次，可能计费/);
+});
+
+test('web plan preview and adjustment keep the manual signal without an automatic deadline; other tasks retain their budgets', async t => {
+  const sent = [], deadlines = [];
+  t.mock.method(AbortSignal, 'timeout', milliseconds => { deadlines.push(milliseconds); return AbortSignal.any([]); });
+  const app = harness(null, async (url, options) => {
+    if (url === '/api/status') return { ok: true, json: async () => ({ mode: 'ai', timeoutMs: 1000 }) };
+    sent.push(options.signal); return { ok: true, json: async () => ({ ok: true }) };
+  });
+  await Promise.resolve(); app.run('status = { mode: "ai", timeoutMs: 1000 }; globalThis.manualSignal = AbortSignal.any([])');
+  for (const endpoint of ['plan', 'plan-adjust']) {
+    await app.run(`apiRequest('${endpoint}', {}, 'generation-plan', manualSignal)`);
+    assert.equal(sent.at(-1), app.run('manualSignal'));
+  }
+  assert.deepEqual(deadlines, []);
+  for (const endpoint of ['plan-clarify', 'lesson-outline', 'lesson-block', 'test-connection']) await app.run(`apiRequest('${endpoint}', {}, 'generation-other', manualSignal)`);
+  assert.deepEqual(deadlines, [11000, 11000, 122000, 11000]);
+});
+
 function realSettingsHarness(bridge) {
   const dom = new JSDOM('<div id="app"></div><div id="toast"></div><aside id="generation-progress" popover="manual" hidden></aside><button id="annotation-quick-add" data-action="add-annotation" hidden></button><dialog id="annotation-dialog"></dialog><dialog id="knowledge-draft-dialog"></dialog><dialog id="knowledge-organize-dialog"></dialog><dialog id="quality-dialog"></dialog><dialog id="course-category-dialog"></dialog><dialog id="plan-adjustment-dialog"></dialog><dialog id="planner"></dialog>', { url: 'http://localhost' });
   const document = dom.window.document, listeners = new Map();
@@ -770,7 +796,7 @@ function realSettingsHarness(bridge) {
   }
   document.addEventListener = (name, listener) => { const group = listeners.get(name) || []; group.push(listener); listeners.set(name, group); };
   dom.window.learnflowDesktop = bridge; dom.window.scrollTo = () => {};
-  const context = vm.createContext({ courseCategories, categoryFor, automaticCourseCategory, validCategoryChanges, generationCancelled, isGenerationCancelled, masteredQuizQuestions, quizRecordAfterChange, quizQuestionKey, quizInitialCount, quizBatchLimit, quizQuestionLimit, createGenerationProgress, factCheckLabels, sameFactContent, MATERIAL_LIMITS, validMaterials, validMaterialCoverage, localMaterialSource, officialSource, validSourceSearch, courseReferences, teachingContextNotice, qualityRubric, qualityLabels, qualityModelId, revisionTypes, revisionStatuses, revisionCheckLabels, revisionContent, revisionText, revisionDiff,
+  const context = vm.createContext({ isPlanGeneration, courseCategories, categoryFor, automaticCourseCategory, validCategoryChanges, generationCancelled, isGenerationCancelled, masteredQuizQuestions, quizRecordAfterChange, quizQuestionKey, quizInitialCount, quizBatchLimit, quizQuestionLimit, createGenerationProgress, factCheckLabels, sameFactContent, MATERIAL_LIMITS, validMaterials, validMaterialCoverage, localMaterialSource, officialSource, validSourceSearch, courseReferences, teachingContextNotice, qualityRubric, qualityLabels, qualityModelId, revisionTypes, revisionStatuses, revisionCheckLabels, revisionContent, revisionText, revisionDiff,
     demoPlan, demoLessons, lessonFromBlocks, validOutline, validBlockContent, validBlockSpec, blockGenerationContext, revisedContent, restoredContent, assistedBlockTypes, Marked, DOMPurify, createMarkdownRenderer, validQuestionnaire, validClarification, learningBriefFrom, validPlanOutline, planAdjustmentSnapshot, validIllustration, validImageProposal, speechDefaults, speechVoices, listeningText, speechTurns, speechRequest, validAudioId, validKnowledgeSource, validKnowledgeDraft, localKnowledgeDraft, knowledgeTags, knowledgeConditions, validAnnotations, personalNotesForSource, personalNotesMarkdown, knowledgeCatalog, knowledgeDomain, knowledgeDomainColors, knowledgeTopic, retrieveKnowledge, validKnowledgeOrganization, courseKnowledgeTree, knowledgeTree, knowledgeGraph, filterKnowledgeGraph, createGraphMotion, stepGraphMotion, structuredClone, crypto: webcrypto, AbortSignal,
     document, window: dom.window, localStorage:dom.window.localStorage, fetch:async()=>({ok:true,json:async()=>({mode:'demo'})}), FormData: dom.window.FormData, createStudyPositionTracker, studyPositionFor, startHomeMotion, setTimeout: () => 1, clearTimeout() {}
   });
@@ -787,7 +813,7 @@ function harness(saved, fetchImpl, desktopBridge) {
     if (!nodes.has(selector)) nodes.set(selector, { innerHTML: '', textContent: '', open: false, attributes: {}, setAttribute(name, value) { this.attributes[name] = value; }, classList: { add() {}, remove() {} }, scrollIntoView() {}, focus() {}, showModal() { this.open = true; }, close() { this.open = false; } });
     return nodes.get(selector);
   };
-  const context = vm.createContext({ courseCategories, categoryFor, automaticCourseCategory, validCategoryChanges, createStudyPositionTracker, studyPositionFor, startHomeMotion, generationCancelled, isGenerationCancelled, masteredQuizQuestions, quizRecordAfterChange, quizQuestionKey, quizInitialCount, quizBatchLimit, quizQuestionLimit, createGenerationProgress, factCheckLabels, sameFactContent, MATERIAL_LIMITS, validMaterials, validMaterialCoverage, localMaterialSource, officialSource, validSourceSearch, courseReferences, teachingContextNotice, qualityRubric, qualityLabels, qualityModelId, revisionTypes, revisionStatuses, revisionCheckLabels, revisionContent, revisionText, revisionDiff,
+  const context = vm.createContext({ isPlanGeneration, courseCategories, categoryFor, automaticCourseCategory, validCategoryChanges, createStudyPositionTracker, studyPositionFor, startHomeMotion, generationCancelled, isGenerationCancelled, masteredQuizQuestions, quizRecordAfterChange, quizQuestionKey, quizInitialCount, quizBatchLimit, quizQuestionLimit, createGenerationProgress, factCheckLabels, sameFactContent, MATERIAL_LIMITS, validMaterials, validMaterialCoverage, localMaterialSource, officialSource, validSourceSearch, courseReferences, teachingContextNotice, qualityRubric, qualityLabels, qualityModelId, revisionTypes, revisionStatuses, revisionCheckLabels, revisionContent, revisionText, revisionDiff,
     demoPlan, demoLessons, lessonFromBlocks, validOutline, validBlockContent, validBlockSpec, blockGenerationContext, revisedContent, restoredContent, assistedBlockTypes, Marked, DOMPurify, createMarkdownRenderer, validQuestionnaire, validClarification, learningBriefFrom, validPlanOutline, planAdjustmentSnapshot, validIllustration, validImageProposal, speechDefaults, speechVoices, listeningText, speechTurns, speechRequest, validAudioId, validKnowledgeSource, validKnowledgeDraft, localKnowledgeDraft, knowledgeTags, knowledgeConditions, validAnnotations, personalNotesForSource, personalNotesMarkdown, knowledgeCatalog, knowledgeDomain, knowledgeDomainColors, knowledgeTopic, retrieveKnowledge, validKnowledgeOrganization, courseKnowledgeTree, knowledgeTree, knowledgeGraph, filterKnowledgeGraph, createGraphMotion, stepGraphMotion, structuredClone, crypto: webcrypto, AbortSignal,
     document: { querySelector: node, addEventListener(name, listener) { const group = listeners.get(name) || []; group.push(listener); listeners.set(name, group); } },
     localStorage: { get length() { return storage.size; }, key: index => [...storage.keys()][index] ?? null, getItem: key => storage.get(key) ?? null, setItem: (key, value) => storage.set(key, value), removeItem: key => storage.delete(key) },

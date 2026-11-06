@@ -110,6 +110,26 @@ exports.run=async(window,directory,fixture)=>{
   await evaluate(`document.querySelector('[data-block-id="${practiceId}"] .course-inline-citation').click()`);
   await wait("document.querySelector('#material-preview-dialog')?.open");assert.equal(await evaluate("document.querySelector('.material-part-selected').textContent.includes('Calibration rule')"),true);
   await reload();assert.deepEqual((await evaluate(`window.learnflowDesktop.getLesson(${JSON.stringify(targetLesson)})`)).blockCourse.blocks[1].content,content);
+  const longFile=path.join(directory,'long-index-guide.md');
+  await writeFile(longFile,Array.from({length:50},(_,i)=>`## 文件操作主题 ${i+1}\n${'保存文件后重新打开并核对名称和内容。'.repeat(50)}`).join('\n\n'));
+  selectedFiles=[longFile];
+  const longMaterials=await evaluate('window.learnflowDesktop.importMaterials([])');
+  const {fullMaterialBatches,createFullMaterialPlanningReader}=await import('../src/courses/course-material-planning.mjs');
+  const batchCount=fullMaterialBatches(longMaterials).length,readingBefore=fixture.counts.readings;
+  assert.ok(batchCount>1);
+  const input={goal:'学习文件保存与核对',level:'零基础',daily:25,days:14,materialIds:longMaterials.map(m=>m.id)};
+  const preview=await evaluate(`window.learnflowDesktop.request('plan',${JSON.stringify(input)},'generation-material-index')`);
+  assert.equal(preview.materialCoverage.complete,true);
+  assert.equal(fixture.counts.readings-readingBefore,batchCount);
+  await evaluate(`window.learnflowDesktop.request('plan',${JSON.stringify(input)},'generation-material-cached')`);
+  assert.equal(fixture.counts.readings-readingBefore,batchCount);
+  const {createMaterialPlanningCache}=await import('./material-planning-cache.mjs');
+  const reopened=createMaterialPlanningCache(directory);
+  try {
+   const index=await createFullMaterialPlanningReader({cache:reopened})(longMaterials,{model:{cacheKey:fixture.llm.cacheKey},generate:()=>{throw Error('Persistent batch index was not reused');}});
+   assert.equal(index.materialUnits.length,batchCount);
+   assert.equal(index.materialUnits.flatMap(u=>u.partIds).length,longMaterials[0].parts.length);
+  } finally {reopened.close();}
   console.log('MATERIALS_SMOKE',JSON.stringify({passed:true,formats:3,library:20,realModelCalls:0,...fixture.counts,screenshot:path.join(directory,'material-library-20.png')}));
  } finally {dialog.showOpenDialog=original;}
 };

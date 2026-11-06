@@ -16,7 +16,7 @@ import { sourceGenerationGuidance, sourceCitationIssue, groundedContent, validSo
 import { blockCommonGuidance, blockTypeGuidance, blockOutputGuidance, blockRevisionGuidance, outlineGuidance, planGuidance, validGeneratedBlock, generatedQuizProblems, normalizeOutline, inspectOutline, outlineRepairGuidance, mergeOutlineExamples } from './courses/course-generation.mjs';
 import { validTeachingContext, cleanTeachingContext } from '../public/teaching-context.js';
 import { blockTypes, validBlockSpec, validBlockContent, assistedBlockTypes } from '../public/blocks.js';
-import { validQuestionnaire, validClarification, learningBriefFrom, validLearningBrief, validPlanOutline, planAdjustmentSnapshot, learningBriefWithAdjustment } from '../public/planning.js';
+import { validQuestionnaire, validClarification, learningBriefFrom, validLearningBrief, validPlanOutline, planAdjustmentSnapshot, learningBriefWithAdjustment, isPlanGeneration } from '../public/planning.js';
 import { validImageProposal } from '../public/illustrations.js';
 import { validKnowledgeSource, validKnowledgeDraft } from '../public/knowledge-draft.js';
 import { validKnowledgeOrganization } from '../public/knowledge-index.js';
@@ -102,7 +102,7 @@ export function createApp(config = {}) {
   const defaultLLM = config.getLLM ? null : createLLM(config);
   const courseSources = config.courseSources || createCourseSources({ getConfig: () => ({ ...resolveConfig(config, config.env ?? process.env), localOnly: config.localOnly }), fetchImpl: config.fetchImpl });
   const sourceOperations = new Set();
-  const readFullMaterials = createFullMaterialPlanningReader();
+  const readFullMaterials = createFullMaterialPlanningReader({cache:config.materialPlanningCache});
   return http.createServer((req, res) => {
     const controller = new AbortController(), inherited = config.getGenerationSignal?.(req.headers['x-learnflow-progress']);
     const signal = inherited ? AbortSignal.any([controller.signal, inherited]) : controller.signal;
@@ -120,6 +120,7 @@ export function createApp(config = {}) {
       const path = new URL(req.url, `http://${host}`).pathname;
       if (path.startsWith('/api/') && config.apiToken && req.headers['x-learnflow-token'] !== config.apiToken) return send(403, { error: '桌面接口仅供应用内部调用。' });
       const llm = config.getLLM ? config.getLLM() : defaultLLM;
+      const generationOptions = isPlanGeneration(path.slice('/api/'.length)) ? { timeout: false } : undefined;
       const notify = stage => {
         const requestId = req.headers['x-learnflow-progress'];
         if (typeof requestId !== 'string' || !/^generation-[a-z0-9-]{1,80}$/.test(requestId)) return;
@@ -134,7 +135,7 @@ export function createApp(config = {}) {
           if(path !== '/api/lesson-block') input={...input,learningMaterialCatalog:materialCatalog(activeMaterials),learningMaterials:fullPlanning?[]:materialDocuments(activeMaterials,[input.title,input.objective,input.goal,input.adjustmentRequirement].filter(Boolean).join('\n'),{planning:true,preferredParts:assignedMaterialParts})};
           if(fullPlanning)input={...input,...fullPlanning};
         }
-        return generationAwait(llm.generate(input?.learningBrief && path !== '/api/plan' ? `${learnerGuidance} ${instruction}` : instruction, input, value => { checkGenerationCancellation(); notify('validating'); if(activeMaterials.length && value?.sourceInsufficient) fail('本次选取的导入资料片段不足以支撑当前目标，请调整目标或补充相关资料；未用模型记忆补写。',422); return validate(value); }));
+        return generationAwait(llm.generate(input?.learningBrief && path !== '/api/plan' ? `${learnerGuidance} ${instruction}` : instruction, input, value => { checkGenerationCancellation(); notify('validating'); if(activeMaterials.length && value?.sourceInsufficient) fail('本次选取的导入资料片段不足以支撑当前目标，请调整目标或补充相关资料；未用模型记忆补写。',422); return validate(value); }, generationOptions));
       };
       if (path === '/api/status' && req.method === 'GET') return send(200, llm.status());
       if (path.startsWith('/api/') && req.method === 'POST') {
@@ -205,8 +206,8 @@ export function createApp(config = {}) {
           const revisionPlan=adjustmentPlan || revision?.previousPlan, revisionRequirement=adjustmentPlan ? data.requirement : revision?.requirement;
           const requested = { goal: data.goal.trim(), level: data.level, daily: data.daily, days: data.days, ...(learningBrief ? { learningBrief } : {}), ...(revisionPlan ? {previousPlan:planAdjustmentSnapshot(revisionPlan),adjustmentRequirement:revisionRequirement} : {}) };
           const budget = data.daily * data.days;
-          if(activeMaterials.length)fullPlanning=await readFullMaterials(activeMaterials,{model:llm,notify,generate:(instruction,input,validate)=>{
-            notify('reading_materials');return generationAwait(llm.generate(instruction,input,value=>{checkGenerationCancellation();return validate(value);}));
+          if(activeMaterials.length)fullPlanning=await readFullMaterials(activeMaterials,{model:llm,notify,generate:(instruction,input,validate,options)=>{
+            return generationAwait(llm.generate(instruction,input,value=>{checkGenerationCancellation();return validate(value);},{...options,...generationOptions}));
           }});
           const recommendedCount = Math.min(12, Math.max(3, Math.round(budget / 45)));
           const instruction = planGuidance({ learnerGuidance, recommendedCount, budget, shape: planShape(recommendedCount, budget) }) + (revisionPlan ? ' 这是用户浏览课程大纲后的调整。previousPlan 是上一版目录，只作参考；本轮最新澄清回答和 adjustmentRequirement 优先于与之冲突的旧偏好或历史调整要求。保留仍有用的教学目标，按要求增删、拆分、合并或重排章节，给出完整新目录，不输出课程正文。不重新发问卷，不臆造用户背景。遵循当前请求的预算与资料范围，仍须符合 3–12 节及总时长限制。description 简要说明主要调整及不能满足的限制，不声称迁移了正文或成绩。' : '')+(fullPlanning?fullMaterialPlanGuidance:'');

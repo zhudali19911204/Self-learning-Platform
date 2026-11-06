@@ -8,6 +8,38 @@ const output = (provider, content = '{"ok":true}', reason = 'stop') => provider 
   : { choices: [{ message: { content }, finish_reason: reason }] };
 const client = options => createLLM({ env: {}, model: 'test-model', ...options });
 
+test('material index output budget caps only its request and respects lower model limits',async()=>{
+  for(const provider of ['ollama','compatible'])for(const maxTokens of [1024,32768]){
+    const sent=[];
+    const llm=client({provider,baseUrl:'http://localhost:8000/v1',maxTokens,fetchImpl:async(_url,init)=>{
+      sent.push(JSON.parse(init.body));return Response.json(output(provider));
+    }});
+    await llm.generate('',{},ok,{maxTokens:4096});
+    await llm.generate('',{},ok);
+    assert.equal(sent[0].max_tokens??sent[0].options.num_predict,Math.min(maxTokens,4096));
+    assert.equal(sent[1].max_tokens??sent[1].options.num_predict,maxTokens);
+    await assert.rejects(llm.generate('',{},ok,{maxTokens:0}),/输出上限/);
+    assert.equal(sent.length,2);
+  }
+});
+
+test('cache identity is stable across restarts and timeouts but changes with model endpoint or generation parameters',()=>{
+  const config={provider:'compatible',baseUrl:'https://example.test/v1',model:'test-model',jsonMode:'on'};
+  const first=client(config);
+  assert.match(first.cacheKey,/^[a-f0-9]{64}$/);
+  assert.equal(client({...config,timeoutMs:1000}).cacheKey,first.cacheKey);
+  assert.equal(client({...config,apiKey:'private-key'}).cacheKey,first.cacheKey);
+  assert.equal(first.status().cacheKey,undefined);
+  for(const change of [{model:'other'},{baseUrl:'https://other.test/v1'},{provider:'vllm'},{jsonMode:'off'},{thinkingMode:'off'},{maxTokens:1024}]){
+    assert.notEqual(client({...config,...change}).cacheKey,first.cacheKey);
+  }
+});
+
+test('a truncated per-request index budget is reported without recommending an ineffective global limit increase',async()=>{
+  const llm=client({maxTokens:32768,fetchImpl:async()=>Response.json(output('ollama','{"ok":true}','length'))});
+  await assert.rejects(llm.generate('',{},ok,{maxTokens:4096}),error=>/4096 token/.test(error.message)&&/提高全局输出上限不会改变/.test(error.message));
+});
+
 test('empty configuration is demo; legacy Ollama config remains usable', () => {
   assert.equal(createLLM({ env: {} }).status().mode, 'demo');
   const config = resolveConfig({}, { OLLAMA_MODEL: 'local-model', OLLAMA_BASE_URL: 'http://127.0.0.1:11435/' });

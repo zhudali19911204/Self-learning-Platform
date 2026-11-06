@@ -97,6 +97,21 @@ exports.run = async (window, directory) => {
     assert.equal(await evaluate("document.querySelector('.quiz-addition-pending')"),null);
     await evaluate("document.querySelector('[data-action=lesson-tab][data-tab=quiz]').click()");
     await writeFile(path.join(directory, 'cancellation-smoke.png'), (await window.webContents.capturePage()).toPNG());
+    await evaluate(`window.learnflowDesktop.saveSettings(${JSON.stringify({ ...settings, timeoutMs: 1000 })})`);
+    const plansBefore = (await evaluate('window.learnflowDesktop.load()')).state.plans;
+    for (const endpoint of ['plan', 'plan-adjust']) {
+      const before = held.length, progressId = `generation-smoke-${endpoint}`;
+      const input = endpoint === 'plan' ? { goal: plan.goal, level: plan.level, daily: plan.daily, days: plan.days } : { planId: plan.id, requirement: '保留内容并调整目录' };
+      await evaluate(`window.planSettled = false; window.cancelPlan = window.learnflowDesktop.request('${endpoint}',${JSON.stringify(input)},'${progressId}').then(value=>{window.planSettled=true;return {unexpected:value};},error=>{window.planSettled=true;return {message:error.message};}); void 0`);
+      for (let n = 0; held.length === before && n < 100; n++) await new Promise(resolve => setTimeout(resolve, 20));
+      assert.equal(held.length, before + 1);
+      await new Promise(resolve => setTimeout(resolve, 1500));
+      assert.equal(await evaluate('window.planSettled'), false, 'outline must outlive the saved model timeout');
+      assert.equal(await evaluate(`window.learnflowDesktop.cancelGeneration('${progressId}')`), true);
+      assert.deepEqual(await evaluate('window.cancelPlan'), { message: '任务已取消，本次生成结果已丢弃，原有内容保留。' });
+      held[before]();
+      assert.deepEqual((await evaluate('window.learnflowDesktop.load()')).state.plans, plansBefore);
+    }
     console.log('CANCELLATION_SMOKE_OK', JSON.stringify({ localCalls: calls.length, cancelledRequests: closed, directory }));
   } finally { backend.closeAllConnections(); await new Promise(resolve => backend.close(resolve)); }
 };

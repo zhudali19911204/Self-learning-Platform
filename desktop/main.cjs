@@ -10,7 +10,7 @@ const development = process.argv.includes('--dev-profile');
 if (process.argv.includes('--verify-revision')) { console.error('旧修订工作台已取消，不再运行付费修订联调；未发起模型调用。'); app.exit(1); }
 if (smoke) app.setPath('userData', path.resolve('.desktop-test'));
 else if (development) app.setPath('userData', path.resolve('.desktop-dev'));
-let window, server, store, imageStore, speechStore, webSearchStore, qualityStore, settingsLayoutStore, learning, base, shuttingDown = false;
+let window, server, store, imageStore, speechStore, webSearchStore, qualityStore, settingsLayoutStore, materialPlanningCache, learning, base, shuttingDown = false;
 let generationTasks, cancellation;
 const cancellableChannels = new Set(['request', 'generate-course-block', 'check-block-facts', 'correct-fact-issues', 'evaluate-quality', 'suggest-illustration', 'auto-search-commons-images', 'auto-search-web-images', 'generate-illustration', 'retry-illustration-download', 'generate-speech'].map(name => `learnflow:${name}`));
 const token = randomBytes(32).toString('hex');
@@ -34,6 +34,8 @@ async function start() {
   handle('learnflow:cancel-generation', id => generationTasks.cancel(id));
   const { createApp, illustrationGuidance } = await import(pathToFileURL(path.join(__dirname, '..', 'src/server.mjs')));
   const { createLLM } = await import(pathToFileURL(path.join(__dirname, '..', 'src/models/llm.mjs')));
+  const { fetchWithoutTimeout } = await import(pathToFileURL(path.join(__dirname, '..', 'src/runtime/generation-fetch.mjs')));
+  const { isPlanGeneration } = await import(pathToFileURL(path.join(__dirname, '..', 'public/planning.js')));
   const { assertDistinctQualityModels } = await import(pathToFileURL(path.join(__dirname, '..', 'public', 'course-quality.js')));
   const { createQualityService } = await import(pathToFileURL(path.join(__dirname, '..', 'src/courses/course-quality.mjs')));
   const { createFactCheckService } = await import(pathToFileURL(path.join(__dirname, '..', 'src/courses/course-fact-check.mjs')));
@@ -55,7 +57,7 @@ async function start() {
   const { createSpeechModel } = await import(pathToFileURL(path.join(__dirname, '..', 'src/models/speech-model.mjs')));
   const { assistedBlockTypes } = await import(pathToFileURL(path.join(__dirname, '..', 'public', 'blocks.js')));
   const { validImageSuggestion, validImageProposal } = await import(pathToFileURL(path.join(__dirname, '..', 'public', 'illustrations.js')));
-  const isolatedTest = smoke && (process.argv.includes('--planning-only') ? 'planning-loop-tests' : process.argv.includes('--plan-adjust-only') ? 'plan-adjustment-tests' : process.argv.includes('--categories-only') ? 'category-tests' : process.argv.includes('--resume-only') ? 'resume-tests' : process.argv.includes('--ui-only') ? 'ui-tests' : process.argv.includes('--cancel-only') ? 'cancel-tests' : process.argv.includes('--quiz-only') ? 'quiz-tests' : process.argv.includes('--facts-only') ? 'fact-tests' : process.argv.includes('--sources-only') ? 'source-tests' : process.argv.includes('--quality-only') || process.argv.includes('--revision-only') ? 'score-tests' : process.argv.includes('--sharing-only') ? 'sharing-tests' : '');
+  const isolatedTest = smoke && (process.argv.includes('--materials-only') ? 'material-tests' : process.argv.includes('--planning-only') ? 'planning-loop-tests' : process.argv.includes('--plan-adjust-only') ? 'plan-adjustment-tests' : process.argv.includes('--categories-only') ? 'category-tests' : process.argv.includes('--resume-only') ? 'resume-tests' : process.argv.includes('--ui-only') ? 'ui-tests' : process.argv.includes('--cancel-only') ? 'cancel-tests' : process.argv.includes('--quiz-only') ? 'quiz-tests' : process.argv.includes('--facts-only') ? 'fact-tests' : process.argv.includes('--sources-only') ? 'source-tests' : process.argv.includes('--quality-only') || process.argv.includes('--revision-only') ? 'score-tests' : process.argv.includes('--sharing-only') ? 'sharing-tests' : '');
   const dataDirectory = isolatedTest ? path.join(app.getPath('userData'), isolatedTest, randomBytes(8).toString('hex')) : path.join(app.getPath('userData'), 'data');
   await mkdir(dataDirectory, { recursive: true });
   settingsLayoutStore = createSettingsLayoutStore(dataDirectory);
@@ -82,6 +84,8 @@ async function start() {
   speechStore = createSpeechStore(dataDirectory, secrets);
   await speechStore.initialize();
   learning = await createSqliteStore(dataDirectory);
+  const { createMaterialPlanningCache } = await import('./material-planning-cache.mjs');
+  materialPlanningCache = createMaterialPlanningCache(dataDirectory);
   // A separate in-memory session keeps model traffic outside the renderer's
   // localhost-only webRequest policy and uses Chromium's OS trust/proxy setup.
   const modelSession = session.fromPartition('learnflow-model-network');
@@ -155,7 +159,6 @@ async function start() {
     return owner.materials || [];
   };
   const { materialCoverageParts } = await import(pathToFileURL(path.join(__dirname, '..', 'public', 'material-coverage.js')));
-  const { materialPlanningCallCount } = await import(pathToFileURL(path.join(__dirname, '..', 'src/courses/course-material-planning.mjs')));
   const courseMaterialParts = lessonId => materialCoverageParts(learning.overview().plans.find(p=>p.lessons.some(l=>l.id===lessonId)),lessonId);
   const courseRequests = new Set();
   const fullGenerationRequests = new Set();
@@ -163,7 +166,7 @@ async function start() {
   const onGenerationProgress = (requestId, stage) => {
     if (progressRequests.has(requestId) && window && !window.isDestroyed()) window.webContents.send('learnflow:generation-progress', { requestId, stage });
   };
-  server = createApp({ getLLM: () => llm, courseSources, getPlanningMaterials:planningMaterials, getPlanForAdjustment:id=>learning.overview().plans.find(p=>p.id===id), getCourseMaterials:courseMaterials, getCourseMaterialParts:courseMaterialParts, onGenerationProgress, getGenerationSignal: id => generationTasks.signal(id), getCourseSourceSearch: id => learning.getLesson(id).sourceSearch, getCourseBlockCourse: id => learning.getLesson(id).blockCourse, apiToken: token, getImageSettings: () => imageStore.getSettings(), getImageAsset: async id => {
+  server = createApp({ getLLM: () => llm, courseSources, materialPlanningCache, getPlanningMaterials:planningMaterials, getPlanForAdjustment:id=>learning.overview().plans.find(p=>p.id===id), getCourseMaterials:courseMaterials, getCourseMaterialParts:courseMaterialParts, onGenerationProgress, getGenerationSignal: id => generationTasks.signal(id), getCourseSourceSearch: id => learning.getLesson(id).sourceSearch, getCourseBlockCourse: id => learning.getLesson(id).blockCourse, apiToken: token, getImageSettings: () => imageStore.getSettings(), getImageAsset: async id => {
     try { return await imageStore.readAsset(id); } catch { return null; }
   }, getAudioAsset: async id => { try { return await speechStore.readAsset(id); } catch { return null; } } });
   await new Promise((resolve, reject) => { server.once('error', reject); server.listen(0, '127.0.0.1', resolve); });
@@ -437,12 +440,9 @@ async function start() {
     const requestId = typeof progressId === 'string' && /^generation-[a-z0-9-]{1,80}$/.test(progressId) ? progressId : '';
     if (requestId) { progressRequests.add(requestId); onGenerationProgress(requestId, 'preparing'); }
     try {
-    let requestTimeout=(llm.status().timeoutMs || 120000) * (endpoint === 'lesson-block' ? 2 : 1) + (endpoint === 'lesson-block' ? 120000 : 10000);
-    if(endpoint==='plan'||endpoint==='plan-adjust'){
-      const materials=endpoint==='plan'?(data?.materialIds?.length?planningMaterials(data.materialIds):[]):learning.overview().plans.find(p=>p.id===data?.planId)?.materials||[];
-      if(materials.length)requestTimeout=materialPlanningCallCount(materials)*(llm.status().timeoutMs||120000)+10000;
-    }
-    const response = await fetch(`${base}/api/${endpoint}`, {
+    const requestTimeout=isPlanGeneration(endpoint) ? null : (llm.status().timeoutMs || 120000) * (endpoint === 'lesson-block' ? 2 : 1) + (endpoint === 'lesson-block' ? 120000 : 10000);
+    const request=isPlanGeneration(endpoint) ? fetchWithoutTimeout : fetch;
+    const response = await request(`${base}/api/${endpoint}`, {
       method: endpoint === 'status' ? 'GET' : 'POST',
       headers: { 'Content-Type': 'application/json', 'X-Learnflow-Token': token, ...(requestId ? { 'X-Learnflow-Progress': requestId } : {}) },
       ...(endpoint === 'status' ? {} : { body: JSON.stringify(data) }),
@@ -609,5 +609,5 @@ app.on('before-quit', event => {
   // Cancelling exit must leave the database and model services usable.
   if (window && !window.isDestroyed()) { event.preventDefault(); window.close(); return; }
   event.preventDefault(); shuttingDown = true;
-  Promise.all([store?.flush(), qualityStore?.flush(), imageStore?.flush(), speechStore?.flush(), webSearchStore?.flush(), settingsLayoutStore?.flush()]).finally(() => { learning?.close(); speechStore?.close(); server?.closeAllConnections(); server?.close(); app.quit(); });
+  Promise.all([store?.flush(), qualityStore?.flush(), imageStore?.flush(), speechStore?.flush(), webSearchStore?.flush(), settingsLayoutStore?.flush()]).finally(() => { learning?.close(); speechStore?.close(); materialPlanningCache?.close(); server?.closeAllConnections(); server?.close(); app.quit(); });
 });

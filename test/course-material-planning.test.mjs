@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { directMaterialPlanning, fullMaterialBatches, prepareFullMaterialPlanning, materialAssignmentIssue, savedMaterialCoverage, createFullMaterialPlanningReader, materialPlanningCallCount } from '../src/courses/course-material-planning.mjs';
+import { directMaterialPlanning, fullMaterialBatches, prepareFullMaterialPlanning, materialAssignmentIssue, savedMaterialCoverage, createFullMaterialPlanningReader, materialPlanningCallCount, MATERIAL_PLANNING_INDEX_CHARACTERS, MATERIAL_PLANNING_INDEX_TOKENS } from '../src/courses/course-material-planning.mjs';
 import { validMaterialCoverage, materialCoverageParts } from '../public/material-coverage.js';
 import { withGenerationSignal, generationAwait } from '../src/runtime/generation-cancellation.mjs';
 import { createApp } from '../src/server.mjs';
@@ -17,7 +17,7 @@ const makeMaterial=(count=19)=>({version:1,id:'a'.repeat(64),name:'Purchasing gu
 const longMaterial=()=>({...makeMaterial(55),parts:makeMaterial(55).parts.map((p,i)=>({...p,text:p.text+'\n'+`Original paragraph ${i+1}. `.repeat(45).slice(0,850)}))});
 const assign=(context)=>context.materialUnits.map((u,i)=>({unitId:u.id,lessonIndexes:[i%3+1]}));
 const planFor=(context)=>({...structuredClone(demoPlan),lessons:demoPlan.lessons.slice(0,3).map((l,i)=>({...l,id:`full-material-lesson-${i}`,minutes:20})),materialAssignments:assign(context)});
-const readReply=input=>({title:'完整章节知识清单',parts:input.parts.map(p=>({partId:p.id,summary:p.text.slice(0,450)}))});
+const readReply=input=>({title:'完整章节主题索引',topics:[{title:'采购计算与适用条件',scope:'成本计算、库存交付、加价与边界条件；具体公式和例外见原文。',partIds:input.parts.map(p=>p.id)}]});
 
 test('small-library planning includes every original part, including late formulas and foreign-language rules, without another model request',async()=>{
   const materials=[makeMaterial()],context=directMaterialPlanning(materials);
@@ -31,22 +31,66 @@ test('small-library planning includes every original part, including late formul
 test('large libraries are read in complete ordered batches and every original part is accounted for before planning',async()=>{
   const materials=[longMaterial()],original=structuredClone(materials),batches=fullMaterialBatches(materials),seen=[],events=[];
   assert.equal(directMaterialPlanning(materials),null);assert.ok(batches.length>1);
-  assert.equal(materialPlanningCallCount(materials),batches.length+2);
+  assert.equal(materialPlanningCallCount(materials),batches.length*2+2);
   assert.deepEqual(batches.flatMap(b=>b.parts.map(p=>p.id)),materials[0].parts.map(p=>p.id));
-  const context=await prepareFullMaterialPlanning(materials,{notify:s=>events.push(s),generate:async(prompt,input,validate)=>{
-    assert.match(prompt,/每个part/);assert.equal(input.task,'read-all-materials');seen.push(...input.parts.map(p=>p.id));assert.equal(validate(readReply(input)),true);
+  const context=await prepareFullMaterialPlanning(materials,{notify:s=>events.push(s),generate:async(prompt,input,validate,options)=>{
+    assert.match(prompt,/不要求每个part单独写摘要/);assert.match(prompt,/不抄写完整公式/);
+    assert.equal(options.maxTokens,MATERIAL_PLANNING_INDEX_TOKENS);assert.equal(input.task,'read-all-materials');seen.push(...input.parts.map(p=>p.id));assert.equal(validate(readReply(input)),true);
   }});
   assert.equal(context.materialReading,'full-batch-scan');assert.deepEqual(seen,materials[0].parts.map(p=>p.id));assert.deepEqual(context.materialUnits.flatMap(u=>u.partIds),seen);
   assert.equal(events.filter(s=>s==='reading_materials').length,batches.length);assert.equal(events.at(-1),'materials_ready');assert.deepEqual(materials,original);
 });
 
-test('batch readers cannot omit a page, invent IDs, repeat a page or return an empty summary',async()=>{
+test('grouped topic indexes reject missing, unknown, intra-topic duplicate IDs and empty scopes',async()=>{
   for(const mode of ['missing','invented','duplicate','empty']){
     let calls=0;
     await assert.rejects(prepareFullMaterialPlanning([longMaterial()],{generate:async(_prompt,input,validate)=>{
-      calls++;const value=readReply(input);if(mode==='missing')value.parts.pop();else if(mode==='invented')value.parts[0].partId='part-999';else if(mode==='duplicate')value.parts[1].partId=value.parts[0].partId;else value.parts[0].summary='';validate(value);
-    }}),error=>error.status===422&&/全文资料整理/.test(error.message));assert.equal(calls,1);
+      calls++;const value=readReply(input);if(mode==='missing')value.topics[0].partIds.pop();else if(mode==='invented')value.topics[0].partIds[0]='part-999';else if(mode==='duplicate')value.topics[0].partIds[1]=value.topics[0].partIds[0];else value.topics[0].scope='';validate(value);
+    }}),error=>error.status===422&&/全文资料索引/.test(error.message));assert.equal(calls,2);
   }
+});
+
+test('distinct topics may share source parts without duplicating saved coverage or masking omissions',async()=>{
+  const first=longMaterial(),second={...longMaterial(),id:'b'.repeat(64),name:'Second reference.md'};
+  const materials=[first,second],cached=new Map();
+  const result=await prepareFullMaterialPlanning(materials,{batchCache:cached,generate:async(_prompt,input,validate)=>{
+    const value=readReply(input);
+    value.topics.push({title:'第二个知识点',scope:'同一原文中的另一项适用边界',partIds:[input.parts[0].id]});
+    assert.equal(validate(value),true);
+  }});
+  assert.equal(cached.size,fullMaterialBatches(materials).length);
+  const coverage=savedMaterialCoverage(planFor(result),result);
+  assert.equal(validMaterialCoverage(coverage,materials,3),true);
+  assert.equal(coverage.units.reduce((n,u)=>n+u.partIds.length,0),first.parts.length+second.parts.length);
+  for(const file of materials)assert.deepEqual(coverage.units.filter(u=>u.materialId===file.id).flatMap(u=>u.partIds),file.parts.map(p=>p.id));
+  const restored=await prepareFullMaterialPlanning(materials,{batchCache:cached,generate:()=>{throw Error('Completed index should be reused');}});
+  assert.deepEqual(restored,result);
+  for(const mode of ['missing','wrong-batch','within-topic']){
+    await assert.rejects(prepareFullMaterialPlanning(materials,{generate:async(_prompt,input,validate)=>{
+      const value=readReply(input);
+      value.topics.push({title:'其他主题',scope:'边界',partIds:[input.parts[0].id]});
+      if(mode==='missing')value.topics[0].partIds.pop();
+      if(mode==='wrong-batch')value.topics[1].partIds=['part-999'];
+      if(mode==='within-topic')value.topics[0].partIds.push(input.parts[0].id);
+      validate(value);
+    }}),mode==='missing'?/批次 U1.*遗漏：part-/:mode==='wrong-batch'?/批次 U1.*不属于当前文件批次/:/主题内重复引用/);
+  }
+});
+
+test('compact index enforces a 3000-character content budget and rejects the old per-part summary shape',async()=>{
+  assert.equal(MATERIAL_PLANNING_INDEX_CHARACTERS,3000);
+  assert.equal(MATERIAL_PLANNING_INDEX_TOKENS,4096);
+  for(const extra of [0,1]){
+    const work=prepareFullMaterialPlanning([longMaterial()],{generate:async(_prompt,input,validate)=>{
+      if(input.unitId!=='U1')return validate(readReply(input));
+      const topics=Array.from({length:10},(_,i)=>({title:'t'.repeat(80),scope:'s'.repeat(220+(i===0?extra:0)),partIds:input.parts.filter((_,n)=>n%10===i).map(p=>p.id)}));
+      validate({title:'索引边界',topics});
+    }});
+    if(extra)await assert.rejects(work,/超过3000字符/);else await work;
+  }
+  await assert.rejects(prepareFullMaterialPlanning([longMaterial()],{generate:async(_p,input,validate)=>{
+    validate({title:'旧详细摘要',parts:input.parts.map(p=>({partId:p.id,summary:p.text}))});
+  }}),/索引格式/);
 });
 
 test('coverage validation blocks missing assignments, unknown IDs, invalid lesson numbers and hiding formulas as reference-only',()=>{
@@ -59,7 +103,7 @@ test('coverage validation blocks missing assignments, unknown IDs, invalid lesso
   const coverage=savedMaterialCoverage(reference,context);assert.equal(validMaterialCoverage(coverage,[makeMaterial()],3),true);
 });
 
-test('only complete scans are cached; changed text and a different model require re-reading',async()=>{
+test('validated batch indexes are cached; changed text and a different model require re-reading',async()=>{
   const read=createFullMaterialPlanningReader(),materials=[longMaterial()],model={},other={};let calls=0;
   const options=model=>({model,generate:async(_prompt,input,validate)=>{calls++;validate(readReply(input));}});
   const first=await read(materials,options(model)),count=calls;assert.ok(count>1);
@@ -69,7 +113,7 @@ test('only complete scans are cached; changed text and a different model require
   const before=calls;await read(materials,options(other));assert.ok(calls>before);
 });
 
-test('cancelling a full scan starts no later batch and leaves no partial cache',async()=>{
+test('cancelling the first batch starts no later batch and caches no unfinished index',async()=>{
   const read=createFullMaterialPlanningReader(),controller=new AbortController(),model={},materials=[longMaterial()];let entered,calls=0;
   const started=new Promise(resolve=>{entered=resolve;});
   const work=withGenerationSignal(controller.signal,()=>read(materials,{model,generate:async()=>{calls++;entered();await generationAwait(new Promise(()=>{}));}}));
@@ -77,9 +121,64 @@ test('cancelling a full scan starts no later batch and leaves no partial cache',
   await read(materials,{model,generate:async(_prompt,input,validate)=>{calls++;validate(readReply(input));}});assert.ok(calls>2);
 });
 
+for(const failure of ['error','cancel','invalid'])test(`${failure} in a later batch keeps completed indexes but never caches unfinished data`,async()=>{
+  const read=createFullMaterialPlanningReader(),model={},materials=[longMaterial()],batches=fullMaterialBatches(materials),controller=new AbortController();let calls=0;
+  const work=withGenerationSignal(controller.signal,()=>read(materials,{model,generate:async(_prompt,input,validate)=>{
+    calls++;
+    if(input.unitId==='U2'){
+      if(failure==='error')throw new Error('network failure');
+      if(failure==='cancel'){controller.abort();return generationAwait(Promise.resolve());}
+      return validate({title:'missing index',topics:[]});
+    }
+    validate(readReply(input));
+  }}));
+  await assert.rejects(work);assert.equal(calls,failure==='invalid'?3:2);
+  const retried=[];
+  const result=await read(materials,{model,generate:async(_prompt,input,validate)=>{retried.push(input.unitId);validate(readReply(input));}});
+  assert.deepEqual(retried,batches.slice(1).map(b=>b.id));
+  assert.deepEqual(result.materialUnits.flatMap(u=>u.partIds),materials[0].parts.map(p=>p.id));
+});
+
+test('an invalid index receives exactly one repair with missing IDs and original text, preserving the output budget',async()=>{
+  const materials=[longMaterial()],calls=[],events=[];
+  const result=await prepareFullMaterialPlanning(materials,{notify:stage=>events.push(stage),generate:async(prompt,input,validate,options)=>{
+    calls.push({input,options});
+    const value=readReply(input);
+    if(input.unitId==='U1'&&!input.indexRepair){
+      value.topics[0].scope='x'.repeat(241);
+      value.topics[0].partIds.splice(4,1);
+    }
+    if(input.indexRepair){
+      assert.match(prompt,/只修正当前批次一次/);
+      assert.deepEqual(input.indexRepair.missingPartIds,['part-5']);
+      assert.equal(input.indexRepair.previousIndex.topics[0].scope.length,241);
+      assert.match(input.indexRepair.reason,/第 1 个主题范围说明.*240字符/);
+      assert.deepEqual(input.parts,calls[0].input.parts);
+    }
+    validate(value);
+  }});
+  assert.equal(calls.length,fullMaterialBatches(materials).length+1);
+  assert.ok(calls.every(c=>c.options.maxTokens===4096));
+  assert.equal(events.filter(stage=>stage==='repairing_materials').length,1);
+  assert.equal(result.materialUnits.flatMap(u=>u.partIds).length,materials[0].parts.length);
+});
+
+test('cancelling during index repair discards its late result and never starts later batches',async()=>{
+  const controller=new AbortController(),cache=new Map();let calls=0,release,entered;
+  const pending=new Promise(resolve=>{release=resolve;}),started=new Promise(resolve=>{entered=resolve;});
+  const work=withGenerationSignal(controller.signal,()=>prepareFullMaterialPlanning([longMaterial()],{batchCache:cache,generate:async(_prompt,input,validate)=>{
+    calls++;
+    if(!input.indexRepair){const value=readReply(input);value.topics[0].partIds.pop();return validate(value);}
+    entered();await pending;validate(readReply(input));
+  }}));
+  const rejected=assert.rejects(work,error=>error.code==='GENERATION_CANCELLED');
+  await started;controller.abort();await rejected;release();await new Promise(resolve=>setImmediate(resolve));
+  assert.equal(calls,2);assert.equal(cache.size,0);
+});
+
 async function serve(t,handler,materials=[makeMaterial()],extra={}){
-  const calls=[];const model={generate:async(prompt,input,validate)=>{
-    calls.push({prompt,input:structuredClone(input)});const value=await handler(input,calls.length);
+  const calls=[];const model={generate:async(prompt,input,validate,options)=>{
+    calls.push({prompt,input:structuredClone(input),options});const value=await handler(input,calls.length);
     if(!validate(value))throw Object.assign(new Error('结构不符合要求'),{status:502});return value;
   }};
   const server=createApp({getLLM:()=>model,getPlanningMaterials:()=>materials,...extra});await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));
@@ -91,6 +190,23 @@ test('plan endpoint receives the complete source and repairs a missing final ass
   const f=await serve(t,(input,count)=>{assert.equal(input.materialUnits.length,19);assert.deepEqual(input.learningMaterials,[]);const v=planFor(input);if(count===1)v.materialAssignments.pop();return v;});
   const response=await f.post();assert.equal(response.status,200);const value=await response.json();assert.equal(f.calls.length,2);assert.match(f.calls[1].prompt,/漏安排1项资料单元/);
   assert.equal(validMaterialCoverage(value.materialCoverage,value.materials,value.lessons.length),true);assert.equal(value.materialCoverage.units.length,19);
+  assert.ok(f.calls.every(call=>call.options?.timeout===false));
+});
+
+test('preview and directory adjustment disable timeouts for every full-material batch, planning call and bounded repair',async t=>{
+  for(const endpoint of ['plan','plan-adjust']){
+    const materials=[longMaterial()],previous={...structuredClone(demoPlan),materials};let planCalls=0;
+    const f=await serve(t,input=>{
+      if(input.task==='read-all-materials')return readReply(input);
+      const value=planFor(input);if(++planCalls===1)value.materialAssignments.pop();return value;
+    },materials,{getPlanForAdjustment:()=>previous});
+    const response=endpoint==='plan'?await f.post():await f.post(endpoint,{planId:previous.id,requirement:'保留完整资料并重新安排目录'});
+    assert.equal(response.status,200);await response.json();
+    assert.equal(planCalls,2);assert.equal(f.calls.length,fullMaterialBatches(materials).length+2);
+    assert.ok(f.calls.every(call=>call.options?.timeout===false));
+    assert.ok(f.calls.filter(call=>call.input.task==='read-all-materials').every(call=>call.options.maxTokens===4096));
+    assert.ok(f.calls.filter(call=>call.input.task!=='read-all-materials').every(call=>call.options.maxTokens===undefined));
+  }
 });
 
 test('repeated omission fails the outline, and insufficient time never saves a partial plan or retries the model',async t=>{
@@ -120,4 +236,5 @@ test('lesson-outline retrieval prioritizes the assigned original page in a forei
     return {intro:'按原文安排教学。',blocks:[{type:'reading',title:'计算规则',objective:'理解规则'},{type:'example',title:'规则应用',objective:'观察完整推演'},{type:'quiz',title:'规则检验',objective:'判断适用边界'}]};
   },materials,{getCourseMaterials:()=>materials,getCourseMaterialParts:()=>[{materialId:materials[0].id,partId:'part-17'}]});
   const response=await f.post('lesson-outline',{lessonId:'lesson-1',goal:'学习计算',level:'零基础',title:'费用计算',objective:'解释计算规则'});assert.equal(response.status,200);assert.equal(f.calls.length,1);
+  assert.equal(f.calls[0].options,undefined);
 });

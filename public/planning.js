@@ -3,6 +3,8 @@ const text = (value, max, empty = false) => typeof value === 'string' && value.l
 const id = value => typeof value === 'string' && /^[a-zA-Z0-9_-]{1,40}$/.test(value);
 const unique = values => new Set(values).size === values.length;
 
+export const isPlanGeneration = endpoint => endpoint === 'plan' || endpoint === 'plan-adjust';
+
 export function validQuestionnaire(value, withIds = true) {
   return object(value) && text(value.summary, 1000) && Array.isArray(value.questions) && value.questions.length >= 2 && value.questions.length <= 6
     && value.questions.every(question => object(question) && (!withIds || id(question.id)) && text(question.question, 200) && text(question.why, 300)

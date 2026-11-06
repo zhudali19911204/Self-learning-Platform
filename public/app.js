@@ -5,7 +5,7 @@ import { lessonFromBlocks, validOutline, validBlockContent, validBlockSpec, bloc
 import { Marked } from './vendor/marked.js';
 import DOMPurify from './vendor/purify.js';
 import { createMarkdownRenderer } from './markdown.js';
-import { validQuestionnaire, validClarification, learningBriefFrom, validPlanOutline, planAdjustmentSnapshot } from './planning.js';
+import { validQuestionnaire, validClarification, learningBriefFrom, validPlanOutline, planAdjustmentSnapshot, isPlanGeneration } from './planning.js';
 import { validIllustration, validImageProposal } from './illustrations.js';
 import { speechDefaults, speechVoices, listeningText, speechTurns, speechRequest, validAudioId } from './speech.js';
 import { validKnowledgeSource, validKnowledgeDraft, localKnowledgeDraft, knowledgeTags, knowledgeConditions } from './knowledge-draft.js';
@@ -54,7 +54,7 @@ const icon = (name, cls = '') => `<svg class="icon ${cls}" viewBox="0 0 24 24" f
 const desktop = window.learnflowDesktop;
 const generationProgress = createGenerationProgress({ document, cancelTask: desktop ? id => desktop.cancelGeneration(id) : undefined, setTimer: setTimeout, clearTimer: clearTimeout });
 desktop?.onGenerationProgress?.(({ requestId, stage }) => {
-  const messages = { preparing: '正在准备请求…', reading_materials: '正在逐批阅读全部资料，整理章节与重要知识…', materials_ready: '全部资料已读入，正在安排课程并检查覆盖…', searching: '正在搜索并读取参考资料…', generating: '模型正在生成内容…', citing: '模型正在补全遗漏的资料引用（最多一次，可能计费）…', validating: '正在检查生成内容与格式…', fact_checking: '独立模型正在核查事实与资料依据…', fact_correcting: '正在按资料修正明确错误（最多一轮）…', fact_rechecking: '独立模型正在复核修正结果…' };
+  const messages = { preparing: '正在准备请求…', reading_materials: '正在逐批阅读全部资料，整理章节与重要知识…', repairing_materials: '正在修正当前资料批次的编号或格式（最多一次，可能计费）…', materials_ready: '全部资料已读入，正在安排课程并检查覆盖…', searching: '正在搜索并读取参考资料…', generating: '模型正在生成内容…', citing: '模型正在补全遗漏的资料引用（最多一次，可能计费）…', validating: '正在检查生成内容与格式…', fact_checking: '独立模型正在核查事实与资料依据…', fact_correcting: '正在按资料修正明确错误（最多一轮）…', fact_rechecking: '独立模型正在复核修正结果…' };
   if (messages[stage]) generationProgress.update(requestId, messages[stage]);
 });
 let desktopSettings = null, dataDirectory = '', pendingSave = Promise.resolve();
@@ -470,8 +470,9 @@ async function apiRequest(path, body, progressId, signal) {
   if (desktop) return desktop.request(path, body, progressId);
   const timeout = Number.isInteger(status.timeoutMs) && status.timeoutMs >= 1000 && status.timeoutMs <= 600000 ? status.timeoutMs : 120000;
   try {
-    const deadline = AbortSignal.timeout(path === 'lesson-block' ? timeout * 2 + 120000 : timeout + 10000);
-    const r = await fetch(`/api/${path}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body), signal: signal ? AbortSignal.any([signal, deadline]) : deadline });
+    const deadline = isPlanGeneration(path) ? null : AbortSignal.timeout(path === 'lesson-block' ? timeout * 2 + 120000 : timeout + 10000);
+    const requestSignal = signal && deadline ? AbortSignal.any([signal, deadline]) : signal || deadline;
+    const r = await fetch(`/api/${path}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body), signal: requestSignal });
     const value = await r.json(); if (signal?.aborted || value.code === 'GENERATION_CANCELLED') throw generationCancelled(); if (!r.ok) throw new Error(value.error || '请求失败，请重试。'); return value;
   } catch (error) { if (signal?.aborted) throw generationCancelled(); throw error; }
 }
@@ -1234,7 +1235,7 @@ function desktopSettingsPage() {
     <div class="settings-field-wide"><label for="model-url">接口根地址 <small>留空使用服务预设</small></label><input id="model-url" name="baseUrl" maxlength="2000" value="${escape(cfg.baseUrl)}" placeholder="例如 http://127.0.0.1:11434"></div>
     <div class="model-key-field settings-field-wide">${modelKeyField('model-key', 'key-action', cfg)}</div></div>
     <label class="check-label"><input type="checkbox" name="localOnly" ${cfg.localOnly ? 'checked' : ''}>仅使用本机模型</label><p class="field-hint">云端或局域网模型请关闭此项；相关学习内容会发送到所配置的服务。</p>
-    <details class="model-advanced"><summary>高级设置</summary><div class="model-advanced-content"><div class="form-row"><div><label for="json-mode">JSON 模式</label><select id="json-mode" name="jsonMode">${[['auto','自动'],['on','开启'],['off','仅提示词']].map(([v,l]) => `<option value="${v}" ${cfg.jsonMode === v ? 'selected' : ''}>${l}</option>`).join('')}</select></div><div><label for="model-timeout">超时（秒）</label><input id="model-timeout" type="number" name="timeout" min="1" max="600" required value="${cfg.timeoutMs / 1000}"></div><div><label for="model-tokens">输出上限</label><input id="model-tokens" type="number" name="maxTokens" min="128" max="32768" required value="${cfg.maxTokens}"></div></div>${modelThinkingField('model-thinking', cfg)}<p class="field-hint">本机模型需先安装并启动；仅本机模式只允许 localhost、127.0.0.1 或 ::1。修改接口地址不会向新地址沿用旧密钥，需要重新填写。</p></div></details>
+    <details class="model-advanced"><summary>高级设置</summary><div class="model-advanced-content"><div class="form-row"><div><label for="json-mode">JSON 模式</label><select id="json-mode" name="jsonMode">${[['auto','自动'],['on','开启'],['off','仅提示词']].map(([v,l]) => `<option value="${v}" ${cfg.jsonMode === v ? 'selected' : ''}>${l}</option>`).join('')}</select></div><div><label for="model-timeout">超时（秒）</label><input id="model-timeout" type="number" name="timeout" min="1" max="600" required value="${cfg.timeoutMs / 1000}"></div><div><label for="model-tokens">输出上限</label><input id="model-tokens" type="number" name="maxTokens" min="128" max="32768" required value="${cfg.maxTokens}"></div></div>${modelThinkingField('model-thinking', cfg)}<p class="field-hint">大纲预览与目录调整（含资料整理）不设自动超时，可在生成任务面板手动取消。其他任务沿用此超时。本机模型需先安装并启动；仅本机模式只允许 localhost、127.0.0.1 或 ::1。修改接口地址不会向新地址沿用旧密钥，需要重新填写。</p></div></details>
     <p id="settings-error" class="inline-error" role="alert">${escape(cfg.error || '')}</p><div id="remote-permission" hidden class="notice"><p>此操作会关闭“仅使用本机模型”。使用 AI 时，相关内容将发送到你配置的远端服务。</p><button type="button" class="btn secondary" data-action="allow-remote-save">允许远端连接并保存</button></div>
     ${settingsFormActions('desktop-settings-form', 'test-connection', '检查连接', '保存配置')}</form>
     <p id="connection-result" class="settings-result" role="status">${escape(connectionResult || '尚未验证连接。保存配置不代表模型已启动。')}</p><p class="field-hint">检查连接会发送固定短提示，验证鉴权和 JSON 输出；云端可能计费，不发送学习笔记。</p>`;
